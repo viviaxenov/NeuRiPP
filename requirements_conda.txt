@@ -1,0 +1,7 @@
+jax>=0.6.2
+jaxtyping>=0.3.2
+matplotlib>=3.10.6
+numpy
+optax>=0.2.6
+tqdm>=4.67.1
+typing_extensions>=4.15.0
