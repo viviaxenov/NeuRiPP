@@ -1,9 +1,3 @@
-import os
-import sys
-
-# Add the parent directory to the system path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from typing import Optional, Union, Callable
 from jaxtyping import PyTree, Array
 import jax
@@ -11,7 +5,7 @@ import jax.numpy as jnp
 from flax import nnx
 import jax.scipy.stats as stats
 
-from architectures.node import NeuralODE
+from ..architectures.node import NeuralODE
 
 
 class InteractionPotential:

@@ -1,9 +1,9 @@
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from core.types import TimeArray, SampleArray, PRNGKeyArray
+from ..core.types import TimeArray, SampleArray, PRNGKeyArray
 
-from architectures.utils_node import eval_model
+from ..architectures.utils_node import eval_model
 from jaxtyping import Array
 
 

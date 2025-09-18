@@ -1,21 +1,20 @@
 import os
 import sys
 
-# Add the parent directory to the system path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 import jax.numpy as jnp
 from typing import Optional, Tuple
 from jaxtyping import PyTree, Array
-from ODE_solvers.solvers import string_2_solver
 from flax import nnx
 import jax
 import jax.scipy.stats as stats
 
-from core.types import SampleArray, TimeArray, VelocityArray, TrajectoryArray
-from architectures.utils_node import eval_model
-from ODE_solvers.log_ODEs import (
+
+from ..ODE_solvers.solvers import string_2_solver
+from ..core.types import SampleArray, TimeArray, VelocityArray, TrajectoryArray
+from .utils_node import eval_model
+from ..ODE_solvers.log_ODEs import (
     divergence_vf,
     divergence_vf_hutch,
     jacobian_vf,

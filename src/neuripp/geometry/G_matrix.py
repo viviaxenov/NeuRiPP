@@ -1,9 +1,3 @@
-import os
-import sys
-
-# Add the parent directory to the system path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import jax
 import jax.numpy as jnp
 from jax import random as jrandom
@@ -13,7 +7,7 @@ from jaxtyping import PyTree, Array
 from functools import partial
 from jax.scipy.sparse.linalg import gmres
 from flax import nnx
-from geometry.lin_alg_solvers import minres, reg_cg
+from ..geometry.lin_alg_solvers import minres, reg_cg
 
 
 class G_matrix:

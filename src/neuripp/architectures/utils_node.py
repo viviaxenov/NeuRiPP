@@ -1,7 +1,7 @@
 from flax import nnx
 import jax.numpy as jnp
-from core.types import TimeArray, SampleArray, VelocityArray
 import jax
+from ..core.types import TimeArray, SampleArray, VelocityArray
 
 
 def eval_model(

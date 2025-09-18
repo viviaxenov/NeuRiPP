@@ -1,21 +1,15 @@
-import os
-import sys
-
-# Add the parent directory to the system path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from typing import Optional, Union
 from jaxtyping import PyTree, Array
 import jax.numpy as jnp
 from flax import nnx
 import jax
 
-from architectures.node import NeuralODE
-from functionals.linear_funcitonal_class import LinearPotential as LinearFunctional
-from functionals.internal_functional_class import (
+from ..architectures.node import NeuralODE
+from .linear_funcitonal_class import LinearPotential as LinearFunctional
+from .internal_functional_class import (
     InternalPotential as InternalFunctional,
 )
-from functionals.interaction_functional_class import (
+from .interaction_functional_class import (
     InteractionPotential as InteractionFunctional,
 )
 
