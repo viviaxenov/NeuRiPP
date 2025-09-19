@@ -10,6 +10,14 @@ Install the package
 ```
     pip install NeuRiPP@git+https://github.com/viviaxenov/NeuRiPP
 ```
+Editable (developer) installation
+```
+    git clone git@github.com:viviaxenov/NeuRiPP.git
+    cd NeuRiPP
+    conda install --file requirements_conda.txt
+    pip install -e .
+```
+
 ### Requirements
  - `flax>=0.10.2`
  - `jax>=0.6.2`
