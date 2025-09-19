@@ -11,7 +11,7 @@ import jax
 import jax.scipy.stats as stats
 
 
-from ..ODE_solvers.solvers import string_2_solver
+from ..ODE_solvers.solvers import string_to_solver
 from ..core.types import SampleArray, TimeArray, VelocityArray, TrajectoryArray
 from .utils_node import eval_model
 from ..ODE_solvers.log_ODEs import (
@@ -35,7 +35,7 @@ class NeuralODE(nnx.Module):
         atol=1e-6,
     ):
         self.dynamics = dynamics_model
-        self.solver = string_2_solver(solver)
+        self.solver = string_to_solver(solver)
         self.dt0 = dt0
         self.rtol = rtol
         self.atol = atol
@@ -59,8 +59,8 @@ class NeuralODE(nnx.Module):
         params: Optional[PyTree] = None,
         log_trajectory: bool = False,
     ) -> Array:
-        """
-        Solve ODE for loglikelihood of ODE
+        """Solve ODE for loglikelihood of ODE
+
         Args:
             t: Time array of shape (time steps,)
             xt: Sample array of shape (batch_size,time steps, dim)
@@ -68,8 +68,9 @@ class NeuralODE(nnx.Module):
             method: Method to compute the loglikelihood, 'exact' or 'hutchinson'
             params: Optional PyTree of parameters for the dynamics model
             log_trajectory: If True, return the full loglikelihood trajectory, else only final value
+
         Returns:
-            log_likelihood: Loglikelihood of the ODE at (t,x), shape (batch_size,)
+            Loglikelihood of the ODE at (t,x), shape (batch_size,)
         """
         # To call the solver.step method, we need function, t_list, step_index, solution_history
         if log_prob_init is None:
@@ -102,8 +103,8 @@ class NeuralODE(nnx.Module):
         params: Optional[PyTree] = None,
         score_trajectory: bool = False,
     ):
-        """
-        Solve ODE for score function of ODE
+        """Solve ODE for score function of ODE
+
         Args:
             t: Time array of shape (time steps,)
             xt: Sample array of shape (batch_size,time steps, dim)
@@ -111,8 +112,9 @@ class NeuralODE(nnx.Module):
             method: str: 'exat', 'autodiff'
             params: Optional PyTree of parameters for the dynamics model
             score_trajectory: If True, return the full score trajectory, else only final value
+
         Returns:
-            score: Score function of the ODE at (t,x), shape (batch_size, dim)
+            Score function of the ODE at (t,x), shape (batch_size, dim)
         """
         # To call the solver.step method, we need function, t_list, step_index, solution_history
         if method not in ["exact", "autodiff"]:
@@ -183,8 +185,7 @@ class NeuralODE(nnx.Module):
         params: Optional[PyTree] = None,
         history: bool = False,
     ) -> Array:
-        """
-        Solve the ODE from t_span[0] to t_span[1] with initial condition y0
+        """Solve the ODE from t_span[0] to t_span[1] with initial condition y0
 
         Args:
             y0: Initial condition, shape (batch_size, feature_dim) or (feature_dim,)
@@ -252,15 +253,14 @@ class NeuralODE(nnx.Module):
     def push_forward(
         self, z: SampleArray, params: Optional[PyTree] = None, history: bool = False
     ) -> SampleArray:
-        """
-        Push forward samples z through the Neural ODE to obtain x
+        """Push forward samples z through the Neural ODE to obtain x
 
         Args:
             z: Reference samples, shape (batch_size, feature_dim)
             params: Parameters for the dynamics model (if None, uses current model params)
 
         Returns:
-            x: Transformed samples, shape (batch_size, feature_dim)
+            Transformed samples, shape (batch_size, feature_dim)
         """
         if params is None:
             _, params = nnx.split(self.dynamics)
@@ -269,15 +269,14 @@ class NeuralODE(nnx.Module):
     def pull_back(
         self, x: SampleArray, params: Optional[PyTree] = None, history: bool = False
     ) -> SampleArray:
-        """
-        Pull back samples x through the Neural ODE to obtain z
+        """Pull back samples x through the Neural ODE to obtain z
 
         Args:
             x: Target samples, shape (batch_size, feature_dim)
             params: Parameters for the dynamics model (if None, uses current model params)
 
         Returns:
-            z: Reference samples, shape (batch_size, feature_dim)
+            Reference samples, shape (batch_size, feature_dim)
         """
 
         if params is None:

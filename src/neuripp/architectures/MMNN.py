@@ -116,9 +116,9 @@ class MMNN(nn.Module):
 
 
 class Train_jax_model:
-    """
-    This a basic training scheme for a jax model.
-    Inputs:
+    """A basic training scheme for a jax model.
+
+    Args:
         model: A Flax model to train
         input_data: Input data as a jnp.ndarray
         target_data: Target data as a jnp.ndarray
@@ -128,7 +128,8 @@ class Train_jax_model:
         num_epochs: Number of epochs to train
         batch_size: Batch size for training
         random_seed: Random seed for reproducibility
-    Outputs:
+
+    Attributes:
         params: Trained model parameters
         training_info: Dictionary containing training and validation losses
     """
@@ -211,14 +212,14 @@ class Train_jax_model:
 
     # Batch generator
     def batch_generator(self, x_data, y_data):
-        """
-        Generate batches of data
-        Inputs:
+        """Generate batches of data
+
+        Args:
             x_data: Input data
             y_data: Target data
+
         Yields:
-            x_batch: Input batch
-            y_batch: Target batch
+            Tuple : `(x_batch, y_batch)` input and tangent batches
         """
         # The last incomplete batch will be ignored
         for i in range(0, self.n_batches * self.batch_size, self.batch_size):

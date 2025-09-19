@@ -7,13 +7,15 @@ from functools import partial
 
 
 def euler_method(f: Callable, t_list: Array, y0: Array, history=False) -> Array:
-    """
-    Euler method for solving ODEs.
-    Inputs:
-        f: Callable , the function defining the ODE dy/dt = f(t, y), where t is a float and y is a tensor of shape [bs, d]
-        t_list: jax array, a list of time points at which to evaluate the ODE
-        y0: tensor [bs,d], initial value of y at t0
-    Outputs:
+    """Euler (explicit 1-st order.) method for solving ODEs.
+
+    Args:
+        f: the function defining the ODE dy/dt = f(t, y), where t is a float and y is a tensor of shape [bs, d]
+        t_list: a list of time points at which to evaluate the ODE
+        y0: tensor of shape [batch_size, dim], initial value of y at t0
+
+    Returns:
+        Array: the solution of the ODE at the time points in t_list
     """
     n_steps = len(t_list) - 1
     if history:
@@ -37,14 +39,15 @@ def euler_method(f: Callable, t_list: Array, y0: Array, history=False) -> Array:
 
 
 def heun_method(f: Callable, t_list: Array, y0: Array, history=False) -> Array:
-    """
-    Heun's method for solving ODEs.
-    Inputs:
-        f: Callable , the function defining the ODE dy/dt = f(t, y), where t is a float and y is a tensor of shape [bs, d]
-        t_list: jax array, a list of time points at which to evaluate the ODE
-        y0: tensor [bs,d], initial value of y at t0
-    Outputs:
-        y_h: jax array, the solution of the ODE at the time points in t_list
+    """Heun's method for solving ODEs.
+
+    Args:
+        f: the function defining the ODE dy/dt = f(t, y), where t is a float and y is a tensor of shape [bs, d]
+        t_list: a list of time points at which to evaluate the ODE
+        y0: tensor of shape [batch_size, dim], initial value of y at t0
+
+    Returns:
+        Array : the solution of the ODE at the time points in t_list
     """
     n_steps = len(t_list) - 1
     if history:
@@ -70,13 +73,14 @@ def heun_method(f: Callable, t_list: Array, y0: Array, history=False) -> Array:
         return ys
 
 
-def string_2_solver(solver_str: str) -> Callable:
-    """
-    Converts a string to a diffrax solver.
-    Inputs:
-        solver_str: str, the name of the solver
-    Outputs:
-        solver: diffrax solver, the corresponding diffrax solver
+def string_to_solver(solver_str: str) -> Callable:
+    """Converts a string to a diffrax solver.
+
+    Args:
+        solver_str: the name of the solver
+
+    Returns:
+        Callable : the corresponding diffrax solver
     """
     if solver_str == "euler":
         return EulerSolver()  # euler_method
