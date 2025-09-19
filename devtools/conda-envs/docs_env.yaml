@@ -1,0 +1,16 @@
+﻿name: docs
+
+channels:
+
+  - conda-forge
+
+dependencies:
+
+  # Write here all dependencies to compile the sphinx documentation.
+  # This list is just an example
+  - python=3.10
+  - sphinx
+  - sphinx_rtd_theme
+  - nbsphinx
+  - pandoc
+  - ipython

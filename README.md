@@ -19,3 +19,6 @@ Install the package
  - `optax>=0.2.6`
  - `tqdm>=4.67.1`
  - `typing_extensions>=4.15.0`
+
+### Building docs
+[See](./docs/README.md)
