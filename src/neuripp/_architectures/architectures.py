@@ -120,3 +120,5 @@ class ResNet(nnx.Module):
         for layer in self.layers:
             x = layer(x)
         return x_copy + x
+
+

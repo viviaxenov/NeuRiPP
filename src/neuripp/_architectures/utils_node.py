@@ -4,11 +4,12 @@ import jax
 from ..core.types import TimeArray, SampleArray, VelocityArray
 
 
+# Broadcasts t ???
+# TODO: simplify via vmap/deprecate
 def eval_model(
     model: nnx.Module, t: TimeArray, x: SampleArray, time_dependent: bool = False
 ) -> VelocityArray:
-    """
-    Evaluate the velocity field model with proper time conditioning.
+    """Evaluate the velocity field model with proper time conditioning.
 
     Args:
         model: The neural network model

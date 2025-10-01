@@ -92,10 +92,9 @@ def string_to_solver(solver_str: str) -> Callable:
         )
 
 
+# TODO absract class
 class ODESolver(nnx.Module):
-    """
-    Base class for ODE solvers.
-    """
+    """Base class for ODE solvers."""
 
     def __init__(self):
 
@@ -108,15 +107,16 @@ class ODESolver(nnx.Module):
     def __call__(
         self, f: Callable, t_list: Array, y0: Array, history: bool = False
     ) -> Array:
-        """
-        Solve the ODE dy/dt = f(t, y) from t_list[0] to t_list[-1] with initial condition y0.
+        """Solve the ODE dy/dt = f(t, y) from t_list[0] to t_list[-1] with initial condition y0.
+
         Args:
             f: Callable , the function defining the ODE dy/dt = f(t, y), where t is a float and y is a tensor of shape [bs, d]
             t_list: jax array, a list of time points at which to evaluate the ODE
             y0: tensor [bs,d], initial value of y at t0
             history: bool, if True, return the solution at all time points in t_list, else return only the final value
+
         Returns:
-            y: jax array, the solution of the ODE at the time points in t_list if history is True, else the solution at t_list[-1]
+            Solution of the ODE at the time points in t_list if history is True, else the solution at t_list[-1]
         """
         solution_history = [y0]
 
@@ -134,9 +134,7 @@ class ODESolver(nnx.Module):
 
 
 class EulerSolver(ODESolver):
-    """
-    Euler method for solving ODEs.
-    """
+    """Euler method for solving ODEs."""
 
     def __init__(self):
         super().__init__()
@@ -144,15 +142,16 @@ class EulerSolver(ODESolver):
     def step(
         self, f: Callable, t_list: Array, step_index: int, solution_history: list
     ) -> Array:
-        """
-        Perform one Euler integration step.
+        """Perform one Euler integration step.
+
         Args:
             f: Callable , the function defining the ODE dy/dt = f(t, y), where t is a float and y is a tensor of shape [bs, d]
             t_list: jax array, a list of time points at which to evaluate the ODE
             step_index: int, the index of the current time step
             solution_history: list of jax arrays, the history of solutions up to the current time step
+
         Returns:
-            y_new: jax array, the solution at the next time point
+            The solution at the next time point
         """
         dt = t_list[step_index + 1] - t_list[step_index]
         t_current = t_list[step_index]
@@ -162,9 +161,7 @@ class EulerSolver(ODESolver):
 
 
 class HeunSolver(ODESolver):
-    """
-    Heun's method for solving ODEs.
-    """
+    """Heun's method for solving ODEs."""
 
     def __init__(self):
         super().__init__()
@@ -172,15 +169,16 @@ class HeunSolver(ODESolver):
     def step(
         self, f: Callable, t_list: Array, step_index: int, solution_history: list
     ) -> Array:
-        """
-        Perform one Heun integration step.
+        """Perform one Heun integration step.
+
         Args:
             f: Callable , the function defining the ODE dy/dt = f(t, y), where t is a float and y is a tensor of shape [bs, d]
             t_list: jax array, a list of time points at which to evaluate the ODE
             step_index: int, the index of the current time step
             solution_history: list of jax arrays, the history of solutions up to the current time step
+
         Returns:
-            y_new: jax array, the solution at the next time point
+            The solution at the next time point
         """
         dt = t_list[step_index + 1] - t_list[step_index]
         t_current = t_list[step_index]

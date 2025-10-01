@@ -5,15 +5,23 @@ from typing import Dict, Any, Optional
 import warnings
 from jaxtyping import PyTree, Array
 from ..core.types import SampleArray, TimeArray, VelocityArray, TrajectoryArray
-from ..architectures.node import NeuralODE
-from ..architectures.architectures import MLP, ResNet
+from .._architectures.node import NeuralODE
+from .._architectures.architectures import MLP, ResNet
 
 
 class ParametricModel(nnx.Module):
     """
     General class for parametric models in neural optimal transport.
 
-    Supports pushforward maps T_θ: R^d -> R^d where ρ_t = (T_θ(t))#λ
+
+    Supports pushforward maps 
+
+    .. math::
+
+        T_\\theta: \mathbb{R}^d \\to \mathbb{R}^d 
+        
+        \\rho_\\theta := (T_\\theta)_\\sharp \\lambda
+
     for transport between probability densities via learned maps.
     """
 
@@ -229,14 +237,14 @@ class ParametricModel(nnx.Module):
             model = nnx.merge(graphdef, params)
         else:
             model = self.model
-        if history and self.is_node_model:
-            return model(samples, history=history)
-        if history and not self.is_node_model:
-            warnings.warn("History flag is only applicable for NODE models. Ignoring.")
-            return model(samples)
+        if history 
+            if self.is_node_model:
+                return model(samples, history=history)
+            else:
+                warnings.warn("History flag is only applicable for NODE models. Ignoring.")
         return model(samples)
 
-    def sampler(self, key: jax.random.PRNGKey, num_samples: int) -> jnp.ndarray:
+    def sample_latent(self, key: jax.random.PRNGKey, num_samples: int) -> jnp.ndarray:
         """
         Sample from the reference density λ.
 
@@ -283,7 +291,7 @@ class ParametricModel(nnx.Module):
         """Check if this is a Neural ODE model."""
         return self.parametric_map == "node"
 
-    def pushforward_density(self, samples: jnp.ndarray, params: Any) -> jnp.ndarray:
+    def pushforward(self, samples: jnp.ndarray, params: Any) -> jnp.ndarray:
         """
         Compute pushforward T_θ#λ by applying the transport map.
 
@@ -363,7 +371,7 @@ class ParametricModel(nnx.Module):
             score_trajectory=score_trajectory,
         )
 
-    def pull_back(
+    def pullback(
         self, x: SampleArray, params: Optional[PyTree] = None, history: bool = False
     ) -> SampleArray:
         """

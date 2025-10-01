@@ -4,7 +4,7 @@ import jax.numpy as jnp
 from flax import nnx
 import jax
 
-from ..architectures.node import NeuralODE
+from .._architectures.node import NeuralODE
 from .linear_funcitonal_class import LinearPotential as LinearFunctional
 from .internal_functional_class import (
     InternalPotential as InternalFunctional,

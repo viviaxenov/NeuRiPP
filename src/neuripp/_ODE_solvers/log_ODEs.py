@@ -10,14 +10,15 @@ from jaxtyping import Array
 def divergence_vf(
     vf_model: nnx.Module, t: TimeArray, x: SampleArray, time_dependent: bool = False
 ) -> Array:
-    """
-    Compute the divergence of the vector field with respect to x using ODE flow
+    """Compute the divergence of the vector field with respect to x using ODE flow
+
     Args:
         vf_model: The vector field model nnx.Module
         t: Time array of shape (batch_size,)
         x: Sample array of shape (batch_size, dim)
+
     Returns:
-        div: Divergence of the vector field at (t,x), shape (batch_size,)
+        Divergence of the vector field at (t,x), shape (batch_size,)
     """
 
     def velocity_field(t, x):
@@ -40,15 +41,16 @@ def divergence_vf_hutch(
     time_dependent: bool = False,
     num_samples: int = 1000,
 ) -> Array:
-    """
-    Compute the divergence of the vector field with respect to x using Hutchinson's estimator
+    """Compute the divergence of the vector field with respect to x using Hutchinson's estimator
+
     Args:
         vf_model: The vector field model
         t: Time array of shape (batch_size,)
         x: Sample array of shape (batch_size, dim)
         num_samples: Number of random samples for Hutchinson estimator
+
     Returns:
-        div: Divergence of the vector field at (t,x), shape (batch_size,)
+        Divergence of the vector field at (t,x), shape (batch_size,)
     """
     batch_size, dim = x.shape
 
@@ -96,14 +98,15 @@ def divergence_vf_hutch(
 def jacobian_vf(
     vf_model: nnx.Module, t: TimeArray, x: SampleArray, time_dependent: bool = False
 ) -> Array:
-    """
-    Compute the Jacobian of the vector field with respect to x using ODE flow
+    """Compute the Jacobian of the vector field with respect to x using ODE flow
+
     Args:
         vf_model: The vector field model, an instance of NeuralODE
         t: Time array of shape (batch_size,)
         x: Sample array of shape (batch_size, dim)
+
     Returns:
-        jac: Jacobian of the vector field at (t,x), shape (batch_size, dim, dim)
+        Jacobian of the vector field at (t,x), shape (batch_size, dim, dim)
     """
 
     def velocity_field(t, x):

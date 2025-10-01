@@ -11,10 +11,10 @@ import jax
 import jax.scipy.stats as stats
 
 
-from ..ODE_solvers.solvers import string_to_solver
 from ..core.types import SampleArray, TimeArray, VelocityArray, TrajectoryArray
 from .utils_node import eval_model
-from ..ODE_solvers.log_ODEs import (
+from .._ODE_solvers.solvers import string_to_solver
+from .._ODE_solvers.log_ODEs import (
     divergence_vf,
     divergence_vf_hutch,
     jacobian_vf,

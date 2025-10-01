@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from flax import nnx
 import jax.scipy.stats as stats
 
-from ..architectures.node import NeuralODE
+from .._architectures.node import NeuralODE
 
 
 class InternalPotential:
