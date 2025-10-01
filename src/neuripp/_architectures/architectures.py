@@ -88,37 +88,45 @@ class ResNet(nnx.Module):
         dout: int,
         activation_fn: str,
         rngs: nnx.Rngs,
+        num_blocks: int = 1,
     ):
 
         activation_fn = str_to_act_fn(activation_fn)
 
+        blocks = []
         layers = []
 
         in_dim = din
 
         # hidden layers
-        for _ in range(num_layers):
-            layers.append(
-                nnx.Linear(
-                    in_dim,
-                    width_layers,
-                    rngs=rngs,
-                    kernel_init=xavier_uniform(),
-                    bias_init=normal(stddev=1e-3),
-                )
-            )  # ,  bias_init = normal(stddev=1e-3)
-            layers.append(activation_fn)
-            in_dim = width_layers
+        for _ in range(num_blocks):
+            layers = []
+            for _ in range(num_layers):
+                layers.append(
+                    nnx.Linear(
+                        in_dim,
+                        width_layers,
+                        rngs=rngs,
+                        kernel_init=xavier_uniform(),
+                        bias_init=normal(stddev=1e-3),
+                    )
+                )  # ,  bias_init = normal(stddev=1e-3)
+                layers.append(activation_fn)
+                in_dim = width_layers
+            blocks.append(layers)
 
         # output layer (no activation)
-        layers.append(nnx.Linear(in_dim, dout, rngs=rngs))
+        blocks.append([nnx.Linear(in_dim, dout, rngs=rngs)])
 
-        self.layers = layers
+        self.blocks = blocks
 
     def __call__(self, x: Array) -> Array:
-        x_copy = x.copy()
-        for layer in self.layers:
-            x = layer(x)
-        return x_copy + x
+        for layers in self.blocks:
+            x_skip = x.copy()
+            for layer in layers:
+                x = layer(x)
+            x = x_skip + x
+
+        return x
 
 
