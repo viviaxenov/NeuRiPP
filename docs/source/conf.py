@@ -52,7 +52,7 @@ autodoc_mock_imports = [
     "optax",
     "matplotlib",
     "tqdm",
-    "neuripp.architectures.MMNN" # Importing this causese some weird errors; TODO fix (?)
+    "neuripp.architectures.MMNN" # Importing this causes some weird errors; TODO fix (?)
 ]
 autodoc_typehints = "description"
 
