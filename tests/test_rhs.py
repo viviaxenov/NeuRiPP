@@ -32,7 +32,7 @@ class LinearRHS(nnx.Module):
     def mat(self):
         return self.lin.kernel.value.T
 
-    def __call__(self, t, x):
+    def __call__(self, t, x, *args):
         if self.counter is not None:
             jax.debug.callback(lambda: self.counter.increment())
 
@@ -76,6 +76,6 @@ class MLP(nnx.Module):
 
         self.mlp = nnx.Sequential(*list_of_modules)
 
-    def __call__(self, t, x):
+    def __call__(self, t, x, *args):
         y = jnp.concat((x, jnp.atleast_1d(t)), axis=-1)
         return self.mlp(y)

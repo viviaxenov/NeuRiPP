@@ -48,7 +48,11 @@ class ParametricPushforward(nnx.Module):
             Maybe need to provide a wrapper.
         """
         self._rngs = nnx.Rngs(seed)
-        assert hasattr(rhs, "dim"), "RHS must have a `dim` property for the dimension of `x`"
+        assert hasattr(
+            rhs, "dim"
+        ), "RHS must have a `dim` property for the dimension of `x`"
+
+        # TODO: if rhs doesn't accept *args, do a wrapper?
         self.rhs = rhs
 
         self._N_mc = N_monte_carlo
@@ -56,29 +60,37 @@ class ParametricPushforward(nnx.Module):
         self.ode_method = ode_method
         self.ode_kwargs = ode_kwargs if ode_kwargs is not None else dict()
         self.div_method = divergence_method
-        if self.div_method == 'hutchinson':
-            raise NotImplementedError("Hutchinson trace estimator still WIP")
 
     def __call__(self, z: jnp.ndarray):
         return solve_ode_batched(
-            self.rhs, z, self.ode_nstep_max, self.ode_method, **self.ode_kwargs
+            self.rhs,
+            z,
+            N_steps_max=self.ode_nstep_max,
+            method=self.ode_method,
+            **self.ode_kwargs
         )
 
-    def rhs_reverse_time(self, t, x):
-        return -self.rhs(1.0 - t, x)
+    def rhs_reverse_time(self, t, x, *args):
+        return -self.rhs(1.0 - t, x, *args)
 
-    def rhs_div(self, t, x):
+    def rhs_div(self, t, x, *args):
         dxdt, jvp_fn = jax.linearize(lambda _x: self.rhs(t, _x), x[..., :-1])
         vects = jnp.eye(dxdt.shape[-1])
         jac_tr = jnp.sum(jax.vmap(lambda eps: eps.T @ jvp_fn(eps))(vects))
 
         return jnp.concat((dxdt, -jnp.atleast_1d(jac_tr)), axis=-1)
 
-    def rhs_div_hutchinson(self, t, x):
-        raise NotImplemented("WIP")
-        dxdt, jvp_eps = jax.jvp(lambda _x: self.rhs(t, _x), x, eps)
+    def rhs_div_hutchinson(self, t, x, eps):
+        dxdt, jvp_eps = jax.jvp(lambda _x: self.rhs(t, _x), (x[..., :-1],), (eps,))
         jac_tr = eps.T @ jvp_eps
-        return jnp.stack((dxdt, -jac_tr), axis=-1)
+        # print(
+        #     dxdt.shape,
+        #     eps.shape,
+        #     jvp_eps.shape,
+        #     jac_tr.shape,
+        #     flush=True
+        # )
+        return jnp.concat((dxdt, -jnp.atleast_1d(jac_tr)), axis=-1)
 
     def pushforward(*args, **kwargs):
         return self(*args, **kwargs)
@@ -88,8 +100,8 @@ class ParametricPushforward(nnx.Module):
         return solve_ode_batched(
             self.rhs_reverse_time,
             x,
-            self.ode_nstep_max,
-            self.ode_method,
+            N_steps_max=self.ode_nstep_max,
+            method=self.ode_method,
             **self.ode_kwargs
         )
 
@@ -104,14 +116,25 @@ class ParametricPushforward(nnx.Module):
         """Returns a sample `x` of shape `(N_samples, dim)` from the current distribution :math:`\\rho_\\theta`"""
         x0 = self._sample_latent(N_samples)
         rhs_of_system = self.rhs
+        aux_args = None
         if with_log_density:
             # Augment system and initial condition
-            rhs_of_system = self.rhs_div
             logp_latent = self._latent_log_density(x0)
+            if self.div_method == "exact":
+                rhs_of_system = self.rhs_div
+            else:
+                eps = self._rngs.rademacher(x0.shape, dtype=x0.dtype)
+                rhs_of_system = self.rhs_div_hutchinson
+                aux_args = eps
             x0 = jnp.concat((x0, logp_latent.reshape(-1, 1)), axis=-1)
 
         res = solve_ode_batched(
-            rhs_of_system, x0, self.ode_nstep_max, self.ode_method, **self.ode_kwargs
+            rhs_of_system,
+            x0,
+            aux_args,
+            N_steps_max=self.ode_nstep_max,
+            method=self.ode_method,
+            **self.ode_kwargs
         )
 
         if with_log_density:
@@ -135,7 +158,6 @@ class ParametricPushforward(nnx.Module):
 
     def riemann_tensor_matvec(self, tangent, param=None):
         pass
-
 
     def norm(self, tangent, N_monte_carlo=None, param=None):
         norm_sq = self.scalar_product(tangent, N_monte_carlo, param)

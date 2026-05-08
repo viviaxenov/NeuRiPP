@@ -1,5 +1,5 @@
 import abc
-from typing import Callable, Tuple, Literal
+from typing import Callable, Tuple, Literal, Union
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -82,6 +82,7 @@ class RK45Step(ODEStep):
         t: jnp.float32,
         x: jnp.ndarray,
         h_cur: jnp.float32,
+        *args,
     ):
         # TODO: put in main loop, check so that is in the right place
         h_current = jnp.minimum(h_cur, 1.0 - t)  # so we don't overshoot the interval
@@ -98,7 +99,7 @@ class RK45Step(ODEStep):
 
         err_treshold = self._rtol * jnp.linalg.norm(x.ravel()) + self._atol
 
-        k_init = k_init.at[0].set(self._rhs(t, x))
+        k_init = k_init.at[0].set(self._rhs(t, x, *args))
 
         def _cond_trunc_err(carry):
             _, _, _, h_new, trunc_err_normalized = carry
@@ -115,7 +116,7 @@ class RK45Step(ODEStep):
                 # Combine s previous k's with coefficients from A[s, :s]
                 # Tensordot needed to handle arbitrary shape of x
                 dx = jnp.tensordot(k[:s], a[:s], axes=((0,), (0,))) * h_cur
-                k_cur = self._rhs(t + c * h_cur, x + dx)
+                k_cur = self._rhs(t + c * h_cur, x + dx, *args)
                 # jax.debug.print("\t\t\tEvaluating rhs")
                 k = k.at[s].set(k_cur)
                 # jax.debug.print("{0}", k)
@@ -125,7 +126,7 @@ class RK45Step(ODEStep):
             # instead of computing the error as difference between x_4 and x_5
             # use formula |\Sum((c^4_i - c^5_i)k_i)|
             # with E_i := (c^4_i - c^5_i)
-            k = k.at[-1].set(self._rhs(t + h_cur, x_new))
+            k = k.at[-1].set(self._rhs(t + h_cur, x_new, *args))
             trunc_err = h_cur * jnp.linalg.norm(
                 jnp.tensordot(k, E, axes=((0,), (0,))).ravel()
             )
@@ -185,8 +186,8 @@ class EulerStep(ODEStep):
     ):
         self._rhs = rhs
 
-    def __call__(self, t: jnp.float32, x: jnp.ndarray, h: float, **kwargs):
-        return t + h, x + h * self._rhs(t, x), h
+    def __call__(self, t: jnp.float32, x: jnp.ndarray, h: float, *args):
+        return t + h, x + h * self._rhs(t, x, *args), h
 
     def tree_flatten(self):
         children = None
@@ -212,14 +213,14 @@ class HeunStep(ODEStep):
     ):
         self._rhs = rhs
 
-    def __call__(self, t: jnp.float32, x: jnp.ndarray, h: jnp.float32):
+    def __call__(self, t: jnp.float32, x: jnp.ndarray, h: jnp.float32, *args):
         """Perform one Heun integration step."""
         # Predictor step (Euler)
-        xdot_cur = self._rhs(t, x)
+        xdot_cur = self._rhs(t, x, *args)
         x_predictor = x + h * xdot_cur
 
         # Corrector step
-        x_new = x + (h / 2) * (xdot_cur + self._rhs(t + h, x_predictor))
+        x_new = x + (h / 2) * (xdot_cur + self._rhs(t + h, x_predictor, *args))
 
         return t + h, x_new, h
 
@@ -242,6 +243,7 @@ _method_name_to_class = dict(rk45=RK45Step, euler=EulerStep, heun=HeunStep)
 def solve_ode(
     rhs: Callable,
     x0,
+    *aux_args,
     N_steps_max: int = 100,
     method: Literal["rk45", "euler", "heun"] = "rk45",
     **method_kw,
@@ -267,6 +269,7 @@ def solve_ode(
             lambda _c: _c,  # if for the same t_cur (*) also holds for i + 1, do nothing
             lambda _c: step(
                 *_c,
+                *aux_args,
             ),  # else, do step; since the minimal stepsize is 1 / N, (*) is guaranteed to hold for i + 1
             carry,
         )
@@ -279,6 +282,7 @@ def solve_ode(
 def solve_ode_batched(
     rhs: Callable,
     x0_batched,
+    *aux_args_batched,
     N_steps_max: int = 100,
     method: Literal["rk45", "euler", "heun"] = "rk45",
     **method_kw,
@@ -301,7 +305,7 @@ def solve_ode_batched(
     batch_size = x0_batched.shape[0]
     h_min = 1.0 / N_steps_max
     step = _method_name_to_class.get(method)(rhs, **(method_kw | dict(h_min=h_min)))
-    step_batched = jax.vmap(lambda _t, _x, _h: step(_t, _x, _h))
+    step_batched = jax.vmap(step)
     h0 = step.suggest_h0(h_min)
 
     # Initialize batched state
@@ -310,7 +314,7 @@ def solve_ode_batched(
     h_batch = jnp.full((batch_size,), h0)
 
     def _body_fn(i, carry):
-        t_batch, x_batch, h_batch = carry
+        t_batch, x_batch, h_batch = carry[:3]
 
         # Target time for this iteration
         target_time = (i + 1) * h_min
@@ -319,20 +323,22 @@ def solve_ode_batched(
         # Only step if we haven't reached the target time
         needs_step = t_batch < target_time
 
-        t_new, x_new, h_new = jax.lax.cond(
+        carry_new = jax.lax.cond(
             jnp.any(needs_step),
-            lambda _c: step_batched(*_c),
+            lambda _c: step_batched(*_c) + aux_args_batched,
             lambda _c: _c,
             carry,
         )
 
         # Ensure we don't overshoot t=1.0
+        t_new = carry_new[0]
         t_new = jnp.minimum(t_new, 1.0)
 
-        return t_new, x_new, h_new
+        return t_new, *carry_new[1:]
 
-    t_final, x_final, _ = nnx.fori_loop(
-        0, N_steps_max, _body_fn, (t_batch, x_batch, h_batch)
+    carry = nnx.fori_loop(
+        0, N_steps_max, _body_fn, (t_batch, x_batch, h_batch, *aux_args_batched)
     )
+    x_final = carry[1]
 
     return x_final
