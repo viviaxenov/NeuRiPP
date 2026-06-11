@@ -124,9 +124,7 @@ class RK45Step(ODEStep):
                 # Tensordot needed to handle arbitrary shape of x
                 dx = jnp.tensordot(k[:s], a[:s], axes=((0,), (0,))) * h_cur
                 k_cur = self._rhs(t + c * h_cur, x + dx, *args)
-                # jax.debug.print("\t\t\tEvaluating rhs")
                 k = k.at[s].set(k_cur)
-                # jax.debug.print("{0}", k)
 
             x_new = x + h_cur * jnp.tensordot(k[:-1], B, axes=((0,), (0,)))
             # Compute x_estimate by 4-th order formula
@@ -137,6 +135,7 @@ class RK45Step(ODEStep):
             trunc_err = h_cur * jnp.linalg.norm(
                 jnp.tensordot(k, E, axes=((0,), (0,))).ravel()
             )
+            trunc_err = jax.lax.stop_gradient(trunc_err)
 
             trunc_err_normalized = trunc_err / err_treshold
 
@@ -144,19 +143,11 @@ class RK45Step(ODEStep):
             trunc_err_normalized = jnp.maximum(trunc_err_normalized, 1e-25)
             h_new = 0.9 * h_cur * (trunc_err_normalized) ** (-1 / 5)
 
-            # jax.debug.print(
-            #         "\terr_thr = {e:.2e} trunc_err = {te:.2e} trunc_err_normalized = {ten:.2e} h_new = {h:.2e}",
-            #     e=err_treshold,
-            #     te=trunc_err,
-            #     ten=trunc_err_normalized,
-            #     h=h_new
-            # )
             return t + h_cur, x_new, k, h_new, trunc_err_normalized
 
         def _body_fn(carry, i=None):
             cond_value = _cond_trunc_err(carry)
             h_new, trunc_err_normalized = carry[-2:]
-            # jax.debug.print("t = {3} i = {0}, te = {1} h_new = {2}", i, trunc_err_normalized, h_new, t)
             return nnx.cond(cond_value, _iterate_for_step, lambda _c: _c, carry)
 
         t_new, x_new, k, h_new, trunc_err_normalized = nnx.fori_loop(
@@ -273,12 +264,6 @@ def solve_ode(
         # such that t_cur(i) >= i / N for every i (*)
         # at i = 0 it holds that t_cur(0) = 0. = 0 / N;
         # assume for some i > 0 (*) holds
-        # j = jax.lax.axis_index("batch")
-        # jax.debug.print(
-        #     "i: {1} t_cur >= (i + 1) * h_min = {0}",
-        #     t_cur >= (i + 1) * h_min,
-        #     j
-        # )
         return nnx.cond(
             t_cur >= (i + 1) * h_min,
             lambda _c: _c,  # if for the same t_cur (*) also holds for i + 1, do nothing
@@ -329,7 +314,6 @@ def solve_ode_batched(
     h_batch = jnp.full((batch_size,), h0)
 
     def _body_fn(i, carry):
-        # jax.debug.print("\ti = {i}, {0}", carry, i=i)
         t_batch, x_batch, h_batch = carry[:3]
 
         # Target time for this iteration
@@ -339,15 +323,6 @@ def solve_ode_batched(
         # Only step if we haven't reached the target time
         needs_step = t_batch <= target_time
 
-        jax.debug.print(
-            "\ti = {i}\n\tt_targ = {t_targ} t_batch in ({t_min}, {t_max}) h_batch in ({h_min}, {h_max})",
-            i=i,
-            t_targ=target_time,
-            t_min=t_batch.min(),
-            t_max=t_batch.max(),
-            h_min=h_batch.min(),
-            h_max=h_batch.max(),
-        )
         carry_new = jax.lax.cond(
             jnp.any(needs_step),
             lambda _c: step_batched(*_c) + aux_args_batched,
