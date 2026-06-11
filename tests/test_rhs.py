@@ -57,7 +57,7 @@ class MLP(nnx.Module):
         if dim_hidden is None:
             dim_hidden = dim
 
-        self.t_proj = nnx.Sequential(nnx.Linear(1, dim, rngs=self.rngs), nnx.selu)
+        # self.t_proj = nnx.Sequential(nnx.Linear(1, dim, rngs=self.rngs), nnx.selu)
 
         list_of_modules = (
             [
@@ -68,7 +68,7 @@ class MLP(nnx.Module):
                 nnx.Linear(dim_hidden, dim_hidden, rngs=self.rngs),
                 activation,
             ]
-            * n_hidden
+            * n_hidden 
             + [
                 nnx.Linear(dim_hidden, dim, rngs=self.rngs),
             ]

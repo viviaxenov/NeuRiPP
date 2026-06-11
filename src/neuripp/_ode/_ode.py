@@ -61,6 +61,7 @@ class RK45Step(ODEStep):
     n_stages = A.shape[0]
     butcher_tableau = (A, B, C, E)
 
+
     def __init__(
         self,
         rhs: Callable,
@@ -68,7 +69,7 @@ class RK45Step(ODEStep):
         atol: jnp.float32 = 1e-16,
         h_min: jnp.float32 = 1e-10,
         h_max: jnp.float32 = 0.2,
-        N_iter_to_accept: int = 2,
+        N_iter_to_accept: int = 3,
     ):
         self._rhs = rhs
         self._rtol = rtol
@@ -76,6 +77,15 @@ class RK45Step(ODEStep):
         self._h_min = h_min
         self._h_max = h_max
         self._N_iter_to_accept = N_iter_to_accept
+
+    def check_step(self, h: jnp.float32, t: jnp.float32):
+        h_verif = jnp.clip(h, self._h_min, self._h_max)
+        h_verif = jnp.minimum(h_verif, 1.0 - t)  # so we don't overshoot the interval
+        h_verif = jnp.where(h <= 0., 0., h_verif) # h == 0. can be come from the batched solve when this element of the batch has already finished
+
+        return h_verif
+
+        
 
     def __call__(
         self,
@@ -85,10 +95,6 @@ class RK45Step(ODEStep):
         *args,
     ):
         # TODO: put in main loop, check so that is in the right place
-        h_current = jnp.minimum(h_cur, 1.0 - t)  # so we don't overshoot the interval
-        h_current = jnp.minimum(h_current, self._h_max)
-        h_current = jnp.maximum(h_current, self._h_min)
-        # jax.debug.print("Performing step")
         k_init = jnp.stack(
             [
                 jnp.zeros_like(x),
@@ -97,20 +103,21 @@ class RK45Step(ODEStep):
             axis=0,
         )
 
+        h_current = self.check_step(h_cur, t)
         err_treshold = self._rtol * jnp.linalg.norm(x.ravel()) + self._atol
 
         k_init = k_init.at[0].set(self._rhs(t, x, *args))
 
         def _cond_trunc_err(carry):
+            """If returns True, we continue iterating; exit when have desired tolerance or step too small """
             _, _, _, h_new, trunc_err_normalized = carry
             return (trunc_err_normalized >= 1.0) & (h_new >= self._h_min)
 
         def _iterate_for_step(carry):
-            # jax.debug.print("\tIterating for step")
             A, B, C, E = self.butcher_tableau
             _, _, k, h_cur, trunc_err_normalized = carry
-            h_cur = jnp.maximum(h_cur, self._h_min)
-            h_cur = jnp.minimum(h_cur, 1.0 - t)
+
+            h_cur = self.check_step(h_cur, t)
 
             for s, (a, c) in enumerate(zip(A[1:], C[1:]), start=1):
                 # Combine s previous k's with coefficients from A[s, :s]
@@ -134,8 +141,16 @@ class RK45Step(ODEStep):
             trunc_err_normalized = trunc_err / err_treshold
 
             # TODO replace 5 with approximation order (make arbitrary Runge-Kutta?)
+            trunc_err_normalized = jnp.maximum(trunc_err_normalized, 1e-25)
             h_new = 0.9 * h_cur * (trunc_err_normalized) ** (-1 / 5)
 
+            # jax.debug.print(
+            #         "\terr_thr = {e:.2e} trunc_err = {te:.2e} trunc_err_normalized = {ten:.2e} h_new = {h:.2e}",
+            #     e=err_treshold,
+            #     te=trunc_err,
+            #     ten=trunc_err_normalized,
+            #     h=h_new
+            # )
             return t + h_cur, x_new, k, h_new, trunc_err_normalized
 
         def _body_fn(carry, i=None):
@@ -314,6 +329,7 @@ def solve_ode_batched(
     h_batch = jnp.full((batch_size,), h0)
 
     def _body_fn(i, carry):
+        # jax.debug.print("\ti = {i}, {0}", carry, i=i)
         t_batch, x_batch, h_batch = carry[:3]
 
         # Target time for this iteration
@@ -321,8 +337,17 @@ def solve_ode_batched(
         target_time = jnp.minimum(target_time, 1.0)
 
         # Only step if we haven't reached the target time
-        needs_step = t_batch < target_time
+        needs_step = t_batch <= target_time
 
+        jax.debug.print(
+            "\ti = {i}\n\tt_targ = {t_targ} t_batch in ({t_min}, {t_max}) h_batch in ({h_min}, {h_max})",
+            i=i,
+            t_targ=target_time,
+            t_min=t_batch.min(),
+            t_max=t_batch.max(),
+            h_min=h_batch.min(),
+            h_max=h_batch.max(),
+        )
         carry_new = jax.lax.cond(
             jnp.any(needs_step),
             lambda _c: step_batched(*_c) + aux_args_batched,
