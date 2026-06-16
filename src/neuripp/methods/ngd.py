@@ -29,23 +29,33 @@ def get_ngd(
     vg_fn = nnx.value_and_grad(loss)
 
     def _ngd_init(_model_ngd, *args, **kwargs):
-        return (_model_ngd,)
+        _, par, _ = nnx.split(_model_ngd, nnx.Param, ...)
+        previous_grad = jax.tree.map(jnp.zeros_like, par)
+        return (_model_ngd, previous_grad)
 
     def _ngd_step(carry, *args):
         _model_ngd = carry[0]
+        _previous_grad = carry[1]
         # compute loss and Euclidean grad
         f, grad = vg_fn(_model_ngd)
-        matvec_cur = _model_ngd.get_matvec_fn()
 
         # compute natural grad
+        matvec_cur = _model_ngd.get_matvec_fn()
+
         def oper_cg(tang):
             Gtang = matvec_cur(tang)
             return jax.tree.map(
-                lambda _g, _x: _g + linear_solver_regularization * _x, Gtang, tang
+                lambda _g, _x: _g + linear_solver_regularization * _x,
+                Gtang,
+                tang,
             )
 
         natural_grad = jsp.sparse.linalg.cg(
-            oper_cg, grad, tol=linear_solver_tolerance, maxiter=linear_solver_maxiter
+            oper_cg,
+            grad,
+            _previous_grad,
+            tol=linear_solver_tolerance,
+            maxiter=linear_solver_maxiter,
         )[0]
 
         natural_grad_norm_sq = _model_ngd.scalar_product(natural_grad, natural_grad)
@@ -57,7 +67,7 @@ def get_ngd(
         params_new = jax.tree.map(lambda x, y: x - y * step_size, params, natural_grad)
         _model_ngd = nnx.merge(gd, params_new, rest)
 
-        return (_model_ngd,), (
+        return (_model_ngd, natural_grad), (
             f,
             grad_norm_sq,
             natural_grad_norm_sq,

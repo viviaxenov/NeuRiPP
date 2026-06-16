@@ -11,9 +11,9 @@ import argparse
 
 import jax
 
-jax.config.update("jax_debug_infs", True)
-jax.config.update("jax_debug_nans", True)
-jax.config.update("jax_log_compiles", True)
+# jax.config.update("jax_debug_infs", True)
+# jax.config.update("jax_debug_nans", True)
+# jax.config.update("jax_log_compiles", True)
 import jax.numpy as jnp
 import jax.scipy as jsp
 
@@ -38,12 +38,12 @@ import tqdm
 
 
 dim = 50
-n_iter = 6_000
+n_iter = 10_000
 batch_size = 2048
 N_mc = 2048
-lr = 1e-3
-lr_ngd = 0.0003
-Lam_reg = 1e-3
+lr = 1e-5
+lr_ngd = 0.0001
+Lam_reg = 1e-1
 
 rhs_net = MLP(dim, dim_hidden=128, n_hidden=2, activation=nnx.tanh)
 
@@ -66,19 +66,18 @@ vg_fn = nnx.value_and_grad(loss, has_aux=True)
 print("Running natural gradient descent", flush=True)
 rhs_net = MLP(dim, dim_hidden=126, n_hidden=2, activation=nnx.tanh)
 gd, par_init, rest = nnx.split(rhs_net, nnx.Param, ...)
-par_init = jax.tree.map(jnp.zeros_like, par_init)
+par_init = jax.tree.map(lambda _x: jnp.full_like(_x, 1e-9), par_init)
 nnx.update(rhs_net, par_init)
 model_ngd = ParametricPushforward(*model_args, **model_kwargs)
 
-
 init_ngd, ngd_step = get_ngd(loss, lr_ngd, Lam_reg, 1e-4, 100)
+carry = init_ngd(model_ngd)
 
 ngd_step = nnx.jit(ngd_step)
 
-t = perf_counter()
-carry = init_ngd(model_ngd)
-_, (fs, grads, natural_grads) = jax.lax.scan(ngd_step, carry, length=10)
-dt = perf_counter() - t
+# t = perf_counter()
+# _, (fs, grads, natural_grads) = jax.lax.scan(ngd_step, carry, length=10)
+# dt = perf_counter() - t
 
 fs = []
 natural_grads = []
@@ -87,13 +86,12 @@ grads = []
 metrics = (fs, grads, natural_grads)
 
 for _ in tqdm.tqdm(range(n_iter)):
-    (model_ngd,),  vals = ngd_step((model_ngd,))
+    carry,  vals = ngd_step(carry)
     [arr.append(val) for arr, val in zip(metrics, vals)]
 
-x = model_ngd.sample(3000)
+model_ngd = carry[0]
 
-print(x.mean(axis=0))
-print(jnp.cov(x, rowvar=False))
+x = model_ngd.sample(3000)
 
 fig, axs = plt.subplots(1, 2)
 ax = axs[0]
@@ -109,15 +107,15 @@ fig.legend()
 fig.savefig("test_pm.pdf")
 
 
-rhs_net = MLP(dim, dim_hidden=32, n_hidden=2, activation=nnx.tanh)
+rhs_net = MLP(dim, dim_hidden=128, n_hidden=2, activation=nnx.tanh)
 gd, par_init, rest = nnx.split(rhs_net, nnx.Param, ...)
 par_init = jax.tree.map(jnp.zeros_like, par_init)
 nnx.update(rhs_net, par_init)
 model = ParametricPushforward(*model_args, **model_kwargs)
 
-vg_fn = nnx.jit(nnx.value_and_grad(loss, has_aux=True))
+vg_fn = nnx.jit(nnx.value_and_grad(loss, ))
 t = perf_counter()
-(f, (x, logpdf)), grad = vg_fn(model)
+f, grad = vg_fn(model)
 dt = perf_counter() - t
 print(f"Loss first compute {dt=:.2e}")
 
@@ -128,8 +126,8 @@ grad_norms_sq = []
 
 print("Running Euclidean gradient descent", flush=True)
 t = perf_counter()
-for k in tqdm.tqdm(range(n_iter)):
-    (f, (x, logpdf)), grad = vg_fn(model)
+for k in tqdm.tqdm(range(n_iter*10)):
+    f, grad = vg_fn(model)
 
     gd, params, rest = nnx.split(model, nnx.Param, ...)
     params_new = jax.tree.map(lambda x, y: x - y * lr, params, grad)
@@ -139,7 +137,6 @@ for k in tqdm.tqdm(range(n_iter)):
     grad_norm_sq = tree_dot_product(grad, grad)
     grad_norms_sq.append(grad_norm_sq)
 
-fs = jnp.array(fs)
 dt = perf_counter() - t
 x = model.sample(3000)
 print(f"SGD iteration [for loop, only compile loss]\n\t{dt =:.3e} {dt/n_iter =:.3e} ")
@@ -161,7 +158,7 @@ fig.savefig("test_pm_euclidean.pdf")
 
 
 def gd_step(_model, *args):
-    (f, (x, logpdf)), grad = vg_fn(_model)
+    f, grad = vg_fn(_model)
     gd, params, rest = nnx.split(_model, nnx.Param, ...)
     params_new = jax.tree.map(lambda x, y: x - y * lr, params, grad)
     nnx.update(_model, params_new)
