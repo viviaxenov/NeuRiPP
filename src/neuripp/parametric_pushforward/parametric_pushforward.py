@@ -24,6 +24,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from neuripp._ode._ode import solve_ode_batched
+from neuripp.utility.utility import *
 
 from typing import Literal, Callable
 
@@ -83,13 +84,6 @@ class ParametricPushforward(nnx.Module):
     def rhs_div_hutchinson(self, t, x, eps):
         dxdt, jvp_eps = jax.jvp(lambda _x: self.rhs(t, _x), (x[..., :-1],), (eps,))
         jac_tr = eps.T @ jvp_eps
-        # print(
-        #     dxdt.shape,
-        #     eps.shape,
-        #     jvp_eps.shape,
-        #     jac_tr.shape,
-        #     flush=True
-        # )
         return jnp.concat((dxdt, -jnp.atleast_1d(jac_tr)), axis=-1)
 
     def pushforward(*args, **kwargs):
@@ -143,10 +137,7 @@ class ParametricPushforward(nnx.Module):
 
         return res
 
-    # TODO: type for parameters and tangent?
-    # m.b. use PyTree as parameters and always merge?
-    # need to understand when untrainable params are updated e.g. batch norm
-    def scalar_product(self, tangent1, tangent2, N_monte_carlo=None, param=None):
+    def scalar_product(self, tangent1, tangent2,):
         """Computes the scalar product of tangent vectors in the pullback Wasserstein metric
 
         .. note::
@@ -154,10 +145,41 @@ class ParametricPushforward(nnx.Module):
             Tangents should be trainable parameters, e.g. output of ``nnx.grad``
 
         """
-        pass
+        z = self._sample_latent(self._N_mc)
+        gd, params, rest = nnx.split(self, nnx.Param, ...)
 
-    def riemann_tensor_matvec(self, tangent, param=None):
-        pass
+        def _T(_par):
+            _model = nnx.merge(gd, _par, rest)
+            return _model(z)
+
+        _, dT_dtheta = jax.linearize(_T, params)
+
+        dT_dtang1 = dT_dtheta(tangent1)
+        dT_dtang2 = dT_dtheta(tangent2)
+
+        return tree_dot_product(dT_dtang1, dT_dtang2) / z.shape[0]
+        
+
+
+    def get_matvec_fn(
+        self,
+    ):
+        """For fixed set of parameters, generates latent samples and gives a function that computes :maht:`G(\\theta)\\mathrm{d}\\theta` """
+        z = self._sample_latent(self._N_mc)
+        gd, params, rest = nnx.split(self, nnx.Param, ...)
+
+        def _T(_par):
+            _model = nnx.merge(gd, _par, rest)
+            return _model(z) / jnp.sqrt(z.shape[0])
+
+        _, dT_dtheta = jax.linearize(_T, params)
+        dT_transpose_dtheta = jax.linear_transpose(dT_dtheta, params)
+
+        def _matvec_fn(tang: dict):
+            (matvec,) = dT_transpose_dtheta(dT_dtheta(tang))
+            return matvec
+
+        return _matvec_fn
 
     def norm(self, tangent, N_monte_carlo=None, param=None):
         norm_sq = self.scalar_product(tangent, N_monte_carlo, param)

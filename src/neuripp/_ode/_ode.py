@@ -85,8 +85,6 @@ class RK45Step(ODEStep):
 
         return h_verif
 
-        
-
     def __call__(
         self,
         t: jnp.float32,
@@ -135,7 +133,7 @@ class RK45Step(ODEStep):
             trunc_err = h_cur * jnp.linalg.norm(
                 jnp.tensordot(k, E, axes=((0,), (0,))).ravel()
             )
-            trunc_err = jax.lax.stop_gradient(trunc_err)
+            # trunc_err = jax.lax.stop_gradient(trunc_err)
 
             trunc_err_normalized = trunc_err / err_treshold
 
@@ -329,12 +327,13 @@ def solve_ode_batched(
             lambda _c: _c,
             carry,
         )
-
+        t_new, x_new, h_new = carry_new[0], carry_new[1], carry_new[2]
+    
+        h_new = jax.lax.stop_gradient(h_new) 
         # Ensure we don't overshoot t=1.0
-        t_new = carry_new[0]
         t_new = jnp.minimum(t_new, 1.0)
 
-        return t_new, *carry_new[1:]
+        return (t_new, x_new, h_new, *carry_new[3:])
 
     carry = nnx.fori_loop(
         0, N_steps_max, _body_fn, (t_batch, x_batch, h_batch, *aux_args_batched)
