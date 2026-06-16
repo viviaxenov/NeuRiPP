@@ -68,7 +68,7 @@ class MLP(nnx.Module):
                 nnx.Linear(dim_hidden, dim_hidden, rngs=self.rngs),
                 activation,
             ]
-            * n_hidden 
+            * (n_hidden - 1)
             + [
                 nnx.Linear(dim_hidden, dim, rngs=self.rngs),
             ]
