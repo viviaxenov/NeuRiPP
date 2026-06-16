@@ -20,6 +20,7 @@ where :math:`T_\\theta` is the mapping, given by the set of parameters :math:`\\
 
 import jax
 import jax.numpy as jnp
+from jaxtyping import PyTree
 
 from flax import nnx
 
@@ -137,7 +138,11 @@ class ParametricPushforward(nnx.Module):
 
         return res
 
-    def scalar_product(self, tangent1, tangent2,):
+    def scalar_product(
+        self,
+        tangent1: PyTree,
+        tangent2: PyTree,
+    ):
         """Computes the scalar product of tangent vectors in the pullback Wasserstein metric
 
         .. note::
@@ -158,13 +163,11 @@ class ParametricPushforward(nnx.Module):
         dT_dtang2 = dT_dtheta(tangent2)
 
         return tree_dot_product(dT_dtang1, dT_dtang2) / z.shape[0]
-        
-
 
     def get_matvec_fn(
         self,
     ):
-        """For fixed set of parameters, generates latent samples and gives a function that computes :maht:`G(\\theta)\\mathrm{d}\\theta` """
+        """For fixed set of parameters, generates latent samples and gives a function that computes :maht:`G(\\theta)\\mathrm{d}\\theta`"""
         z = self._sample_latent(self._N_mc)
         gd, params, rest = nnx.split(self, nnx.Param, ...)
 
@@ -181,11 +184,14 @@ class ParametricPushforward(nnx.Module):
 
         return _matvec_fn
 
-    def norm(self, tangent, N_monte_carlo=None, param=None):
+    def norm(self, tangent: PyTree):
         norm_sq = self.scalar_product(tangent, N_monte_carlo, param)
         return jnp.sqrt(jnp.maximum(norm_sq, ZERO_TOL))
 
-    def riemannian_exp(self, tangent, param=None):
+    def riemannian_exp(
+        self,
+        tangent: PyTree,
+    ):
         if param is None:
             param = nnx.split(
                 self,
@@ -194,5 +200,5 @@ class ParametricPushforward(nnx.Module):
         new_param = jax.tree.map(lambda _x, _v: _x + _v, param, tangent)
         nnx.update(self, new_param)
 
-    def vector_transport(self, tangent, param_new, param_cur=None):
+    def vector_transport(self, tangent: PyTree, param_new: PyTree):
         return tangent
