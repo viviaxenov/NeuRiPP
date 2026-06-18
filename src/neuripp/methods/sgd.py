@@ -14,31 +14,28 @@ def get_sgd(
     step_size: float,
 ):
     """
-    Gives `jax.lax.scan`-compatible function for the Picard/NGD method
+    Gives `jax.lax.scan`-compatible function for the SGD method
     """
-    vg_fn = nnx.value_and_grad(loss)
+    vg_fn = nnx.value_and_grad(loss, argnums=0)
 
-    def _sgd_init(*args, **kwargs):
-        return args
+    def _sgd_init(model, *args, **kwargs):
+        return (model,)
 
     def _sgd_step(carry, *args):
-        _model_sgd = carry[0]
+        _model = carry[0]
         # compute loss and Euclidean grad
-        f, grad = vg_fn(_model_ngd)
+        f, grad = vg_fn(_model, *args)
 
         grad_norm_sq = tree_dot_product(grad, grad)
 
-        gd, params, rest = nnx.split(_model_ngd, nnx.Param, ...)
+        gd, params, rest = nnx.split(_model, nnx.Param, ...)
         # update params
         params_new = jax.tree.map(lambda x, y: x - y * step_size, params, grad)
-        _model_ngd = nnx.merge(gd, params_new, rest)
+        _model = nnx.merge(gd, params_new, rest)
 
-        return _model_ngd, (
+        return (_model,), (
             f,
             grad_norm_sq,
         )
 
     return _sgd_init, _sgd_step
-
-
-

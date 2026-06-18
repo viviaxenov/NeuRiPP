@@ -11,6 +11,7 @@ from neuripp.utility.utility import *
 
 def get_ngd(
     loss: Callable,
+    *loss_args,
     step_size: float,
     linear_solver_regularization: float,
     linear_solver_tolerance: float,
@@ -26,7 +27,7 @@ def get_ngd(
             f"Linear solvers except conjugate gradient not supported, but got {linear_solver_method=}"
         )
 
-    vg_fn = nnx.value_and_grad(loss)
+    vg_fn = nnx.value_and_grad(loss, argnums=0)
 
     def _ngd_init(_model_ngd, *args, **kwargs):
         _, par, _ = nnx.split(_model_ngd, nnx.Param, ...)
@@ -37,7 +38,7 @@ def get_ngd(
         _model_ngd = carry[0]
         _previous_grad = carry[1]
         # compute loss and Euclidean grad
-        f, grad = vg_fn(_model_ngd)
+        f, grad = vg_fn(_model_ngd, *args)
 
         # compute natural grad
         matvec_cur = _model_ngd.get_matvec_fn()

@@ -23,6 +23,7 @@ import functools
 from neuripp._ode._ode import *
 from neuripp.parametric_pushforward.parametric_pushforward import ParametricPushforward
 from neuripp.functionals.KL import getKL, logpdf_st
+from neuripp.functionals.MMD import *
 from neuripp.methods.ngd import get_ngd
 from neuripp.methods.sgd import get_sgd
 from neuripp.utility.utility import *
@@ -37,15 +38,17 @@ from operator import add
 import tqdm
 
 
-dim = 50
-n_iter = 6_000
+dim = 2
+n_iter = 5000
+n_iter_scan = 100
 batch_size = 2048
 N_mc = batch_size
 lr = 1e-5
-lr_ngd = 0.0001
-Lam_reg = 1e-1
+lr_ngd = 0.01
+Lam_reg = 1e-3
+method = sys.argv[1] if len(sys.argv) > 1 else "ngd"
 
-rhs_net = MLP(dim, dim_hidden=128, n_hidden=2, activation=nnx.tanh)
+rhs_net = MLP(dim, dim_hidden=128, n_hidden=2, activation=nnx.swish)
 
 model_args = (
     rhs_net,
@@ -55,44 +58,53 @@ model_args = (
 model_kwargs = dict(
     ode_nstep_max=10,
     divergence_method="hutchinson",
-    ode_method="rk45",
-    ode_kwargs=dict(h_max=0.3, N_iter_to_accept=15, adaptive=True)
+    ode_method="euler",
+    # ode_method="rk45",
+    # ode_kwargs=dict(h_max=0.3, N_iter_to_accept=15, adaptive=True)
 )
 
-
-loss = getKL(logpdf_st, batch_size)
+data_gen = checkerboard_generator(batch_size, 30)
+loss = getMMD(batch_size, next(data_gen), jnp.array([0.025, 0.25, 2.5]))
+# loss = getKL(logpdf_st, batch_size)
 
 vg_fn = nnx.value_and_grad(loss, has_aux=True)
 
-print("Running natural gradient descent", flush=True)
-rhs_net = MLP(dim, dim_hidden=126, n_hidden=2, activation=nnx.tanh)
+print(f"Running {method.upper()}", flush=True)
+rhs_net = MLP(dim, dim_hidden=128, n_hidden=2, activation=nnx.swish)
 gd, par_init, rest = nnx.split(rhs_net, nnx.Param, ...)
 par_init = jax.tree.map(lambda _x: jnp.full_like(_x, 1e-9), par_init)
 nnx.update(rhs_net, par_init)
-model_ngd = ParametricPushforward(*model_args, **model_kwargs)
+model = ParametricPushforward(*model_args, **model_kwargs)
 
-init_ngd, ngd_step = get_ngd(loss, lr_ngd, Lam_reg, 1e-4, 100)
-carry = init_ngd(model_ngd)
+match method:
+    case "ngd":
+        init_fun, step_fun = get_ngd(
+            loss,
+            step_size=lr_ngd,
+            linear_solver_regularization=Lam_reg,
+            linear_solver_tolerance=1e-6,
+            linear_solver_maxiter=100,
+        )
+    case "sgd":
+        init_fun, step_fun = get_sgd(loss, step_size=lr)
 
-ngd_step = nnx.jit(ngd_step)
 
-# t = perf_counter()
-# _, (fs, grads, natural_grads) = jax.lax.scan(ngd_step, carry, length=10)
-# dt = perf_counter() - t
+step_fun = nnx.jit(step_fun)
 
 fs = []
-natural_grads = []
 grads = []
+natural_grads = []
 
 metrics = (fs, grads, natural_grads)
 
+carry = init_fun(model)
 for _ in tqdm.tqdm(range(n_iter)):
-    carry,  vals = ngd_step(carry)
+    carry, vals = step_fun(carry, next(data_gen))
     [arr.append(val) for arr, val in zip(metrics, vals)]
 
-model_ngd = carry[0]
+model = carry[0]
 
-x = model_ngd.sample(3000)
+x = model.sample(3000)
 
 fig, axs = plt.subplots(1, 2)
 ax = axs[0]
@@ -102,76 +114,24 @@ ax = axs[1]
 ax.plot(fs, label="Loss")
 ax1 = ax.twinx()
 ax1.plot(grads, color="red", label=r"$\| \nabla L\|_2$")
-ax1.plot(natural_grads, color="tab:orange", label=r"$\| \partial_W L\|_2$")
+if len(natural_grads) > 0:
+    ax1.plot(natural_grads, color="tab:orange", label=r"$\| \partial_W L\|_2$")
+ax.set_yscale("log")
 ax1.set_yscale("log")
+fig.suptitle(method.upper())
 fig.legend()
-fig.savefig("test_pm.pdf")
+fig.savefig(f"test_pm_{method}.pdf")
 
+exit()
 
-rhs_net = MLP(dim, dim_hidden=128, n_hidden=2, activation=nnx.tanh)
-gd, par_init, rest = nnx.split(rhs_net, nnx.Param, ...)
-par_init = jax.tree.map(jnp.zeros_like, par_init)
-nnx.update(rhs_net, par_init)
-model = ParametricPushforward(*model_args, **model_kwargs)
-
-vg_fn = nnx.jit(nnx.value_and_grad(loss, ))
+print("Running scan", flush=True)
 t = perf_counter()
-f, grad = vg_fn(model)
+carry = init_fun(model)
+_, metrics = jax.lax.scan(step_fun, carry, length=n_iter_scan)
 dt = perf_counter() - t
-print(f"Loss first compute {dt=:.2e}")
-
-
-fs = []
-grad_norms_sq = []
-
-
-print("Running Euclidean gradient descent", flush=True)
+print(f"{method.upper()} scan [1-st run]: {dt=:.2e}, per iter {dt/n_iter_scan:.2e}")
 t = perf_counter()
-for k in tqdm.tqdm(range(n_iter*10)):
-    f, grad = vg_fn(model)
-
-    gd, params, rest = nnx.split(model, nnx.Param, ...)
-    params_new = jax.tree.map(lambda x, y: x - y * lr, params, grad)
-    nnx.update(model, params_new)
-    fs.append(f)
-
-    grad_norm_sq = tree_dot_product(grad, grad)
-    grad_norms_sq.append(grad_norm_sq)
-
+carry = init_fun(model)
+_, metrics = jax.lax.scan(step_fun, carry, length=n_iter_scan)
 dt = perf_counter() - t
-x = model.sample(3000)
-print(f"SGD iteration [for loop, only compile loss]\n\t{dt =:.3e} {dt/n_iter =:.3e} ")
-print(x.mean(axis=0), jnp.cov(x, rowvar=False))
-
-fig, axs = plt.subplots(1, 2)
-ax = axs[0]
-ax.scatter(*x[:, :2].T, label=r"$T_{\text{opt}}(z)$", marker="*", s=5.0)
-ax.scatter(*model._rngs.normal((x.shape[0], 2)).T, label=r"Target", s=3.0, marker="+")
-ax.legend()
-
-ax = axs[1]
-ax.plot(fs, label=r"$\operatorname{KL}$")
-ax1 = ax.twinx()
-ax1.plot(grad_norms_sq, color="red", label=r"$\| \nabla L\|_2$")
-ax1.set_yscale("log")
-fig.legend()
-fig.savefig("test_pm_euclidean.pdf")
-
-
-def gd_step(_model, *args):
-    f, grad = vg_fn(_model)
-    gd, params, rest = nnx.split(_model, nnx.Param, ...)
-    params_new = jax.tree.map(lambda x, y: x - y * lr, params, grad)
-    nnx.update(_model, params_new)
-    return _model, f
-
-
-t = perf_counter()
-model, fs = jax.lax.scan(gd_step, model, length=n_iter)
-dt = perf_counter() - t
-print(f"SGD iteration [lax scan, 1-st call]\n\t{dt =:.3e} {dt/n_iter =:.3e} ")
-
-t = perf_counter()
-model, fs = jax.lax.scan(gd_step, model, length=n_iter)
-dt = perf_counter() - t
-print(f"SGD iteration [lax scan, 2-nd call]\n\t{dt =:.3e} {dt/n_iter =:.3e} ")
+print(f"{method.upper()} scan [2-nd run]: {dt=:.2e}, per iter {dt/n_iter_scan:.2e}")

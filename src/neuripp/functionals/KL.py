@@ -6,7 +6,7 @@ from ..parametric_pushforward.parametric_pushforward import ParametricPushforwar
 
 def getKL(logpdf_target: Callable, batch_size: int, with_aux: bool = False):
 
-    def _KL(model: ParametricPushforward):
+    def _KL(model: ParametricPushforward, *args):
         x, logpdf = model.sample(batch_size, with_log_density=True)
         loss_val = (logpdf - logpdf_target(x)).mean()
 
