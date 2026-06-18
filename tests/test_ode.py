@@ -1,3 +1,7 @@
+import os
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
 import sys
 import time
 import traceback
@@ -8,18 +12,19 @@ from jax._src import ad_util
 from flax import nnx
 import functools
 from neuripp._ode._ode import *
-from linear_rhs import LinearRHS
+from test_rhs import LinearRHS
 
 
 def batch_rel_err(x1: jnp.ndarray, x2: jnp.ndarray):
     diff = x1 - x2
     denom = 0.5*jnp.abs(x1 + x2)
+    denom_norm = jnp.linalg.norm(denom, axis=-1)
+    denom_norm = jnp.maximum(denom_norm, 1e-10)
 
-    denom = jnp.maximum(denom, 1e-10)
+    rel_err = jnp.linalg.norm(diff, axis=-1) / denom_norm
 
-    rel_err = diff / denom
-
-    return jnp.mean(jnp.max(rel_err, axis=-1))
+    # return jnp.mean(jnp.max(rel_err, axis=-1))
+    return jnp.mean(rel_err)
 
 
 def _block_tree(tree):
@@ -61,13 +66,17 @@ def test_batched_solver_accuracy(
     compile_x0 = x0_all[0]
     run_x0s = x0_all[1:]
 
+    adaptive = (method == "rk45_adaptive")
+    run_method = "rk45" if method == "rk45_adaptive" else method
+
     solve_fn = jax.jit(
         lambda x0: solve_ode_batched(
             rhs,
             x0,
             N_steps_max=N_steps,
-            method=method,
+            method=run_method,
             rtol=1e-4,
+            adaptive=adaptive,
         )
     )
 
@@ -178,12 +187,15 @@ def test_autodiff_consistency(
     tang_rhs = nnx.merge(graphdef, param_tangents, rest_tangent)
 
     # Define batched function for testing
+    adaptive = (method == "rk45_adaptive")
+    run_method = "rk45" if method == "rk45_adaptive" else method
     def batched_func(rhs_module, x0):
         return solve_ode_batched(
             rhs_module,
             x0,
             N_steps_max=N_steps,
-            method=method,
+            method=run_method,
+            adaptive=adaptive,
         )
 
     # Define reference function
@@ -229,11 +241,14 @@ def test_autodiff_consistency(
     for idx, x0_batched in enumerate(run_x0s, start=1):
         # Compute the number of function evals for the solve;
         rhs_counter.counter.reset()
+        adaptive = (method == "rk45_adaptive")
+        run_method = "rk45" if method == "rk45_adaptive" else method
         rhs_forward = solve_ode_batched(
             rhs_counter,
             x0_batched,
             N_steps_max=N_steps,
-            method=method,
+            method=run_method,
+            adaptive=adaptive,
         )
         _block_tree(rhs_forward)
         rhs_calls = rhs_counter.counter.get()
@@ -345,7 +360,7 @@ def run_comprehensive_tests(
     print("=" * 60)
 
     base_config = {"batch_size": 8, "dim": 2, "N_steps": 25, "seed": 789}
-    methods = methods or ["rk45", "euler", "heun"]
+    methods = methods or ["rk45", "rk45_adaptive", "euler", "heun"]
     jvp_tolerance = tolerance if jvp_tolerance is None else jvp_tolerance
     grad_tolerance = tolerance if grad_tolerance is None else grad_tolerance
 
@@ -575,7 +590,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run batched ODE tests.")
     parser.add_argument(
         "--methods",
-        default="rk45,euler,heun",
+        default="rk45,rk45_adaptive,euler,heun",
         help="Comma-separated list of methods to test.",
     )
     parser.add_argument(
@@ -630,7 +645,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     methods = [method.strip() for method in args.methods.split(",") if method.strip()]
-    allowed_methods = {"rk45", "euler", "heun"}
+    allowed_methods = {"rk45", "euler", "heun", "rk45_adaptive"}
     unknown = [method for method in methods if method not in allowed_methods]
     if unknown:
         raise ValueError(

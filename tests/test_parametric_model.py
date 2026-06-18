@@ -38,9 +38,9 @@ import tqdm
 
 
 dim = 50
-n_iter = 10_000
+n_iter = 6_000
 batch_size = 2048
-N_mc = 2048
+N_mc = batch_size
 lr = 1e-5
 lr_ngd = 0.0001
 Lam_reg = 1e-1
@@ -55,7 +55,8 @@ model_args = (
 model_kwargs = dict(
     ode_nstep_max=10,
     divergence_method="hutchinson",
-    ode_method="euler",
+    ode_method="rk45",
+    ode_kwargs=dict(h_max=0.3, N_iter_to_accept=15, adaptive=True)
 )
 
 

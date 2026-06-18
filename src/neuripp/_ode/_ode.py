@@ -61,7 +61,6 @@ class RK45Step(ODEStep):
     n_stages = A.shape[0]
     butcher_tableau = (A, B, C, E)
 
-
     def __init__(
         self,
         rhs: Callable,
@@ -69,7 +68,7 @@ class RK45Step(ODEStep):
         atol: jnp.float32 = 1e-16,
         h_min: jnp.float32 = 1e-10,
         h_max: jnp.float32 = 0.2,
-        N_iter_to_accept: int = 3,
+        N_iter_to_accept: int = 10,
     ):
         self._rhs = rhs
         self._rtol = rtol
@@ -81,9 +80,34 @@ class RK45Step(ODEStep):
     def check_step(self, h: jnp.float32, t: jnp.float32):
         h_verif = jnp.clip(h, self._h_min, self._h_max)
         h_verif = jnp.minimum(h_verif, 1.0 - t)  # so we don't overshoot the interval
-        h_verif = jnp.where(h <= 0., 0., h_verif) # h == 0. can be come from the batched solve when this element of the batch has already finished
+        h_verif = jnp.where(
+            h <= 0.0, 0.0, h_verif
+        )  # h == 0. can be come from the batched solve when this element of the batch has already finished
 
         return h_verif
+
+    def iterate_for_step(
+        self,
+        t: jnp.float32,
+        x: jnp.ndarray,
+        h_cur: jnp.float32,
+        *args,
+    ):
+        def cond_fn(carry):
+            h, trunc_err_normalized, i = carry
+            step_size_ok = jnp.logical_and(h >= self._h_min, h <= self._h_max)
+            return jnp.logical_and(
+                i < self._N_iter_to_accept,
+                jnp.logical_and(step_size_ok, trunc_err_normalized >= 1.0),
+            )
+
+        def body_fn(carry):
+            h, trunc_err_normalized, i = carry
+            h_new, ten_new = self(t, x, h, *args, return_err=True)
+            return h_new, ten_new, i + 1
+
+        h_suggested, _, _ = jax.lax.while_loop(cond_fn, body_fn, (h_cur, 1.0, 0))
+        return self.check_step(h_suggested, t)
 
     def __call__(
         self,
@@ -91,77 +115,69 @@ class RK45Step(ODEStep):
         x: jnp.ndarray,
         h_cur: jnp.float32,
         *args,
+        return_err=False,
     ):
-        # TODO: put in main loop, check so that is in the right place
-        k_init = jnp.stack(
-            [
-                jnp.zeros_like(x),
-            ]
-            * (self.n_stages + 1),
-            axis=0,
+        A, B, C, E = self.butcher_tableau
+
+        k0 = self._rhs(t, x, *args)  # TODO: k0 caching for iteration
+        k1 = self._rhs(t + C[1] * h_cur, x + A[1, 0] * k0 * h_cur, *args)
+        k2 = self._rhs(
+            t + C[2] * h_cur,
+            x + (A[2, 0] * k0 + A[2, 1] * k1) * h_cur,
+            *args,
+        )
+        k3 = self._rhs(
+            t + C[3] * h_cur,
+            x + (A[3, 0] * k0 + A[3, 1] * k1 + A[3, 2] * k2) * h_cur,
+            *args,
+        )
+        k4 = self._rhs(
+            t + C[4] * h_cur,
+            x + (A[4, 0] * k0 + A[4, 1] * k1 + A[4, 2] * k2 + A[4, 3] * k3) * h_cur,
+            *args,
+        )
+        k5 = self._rhs(
+            t + C[5] * h_cur,
+            x
+            + (A[5, 0] * k0 + A[5, 1] * k1 + A[5, 2] * k2 + A[5, 3] * k3 + A[5, 4] * k4)
+            * h_cur,
+            *args,
         )
 
-        h_current = self.check_step(h_cur, t)
-        err_treshold = self._rtol * jnp.linalg.norm(x.ravel()) + self._atol
-
-        k_init = k_init.at[0].set(self._rhs(t, x, *args))
-
-        def _cond_trunc_err(carry):
-            """If returns True, we continue iterating; exit when have desired tolerance or step too small """
-            _, _, _, h_new, trunc_err_normalized = carry
-            return (trunc_err_normalized >= 1.0) & (h_new >= self._h_min)
-
-        def _iterate_for_step(carry):
-            A, B, C, E = self.butcher_tableau
-            _, _, k, h_cur, trunc_err_normalized = carry
-
-            h_cur = self.check_step(h_cur, t)
-
-            for s, (a, c) in enumerate(zip(A[1:], C[1:]), start=1):
-                # Combine s previous k's with coefficients from A[s, :s]
-                # Tensordot needed to handle arbitrary shape of x
-                dx = jnp.tensordot(k[:s], a[:s], axes=((0,), (0,))) * h_cur
-                k_cur = self._rhs(t + c * h_cur, x + dx, *args)
-                k = k.at[s].set(k_cur)
-
-            x_new = x + h_cur * jnp.tensordot(k[:-1], B, axes=((0,), (0,)))
+        x_new = x + h_cur * (
+            B[0] * k0 + B[1] * k1 + B[2] * k2 + B[3] * k3 + B[4] * k4 + B[5] * k5
+        )
+        if return_err:
             # Compute x_estimate by 4-th order formula
             # instead of computing the error as difference between x_4 and x_5
             # use formula |\Sum((c^4_i - c^5_i)k_i)|
             # with E_i := (c^4_i - c^5_i)
-            k = k.at[-1].set(self._rhs(t + h_cur, x_new, *args))
-            trunc_err = h_cur * jnp.linalg.norm(
-                jnp.tensordot(k, E, axes=((0,), (0,))).ravel()
-            )
             # trunc_err = jax.lax.stop_gradient(trunc_err)
-
-            trunc_err_normalized = trunc_err / err_treshold
-
-            # TODO replace 5 with approximation order (make arbitrary Runge-Kutta?)
+            k6 = self._rhs(t + h_cur, x_new, *args)
+            trunc_err = h_cur * jnp.linalg.norm(
+                (
+                    E[0] * k0
+                    + E[1] * k1
+                    + E[2] * k2
+                    + E[3] * k3
+                    + E[4] * k4
+                    + E[5] * k5
+                    + E[6] * k6
+                ).ravel()
+            )
+            err_threshold = self._rtol * jnp.linalg.norm(x.ravel()) + self._atol
+            trunc_err_normalized = trunc_err / err_threshold
             trunc_err_normalized = jnp.maximum(trunc_err_normalized, 1e-25)
             h_new = 0.9 * h_cur * (trunc_err_normalized) ** (-1 / 5)
+            return h_new, trunc_err_normalized
 
-            return t + h_cur, x_new, k, h_new, trunc_err_normalized
-
-        def _body_fn(carry, i=None):
-            cond_value = _cond_trunc_err(carry)
-            h_new, trunc_err_normalized = carry[-2:]
-            return nnx.cond(cond_value, _iterate_for_step, lambda _c: _c, carry)
-
-        t_new, x_new, k, h_new, trunc_err_normalized = nnx.fori_loop(
-            0,
-            self._N_iter_to_accept,
-            lambda i, carry: _body_fn(carry, i=i),
-            (t, x.copy(), k_init, h_current, 1.0),
-        )
-
-        return t_new, x_new, h_new
+        return x_new
 
     def suggest_h0(
         self,
         h_min: float,
     ):
-        return h_min * 10.0
+        return (h_min + self._h_max) / 2.
 
     def tree_flatten(self):
         children = None
@@ -191,7 +207,7 @@ class EulerStep(ODEStep):
         self._rhs = rhs
 
     def __call__(self, t: jnp.float32, x: jnp.ndarray, h: float, *args):
-        return t + h, x + h * self._rhs(t, x, *args), h
+        return x + h * self._rhs(t, x, *args)
 
     def tree_flatten(self):
         children = None
@@ -226,7 +242,7 @@ class HeunStep(ODEStep):
         # Corrector step
         x_new = x + (h / 2) * (xdot_cur + self._rhs(t + h, x_predictor, *args))
 
-        return t + h, x_new, h
+        return x_new
 
     def tree_flatten(self):
         children = None
@@ -283,6 +299,7 @@ def solve_ode_batched(
     *aux_args_batched,
     N_steps_max: int = 100,
     method: Literal["rk45", "euler", "heun"] = "rk45",
+    adaptive: bool = False,
     **method_kw,
 ):
     """Batched ODE solver that avoids vmap overhead by implementing proper batched logic.
@@ -307,37 +324,56 @@ def solve_ode_batched(
     h0 = step.suggest_h0(h_min)
 
     # Initialize batched state
-    t_batch = jnp.zeros((batch_size,))
     x_batch = x0_batched
-    h_batch = jnp.full((batch_size,), h0)
 
-    def _body_fn(i, carry):
-        t_batch, x_batch, h_batch = carry[:3]
+    if adaptive:
+        get_step_batched = jax.vmap(step.iterate_for_step)
+        t_batch = jnp.zeros((batch_size,))
+        h_batch = jnp.full((batch_size,), h0)
 
-        # Target time for this iteration
-        target_time = (i + 1) * h_min
-        target_time = jnp.minimum(target_time, 1.0)
+        def _do_step_fn(carry):
+            t, x, h = carry
+            h_new = jax.lax.stop_gradient(get_step_batched(t, x, h, *aux_args_batched))
 
-        # Only step if we haven't reached the target time
-        needs_step = t_batch <= target_time
+            t_new = t + h_new
+            x_new = step_batched(t, x, h_new, *aux_args_batched)
 
-        carry_new = jax.lax.cond(
-            jnp.any(needs_step),
-            lambda _c: step_batched(*_c) + aux_args_batched,
-            lambda _c: _c,
-            carry,
+            return t_new, x_new, h_new
+
+        def _cond_fn():
+            pass
+
+        def _body_fn(i, carry):
+            t_batch, x_batch, h_batch = carry
+
+            # Only step if we haven't reached the target time
+            needs_step = t_batch < 1.
+
+            t_new, x_new, h_new = jax.lax.cond(
+                jnp.any(needs_step),
+                _do_step_fn,
+                lambda _c: _c,
+                carry,
+            )
+
+            x_new = jnp.where(needs_step[:, jnp.newaxis], x_new, x_batch)
+            
+            return t_new, x_new, h_new
+
+        carry = nnx.fori_loop(0, N_steps_max, _body_fn, (t_batch, x_batch, h_batch))
+        x_final = carry[1]
+
+        return x_final
+
+    else:
+        times = jnp.broadcast_to(
+            jnp.linspace(0.0, 1.0, N_steps_max)[:, jnp.newaxis],
+            (N_steps_max, batch_size),
         )
-        t_new, x_new, h_new = carry_new[0], carry_new[1], carry_new[2]
-    
-        h_new = jax.lax.stop_gradient(h_new) 
-        # Ensure we don't overshoot t=1.0
-        t_new = jnp.minimum(t_new, 1.0)
+        steps = jnp.full_like(times, h_min)
 
-        return (t_new, x_new, h_new, *carry_new[3:])
+        def body_fn(x, scan_args):
+            t, h = scan_args
+            return step_batched(t, x, h, *aux_args_batched), None
 
-    carry = nnx.fori_loop(
-        0, N_steps_max, _body_fn, (t_batch, x_batch, h_batch, *aux_args_batched)
-    )
-    x_final = carry[1]
-
-    return x_final
+        return jax.lax.scan(body_fn, x0_batched, (times, steps))[0]
