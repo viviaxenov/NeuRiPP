@@ -63,69 +63,23 @@ class ParametricPushforward(nnx.Module):
         self.ode_kwargs = ode_kwargs if ode_kwargs is not None else dict()
         self.div_method = divergence_method
 
-    def __call__(self, z: jnp.ndarray):
-        return solve_ode_batched(
-            self.rhs,
-            z,
-            N_steps_max=self.ode_nstep_max,
-            method=self.ode_method,
-            **self.ode_kwargs
-        )
-
-    def rhs_reverse_time(self, t, x, *args):
-        return -self.rhs(1.0 - t, x, *args)
-
-    def rhs_div(self, t, x, *args):
-        dxdt, jvp_fn = jax.linearize(lambda _x: self.rhs(t, _x), x[..., :-1])
-        vects = jnp.eye(dxdt.shape[-1])
-        jac_tr = jnp.sum(jax.vmap(lambda eps: eps.T @ jvp_fn(eps))(vects))
-
-        return jnp.concat((dxdt, -jnp.atleast_1d(jac_tr)), axis=-1)
-
-    def rhs_div_hutchinson(self, t, x, eps):
-        dxdt, jvp_eps = jax.jvp(lambda _x: self.rhs(t, _x), (x[..., :-1],), (eps,))
-        jac_tr = eps.T @ jvp_eps
-        return jnp.concat((dxdt, -jnp.atleast_1d(jac_tr)), axis=-1)
-
-    def pushforward(*args, **kwargs):
-        return self(*args, **kwargs)
-
-    def pullback(self, x: jnp.ndarray):
-        """Compute inverse of the parametric mapping"""
-        return solve_ode_batched(
-            self.rhs_reverse_time,
-            x,
-            N_steps_max=self.ode_nstep_max,
-            method=self.ode_method,
-            **self.ode_kwargs
-        )
-
-    def _sample_latent(self, N_samples: int):
-        return self._rngs.normal((N_samples, self.rhs.dim))
-
-    def _latent_log_density(self, z: jnp.ndarray):
-        """Returns the log density of the latent distribution"""
-        return -0.5 * ((z.reshape(z.shape[0], -1)) ** 2).sum(axis=-1)
-
-    def sample(self, N_samples: int, with_log_density=False):
-        """Returns a sample `x` of shape `(N_samples, dim)` from the current distribution :math:`\\rho_\\theta`"""
-        x0 = self._sample_latent(N_samples)
+    def __call__(self, z: jnp.ndarray, with_log_density=False):
         rhs_of_system = self.rhs
         aux_args = None
         if with_log_density:
             # Augment system and initial condition
-            logp_latent = self._latent_log_density(x0)
+            logp_latent = self._latent_log_density(z)
             if self.div_method == "exact":
                 rhs_of_system = self.rhs_div
             else:
-                eps = self._rngs.rademacher(x0.shape, dtype=x0.dtype)
+                eps = self._rngs.rademacher(z.shape, dtype=z.dtype)
                 rhs_of_system = self.rhs_div_hutchinson
                 aux_args = eps
-            x0 = jnp.concat((x0, logp_latent.reshape(-1, 1)), axis=-1)
+            z = jnp.concat((z, logp_latent.reshape(-1, 1)), axis=-1)
 
         res = solve_ode_batched(
             rhs_of_system,
-            x0,
+            z,
             aux_args,
             N_steps_max=self.ode_nstep_max,
             method=self.ode_method,
@@ -137,6 +91,81 @@ class ParametricPushforward(nnx.Module):
             return x, logp_of_x
 
         return res
+
+    def rhs_reverse_time(self, t, x, *args):
+        return -self.rhs(1.0 - t, x, *args)
+
+    def rhs_div(self, t, x, *args):
+        dxdt, jvp_fn = jax.linearize(lambda _x: self.rhs(t, _x), x[..., :-1])
+        vects = jnp.eye(dxdt.shape[-1])
+        jac_tr = jnp.sum(jax.vmap(lambda eps: eps.T @ jvp_fn(eps))(vects))
+
+        return jnp.concat((dxdt, -jnp.atleast_1d(jac_tr)), axis=-1)
+
+    def rhs_div_inv_time(self, t, x, *args):
+        dxdt, jvp_fn = jax.linearize(lambda _x: -self.rhs(1.0 - t, _x), x[..., :-1])
+        vects = jnp.eye(dxdt.shape[-1])
+        jac_tr = jnp.sum(jax.vmap(lambda eps: eps.T @ jvp_fn(eps))(vects))
+
+        return jnp.concat((dxdt, -jnp.atleast_1d(jac_tr)), axis=-1)
+
+    def rhs_div_hutchinson(self, t, x, eps):
+        dxdt, jvp_eps = jax.jvp(lambda _x: self.rhs(t, _x), (x[..., :-1],), (eps,))
+        jac_tr = eps.T @ jvp_eps
+        return jnp.concat((dxdt, -jnp.atleast_1d(jac_tr)), axis=-1)
+
+    def rhs_div_hutchinson_inv_time(self, t, x, eps):
+        dxdt, jvp_eps = jax.jvp(
+            lambda _x: -self.rhs(1.0 - t, _x), (x[..., :-1],), (eps,)
+        )
+        jac_tr = eps.T @ jvp_eps
+        return jnp.concat((dxdt, -jnp.atleast_1d(jac_tr)), axis=-1)
+
+    def pushforward(self, *args, **kwargs):
+        return self(*args, **kwargs)
+
+    def pullback(self, x: jnp.ndarray, with_log_density=False):
+        """Compute inverse of the parametric mapping"""
+        rhs_of_system = self.rhs
+        aux_args = None
+        if with_log_density:
+            # Augment system and initial condition
+            logp_latent = jnp.zeros(x.shape[0])
+            if self.div_method == "exact":
+                rhs_of_system = self.rhs_div_inv_time
+            else:
+                eps = self._rngs.rademacher(x.shape, dtype=x.dtype)
+                rhs_of_system = self.rhs_div_hutchinson_inv_time
+                aux_args = eps
+            x = jnp.concat((x, logp_latent.reshape(-1, 1)), axis=-1)
+
+        res = solve_ode_batched(
+            rhs_of_system,
+            x,
+            aux_args,
+            N_steps_max=self.ode_nstep_max,
+            method=self.ode_method,
+            **self.ode_kwargs
+        )
+
+        if with_log_density:
+            z, d_logp = res[:, :-1], res[:, -1]
+            logp_of_x = self._latent_log_density(z) - d_logp
+            return z, logp_of_x
+
+        return res
+
+    def _sample_latent(self, N_samples: int):
+        return self._rngs.normal((N_samples, self.rhs.dim))
+
+    def _latent_log_density(self, z: jnp.ndarray):
+        """Returns the log density of the latent distribution"""
+        return -0.5 * ((z.reshape(z.shape[0], -1)) ** 2).sum(axis=-1)
+
+    def sample(self, N_samples: int, with_log_density=False):
+        """Returns a sample `x` of shape `(N_samples, dim)` from the current distribution :math:`\\rho_\\theta`"""
+        z = self._sample_latent(N_samples)
+        return self(z, with_log_density=with_log_density)
 
     def scalar_product(
         self,
