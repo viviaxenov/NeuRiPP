@@ -6,8 +6,6 @@ os.environ["JAX_TRACEBACK_FILTERING"] = "off"
 
 
 import sys
-import traceback
-import argparse
 
 import jax
 
@@ -19,11 +17,10 @@ import jax.scipy as jsp
 
 
 from flax import nnx
-import functools
-from neuripp._ode._ode import *
 from neuripp.parametric_pushforward.parametric_pushforward import ParametricPushforward
 from neuripp.functionals.KL import getKL, logpdf_st
 from neuripp.functionals.MMD import *
+from neuripp.functionals.CrossEntropy import cross_entropy
 from neuripp.methods.ngd import get_ngd
 from neuripp.methods.sgd import get_sgd
 from neuripp.utility.utility import *
@@ -33,20 +30,20 @@ from time import perf_counter
 import matplotlib.pyplot as plt
 
 from test_rhs import LinearRHS, MLP
-from operator import add
 
 import tqdm
 
 
 dim = 2
-n_iter = 5000
+n_iter = 5_000
 n_iter_scan = 100
 batch_size = 2048
 N_mc = batch_size
 lr = 1e-5
-lr_ngd = 0.01
+lr_ngd = 0.0003
 Lam_reg = 1e-3
 method = sys.argv[1] if len(sys.argv) > 1 else "ngd"
+n_iter = int(sys.argv[2]) if len(sys.argv) > 2 else n_iter
 
 rhs_net = MLP(dim, dim_hidden=128, n_hidden=2, activation=nnx.swish)
 
@@ -56,15 +53,16 @@ model_args = (
     42,
 )
 model_kwargs = dict(
-    ode_nstep_max=10,
+    ode_nstep_max=12,
     divergence_method="hutchinson",
-    ode_method="euler",
-    # ode_method="rk45",
-    # ode_kwargs=dict(h_max=0.3, N_iter_to_accept=15, adaptive=True)
+    # ode_method="euler",
+    ode_method="rk45",
+    ode_kwargs=dict(h_max=0.3, N_iter_to_accept=15, adaptive=True)
 )
 
 data_gen = checkerboard_generator(batch_size, 30)
-loss = getMMD(batch_size, next(data_gen), jnp.array([0.025, 0.25, 2.5]))
+loss = cross_entropy
+# loss = getMMD(batch_size, next(data_gen), jnp.array([0.025, 0.25, 2.5]))
 # loss = getKL(logpdf_st, batch_size)
 
 vg_fn = nnx.value_and_grad(loss, has_aux=True)
