@@ -23,6 +23,7 @@ from neuripp.functionals.MMD import *
 from neuripp.functionals.CrossEntropy import cross_entropy
 from neuripp.methods.ngd import get_ngd
 from neuripp.methods.sgd import get_sgd
+from neuripp.methods.optax_optimizer import get_optax, optax_optimizers
 from neuripp.utility.utility import *
 
 from time import perf_counter
@@ -85,6 +86,11 @@ match method:
         )
     case "sgd":
         init_fun, step_fun = get_sgd(loss, step_size=lr)
+    case x if x in optax_optimizers:
+        init_fun, step_fun = get_optax(loss, method, lr)
+    case _:
+        raise ValueError(f'Method {x} not supported')
+    
 
 
 step_fun = nnx.jit(step_fun)

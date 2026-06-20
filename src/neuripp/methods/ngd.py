@@ -11,7 +11,6 @@ from neuripp.utility.utility import *
 
 def get_ngd(
     loss: Callable,
-    *loss_args,
     step_size: float,
     linear_solver_regularization: float,
     linear_solver_tolerance: float,
