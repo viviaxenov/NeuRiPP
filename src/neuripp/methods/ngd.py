@@ -9,6 +9,35 @@ from neuripp.parametric_pushforward.parametric_pushforward import ParametricPush
 from neuripp.utility.utility import *
 
 
+def _compute_natural_grad(
+    model,
+    grad,
+    init_vector,
+    linear_solver_regularization,
+    linear_solver_tolerance,
+    linear_solver_maxiter,
+):
+    matvec_cur = model.get_matvec_fn()
+
+    def oper_cg(tang):
+        Gtang = matvec_cur(tang)
+        return jax.tree.map(
+            lambda _g, _x: _g + linear_solver_regularization * _x,
+            Gtang,
+            tang,
+        )
+
+    natural_grad = jsp.sparse.linalg.cg(
+        oper_cg,
+        grad,
+        init_vector,
+        tol=linear_solver_tolerance,
+        maxiter=linear_solver_maxiter,
+    )[0]
+
+    return natural_grad
+
+
 def get_ngd(
     loss: Callable,
     step_size: float,
@@ -40,26 +69,16 @@ def get_ngd(
         f, grad = vg_fn(_model_ngd, *args)
 
         # compute natural grad
-        matvec_cur = _model_ngd.get_matvec_fn()
-
-        def oper_cg(tang):
-            Gtang = matvec_cur(tang)
-            return jax.tree.map(
-                lambda _g, _x: _g + linear_solver_regularization * _x,
-                Gtang,
-                tang,
-            )
-
-        natural_grad = jsp.sparse.linalg.cg(
-            oper_cg,
+        # natural_grad_norm_alt = tree_dot_product(grad, natural_grad)
+        natural_grad = _compute_natural_grad(
+            _model_ngd,
             grad,
             _previous_grad,
-            tol=linear_solver_tolerance,
-            maxiter=linear_solver_maxiter,
-        )[0]
-
+            linear_solver_regularization,
+            linear_solver_tolerance,
+            linear_solver_maxiter,
+        )
         natural_grad_norm_sq = _model_ngd.scalar_product(natural_grad, natural_grad)
-        # natural_grad_norm_alt = tree_dot_product(grad, natural_grad)
         grad_norm_sq = tree_dot_product(grad, grad)
 
         gd, params, rest = nnx.split(_model_ngd, nnx.Param, ...)

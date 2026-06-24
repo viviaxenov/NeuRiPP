@@ -1,6 +1,6 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "6"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["JAX_TRACEBACK_FILTERING"] = "off"
 
@@ -23,6 +23,7 @@ from neuripp.functionals.MMD import *
 from neuripp.functionals.CrossEntropy import cross_entropy
 from neuripp.methods.ngd import get_ngd
 from neuripp.methods.sgd import get_sgd
+from neuripp.methods.anderson import get_anderson
 from neuripp.methods.optax_optimizer import get_optax, optax_optimizers
 from neuripp.utility.utility import *
 
@@ -41,7 +42,7 @@ n_iter_scan = 100
 batch_size = 2048
 N_mc = batch_size
 lr = 1e-5
-lr_ngd = 0.0003
+lr_ngd = 0.0001
 Lam_reg = 1e-3
 method = sys.argv[1] if len(sys.argv) > 1 else "ngd"
 n_iter = int(sys.argv[2]) if len(sys.argv) > 2 else n_iter
@@ -58,7 +59,7 @@ model_kwargs = dict(
     divergence_method="hutchinson",
     # ode_method="euler",
     ode_method="rk45",
-    ode_kwargs=dict(h_max=0.3, N_iter_to_accept=15, adaptive=True)
+    ode_kwargs=dict(h_max=0.3, N_iter_to_accept=15, adaptive=True),
 )
 
 data_gen = checkerboard_generator(batch_size, 30)
@@ -86,11 +87,14 @@ match method:
         )
     case "sgd":
         init_fun, step_fun = get_sgd(loss, step_size=lr)
+    case "anderson":
+        init_fun, step_fun = get_anderson(
+            loss, lr_ngd, 8, 1.0, 1e-3, "l2", True, Lam_reg, 1e-6, 100
+        )
     case x if x in optax_optimizers:
         init_fun, step_fun = get_optax(loss, method, lr)
     case _:
-        raise ValueError(f'Method {x} not supported')
-    
+        raise ValueError(f"Method {x} not supported")
 
 
 step_fun = nnx.jit(step_fun)
@@ -101,7 +105,7 @@ natural_grads = []
 
 metrics = (fs, grads, natural_grads)
 
-carry = init_fun(model)
+carry = init_fun(model, next(data_gen))
 for _ in tqdm.tqdm(range(n_iter)):
     carry, vals = step_fun(carry, next(data_gen))
     [arr.append(val) for arr, val in zip(metrics, vals)]
