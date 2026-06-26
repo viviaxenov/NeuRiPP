@@ -1,6 +1,6 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "6"
+os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["JAX_TRACEBACK_FILTERING"] = "off"
 
@@ -37,7 +37,7 @@ import tqdm
 
 
 dim = 2
-n_iter = 5_000
+n_iter = 6_000
 n_iter_scan = 100
 batch_size = 2048
 N_mc = batch_size
@@ -89,7 +89,7 @@ match method:
         init_fun, step_fun = get_sgd(loss, step_size=lr)
     case "anderson":
         init_fun, step_fun = get_anderson(
-            loss, lr_ngd, 8, 1.0, 1e-3, "l2", True, Lam_reg, 1e-6, 100
+            loss, lr_ngd, 8, 1.2, 1e-2, "l2", True, Lam_reg, 1e-6, 100
         )
     case x if x in optax_optimizers:
         init_fun, step_fun = get_optax(loss, method, lr)
