@@ -1,6 +1,6 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["JAX_TRACEBACK_FILTERING"] = "off"
 
@@ -9,9 +9,6 @@ import sys
 
 import jax
 
-# jax.config.update("jax_debug_infs", True)
-# jax.config.update("jax_debug_nans", True)
-# jax.config.update("jax_log_compiles", True)
 import jax.numpy as jnp
 import jax.scipy as jsp
 
@@ -35,11 +32,48 @@ from test_rhs import LinearRHS, MLP
 
 import tqdm
 
+def plot_intermediate(model, metrics, iteration: int, method, n_samples=512):
+    x = model.sample(n_samples)
+    loss, grads, natural_gras = metrics
+
+    fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(25, 8), layout='constrained')
+
+    ax = axs[0]
+    ax.scatter(*x[:, :2].T, label=r"$T_{\text{opt}}(z)$", marker="*", s=5.0)
+
+    ax = axs[1]
+    ax.plot(loss, label="Loss")
+
+    ax = axs[2]
+    ax.plot(grads, color="red", label=r"$\| \nabla L\|_2$")
+    ax.set_yscale("log")
+    if len(natural_grads) > 0:
+        ax1 = ax.twinx()
+        ax1.plot(natural_grads, color="tab:orange", label=r"$\| \partial_W L\|_2$")
+        ax1.set_yscale("log")
+
+    for ax in axs:
+        ax.grid()
+    fig.suptitle(f"{method.upper()}, iteration {iteration:d}")
+    fig.legend()
+    return fig
+
+def write_checkpoint(model, output_path):
+    pass
+
+def write_intermediate(model, metrics, iteration, method, output_path, n_samples=512):
+    fig = plot_intermediate(model, metrics,iteration, method, n_samples=n_samples)
+    fig.savefig(os.path.join(output_path, f"test_{method}.pdf"))
+    write_checkpoint(model, output_path)
+
+
+
 
 dim = 2
 n_iter = 6_000
-n_iter_scan = 100
-batch_size = 2048
+batch_size = 1024
+n_samples_plot = 512
+plot_every = 10
 N_mc = batch_size
 lr = 1e-5
 lr_ngd = 0.0001
@@ -47,7 +81,7 @@ Lam_reg = 1e-3
 method = sys.argv[1] if len(sys.argv) > 1 else "ngd"
 n_iter = int(sys.argv[2]) if len(sys.argv) > 2 else n_iter
 
-rhs_net = MLP(dim, dim_hidden=128, n_hidden=2, activation=nnx.swish)
+rhs_net = MLP(dim, dim_hidden=32, n_hidden=2, activation=nnx.swish)
 
 model_args = (
     rhs_net,
@@ -97,49 +131,30 @@ match method:
         raise ValueError(f"Method {x} not supported")
 
 
+os.makedirs(f"./outputs/{method}/last/", exist_ok=True)
+os.makedirs(f"./outputs/{method}/best/", exist_ok=True)
+
 step_fun = nnx.jit(step_fun)
 
+best_loss = jnp.inf
 fs = []
 grads = []
 natural_grads = []
 
 metrics = (fs, grads, natural_grads)
-
 carry = init_fun(model, next(data_gen))
-for _ in tqdm.tqdm(range(n_iter)):
+for i in tqdm.tqdm(range(n_iter)):
     carry, vals = step_fun(carry, next(data_gen))
     [arr.append(val) for arr, val in zip(metrics, vals)]
+    if vals[0] < best_loss:
+        best_loss = vals[0]
+        write_intermediate(model, metrics, i + 1, method, f"./outputs/{method}/best/", n_samples=n_samples_plot)
+
+    if (i + 1) % plot_every == 0:
+        write_intermediate(model, metrics, i + 1, method, f"./outputs/{method}/last/", n_samples=n_samples_plot)
+
+write_intermediate(model, metrics, i, method, f"./outputs/{method}/last/", n_samples=n_samples_plot)
+
 
 model = carry[0]
 
-x = model.sample(3000)
-
-fig, axs = plt.subplots(1, 2)
-ax = axs[0]
-ax.scatter(*x[:, :2].T, label=r"$T_{\text{opt}}(z)$", marker="*", s=5.0)
-
-ax = axs[1]
-ax.plot(fs, label="Loss")
-ax1 = ax.twinx()
-ax1.plot(grads, color="red", label=r"$\| \nabla L\|_2$")
-if len(natural_grads) > 0:
-    ax1.plot(natural_grads, color="tab:orange", label=r"$\| \partial_W L\|_2$")
-ax.set_yscale("log")
-ax1.set_yscale("log")
-fig.suptitle(method.upper())
-fig.legend()
-fig.savefig(f"test_pm_{method}.pdf")
-
-exit()
-
-print("Running scan", flush=True)
-t = perf_counter()
-carry = init_fun(model)
-_, metrics = jax.lax.scan(step_fun, carry, length=n_iter_scan)
-dt = perf_counter() - t
-print(f"{method.upper()} scan [1-st run]: {dt=:.2e}, per iter {dt/n_iter_scan:.2e}")
-t = perf_counter()
-carry = init_fun(model)
-_, metrics = jax.lax.scan(step_fun, carry, length=n_iter_scan)
-dt = perf_counter() - t
-print(f"{method.upper()} scan [2-nd run]: {dt=:.2e}, per iter {dt/n_iter_scan:.2e}")
