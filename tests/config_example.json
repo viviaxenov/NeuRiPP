@@ -1,0 +1,68 @@
+{
+  "output_root": "results/benchmarks",
+  "common_params": {
+    "max_iterations": 50,
+    "N_samples": 128,
+    "method_seed": 0,
+    "plot_every": 25
+  },
+  "problem": {
+    "functional": {
+      "kind": "CrossEntropy"
+    },
+    "distribution": {
+      "name": "checkerboard",
+      "n_samples": 128,
+      "resample_each": 10,
+      "seed": [1,2,3,4,5]
+    }
+  },
+  "architectures": [
+    {
+      "rhs": {
+        "model": "MLP",
+        "dim_hidden": [64, 128],
+        "n_hidden": 2,
+        "activation": "swish"
+      },
+      "N_monte_carlo": 128,
+      "divergence_method": "hutchinson",
+      "ode_nstep_max": 10,
+      "ode_method": "rk45",
+      "h_max": 0.3,
+      "N_iter_to_accept": 15,
+      "seed": 4,
+      "adaptive": true
+    }
+  ],
+  "methods": [
+    {
+      "method": "sgd",
+      "step_size": [0.0001, 0.0002]
+    },
+    {
+        "method": "ngd",
+        "step_size": [0.001, 0.002],
+        "linear_solver_regularization": 1e-3,
+        "linear_solver_maxiter": 10,
+        "linear_solver_tolerance": 1e-6
+    }
+  ],
+  "plotting": {
+    "style_channels": {
+      "colormap": ["Blues", "Oranges"],
+      "linestyle": ["-", "--", ":"],
+      "linewidth": [1.5, 2.5]
+    }
+  },
+  "parallel": {
+    "n_workers": 2,
+    "gpu_ids": [0]
+  },
+  "config": [
+    ["jax_compilation_cache_dir", "tmp/jax_cache"],
+    ["jax_persistent_cache_min_entry_size_bytes", -1],
+    ["jax_persistent_cache_min_compile_time_secs", 0],
+    ["jax_persistent_cache_enable_xla_caches", "all"]
+  ]
+}
