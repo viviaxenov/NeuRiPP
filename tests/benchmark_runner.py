@@ -426,6 +426,21 @@ def _metric_arrays(metrics: dict[str, list[float]]) -> dict[str, Any]:
     }
 
 
+def _append_batched_metrics(metric_values: Any, metrics: dict[str, list[Any]]) -> None:
+    import numpy as np
+
+    names = ["loss", "grad_norm", "natural_grad_norm"]
+    for name, value in zip(names, metric_values, strict=False):
+        metrics[name].append(np.asarray(value, dtype=float))
+
+
+def _metric_arrays_for_lane(arrays: dict[str, Any], index: int) -> dict[str, Any]:
+    lane_arrays: dict[str, Any] = {}
+    for name, values in arrays.items():
+        lane_arrays[name] = values[:, index] if values.ndim > 1 else values
+    return lane_arrays
+
+
 def _model_from_carry(carry: Any) -> Any:
     return carry[0]
 
@@ -525,7 +540,7 @@ def setup_worker_environment(
     requested_gpu_id = assigned_gpu_id(parallel_config, worker_id)
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     if requested_gpu_id is not None:
-        os.environ["JAX_VISIBLE_DEVICES"] = str(requested_gpu_id)
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(requested_gpu_id)
     return requested_gpu_id
 
 
@@ -812,6 +827,374 @@ def build_method(
     return method_registry[method_name](loss, **kwargs)
 
 
+def build_group_problem(
+    planned_runs: list[dict[str, Any]], deps: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    deps = deps or import_runtime_dependencies()
+    representative = planned_runs[0]
+    problem = representative["problem"]
+    resolved_problem = representative["resolved_problem"]
+    method_kwargs = representative["method_kwargs"]
+    functional_kind = problem["functional"]["kind"]
+    per_seed_batch_size = method_kwargs["N_samples"]
+    n_seeds = len(planned_runs)
+
+    if functional_kind == "KL":
+        return build_problem(problem, resolved_problem, method_kwargs, deps=deps)
+
+    effective_batch_size = n_seeds * per_seed_batch_size
+    distribution = problem["distribution"]
+    data_gen = build_data_generator(distribution, effective_batch_size, deps=deps)
+
+    if functional_kind == "CrossEntropy":
+        return {"loss": deps["cross_entropy"], "data_gen": data_gen}
+
+    if functional_kind == "MMD":
+        bandwidth_batch = next(data_gen).reshape(
+            n_seeds, per_seed_batch_size, resolved_problem["dim"]
+        )[0]
+        bw_multipliers = problem["functional"].get("bw_multipliers")
+        if bw_multipliers is not None:
+            bw_multipliers = deps["jnp"].asarray(bw_multipliers)
+        return {
+            "loss": deps["getMMD"](
+                per_seed_batch_size,
+                data=bandwidth_batch,
+                bw_multipliers=bw_multipliers,
+            ),
+            "data_gen": data_gen,
+        }
+
+    raise ValueError(f"Unsupported functional kind {functional_kind!r}")
+
+
+def _split_carry_for_vmap(carry: Any, deps: dict[str, Any]) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+    nnx = deps["nnx"]
+    specs: list[Any] = []
+    dynamic: list[Any] = []
+    for item in carry:
+        if isinstance(item, nnx.Module):
+            graphdef, state = nnx.split(item)
+            specs.append(("module", graphdef))
+            dynamic.append(state)
+        else:
+            specs.append(("value", None))
+            dynamic.append(item)
+    return tuple(specs), tuple(dynamic)
+
+
+def _merge_carry_from_vmap(specs: tuple[Any, ...], dynamic: tuple[Any, ...], deps: dict[str, Any]) -> Any:
+    nnx = deps["nnx"]
+    carry_items: list[Any] = []
+    for spec, item in zip(specs, dynamic, strict=True):
+        kind, graphdef = spec
+        if kind == "module":
+            carry_items.append(nnx.merge(graphdef, item))
+        else:
+            carry_items.append(item)
+    return tuple(carry_items)
+
+
+def _stack_trees(items: list[Any], deps: dict[str, Any]) -> Any:
+    return deps["jax"].tree.map(lambda *xs: deps["jnp"].stack(xs), *items)
+
+
+def _lane_from_tree(tree: Any, index: int, deps: dict[str, Any]) -> Any:
+    return deps["jax"].tree.map(lambda x: x[index], tree)
+
+
+def _model_from_batched_carry(
+    carry_specs: tuple[Any, ...],
+    batched_carry_dynamic: tuple[Any, ...],
+    index: int,
+    deps: dict[str, Any],
+) -> Any:
+    carry_dynamic = _lane_from_tree(batched_carry_dynamic, index, deps)
+    carry = _merge_carry_from_vmap(carry_specs, carry_dynamic, deps)
+    return _model_from_carry(carry)
+
+
+def execute_seed_group(
+    planned_runs: list[dict[str, Any]],
+    session_dir: Path,
+    worker_id: int,
+    device_info: dict[str, Any],
+    deps: dict[str, Any] | None = None,
+    progress_position: int | None = None,
+) -> dict[str, Any]:
+    deps = deps or import_runtime_dependencies()
+    representative = planned_runs[0]
+    run_dirs = [session_dir / "runs" / planned_run["run_id"] for planned_run in planned_runs]
+    for run_dir, planned_run in zip(run_dirs, planned_runs, strict=True):
+        run_dir.mkdir(parents=True, exist_ok=True)
+        write_expanded_run_config(run_dir, planned_run)
+        write_status(
+            run_dir,
+            "running",
+            planned_run,
+            worker_id,
+            device_info,
+            started_at=_utc_now_iso(),
+        )
+
+    try:
+        jax = deps["jax"]
+        jnp = deps["jnp"]
+        problem_state = build_group_problem(planned_runs, deps=deps)
+        models = [
+            build_model(
+                planned_run["architecture"],
+                planned_run["method_kwargs"],
+                planned_run["resolved_problem"]["dim"],
+                deps=deps,
+            )
+            for planned_run in planned_runs
+        ]
+        init_fun, step_fun = build_method(
+            representative["method"],
+            representative["method_kwargs"],
+            problem_state["loss"],
+            deps=deps,
+        )
+
+        nnx = deps["nnx"]
+        graphdef, first_state = nnx.split(models[0])
+        model_states = [first_state]
+        model_states.extend(nnx.split(model)[1] for model in models[1:])
+        batched_model_state = _stack_trees(model_states, deps)
+
+        data_gen = problem_state["data_gen"]
+        n_seeds = len(planned_runs)
+        per_seed_batch_size = representative["method_kwargs"]["N_samples"]
+        dim = representative["resolved_problem"]["dim"]
+
+        def reshape_data_batch(flat_batch: Any) -> Any:
+            return jnp.asarray(flat_batch).reshape(n_seeds, per_seed_batch_size, dim)
+
+        def init_one(model_state: Any, batch: Any | None = None) -> tuple[Any, ...]:
+            model = nnx.merge(graphdef, model_state)
+            if batch is None:
+                carry = init_fun(model)
+            else:
+                carry = init_fun(model, batch)
+            _, carry_dynamic = _split_carry_for_vmap(carry, deps)
+            return carry_dynamic
+
+        if data_gen is not None:
+            init_batch = reshape_data_batch(next(data_gen))
+            batched_carry_dynamic = jax.vmap(init_one, in_axes=(0, 0))(batched_model_state, init_batch)
+        else:
+            batched_carry_dynamic = jax.vmap(lambda model_state: init_one(model_state))(batched_model_state)
+
+        carry_specs = None
+        if data_gen is not None:
+            carry_specs, _ = _split_carry_for_vmap(
+                init_fun(models[0], init_batch[0]),
+                deps,
+            )
+        else:
+            carry_specs, _ = _split_carry_for_vmap(init_fun(models[0]), deps)
+
+        def step_one(carry_dynamic: tuple[Any, ...], batch: Any | None = None) -> tuple[Any, Any]:
+            carry = _merge_carry_from_vmap(carry_specs, carry_dynamic, deps)
+            if batch is None:
+                next_carry, values = step_fun(carry)
+            else:
+                next_carry, values = step_fun(carry, batch)
+            _, next_dynamic = _split_carry_for_vmap(next_carry, deps)
+            return next_dynamic, values
+
+        if data_gen is not None:
+            batched_step_fun = nnx.jit(jax.vmap(step_one, in_axes=(0, 0)))
+        else:
+            batched_step_fun = nnx.jit(jax.vmap(lambda carry_dynamic: step_one(carry_dynamic)))
+
+        metrics: dict[str, list[Any]] = {
+            "loss": [],
+            "grad_norm": [],
+            "natural_grad_norm": [],
+        }
+        best_losses = [float("inf")] * n_seeds
+        max_iterations = representative["method_kwargs"]["max_iterations"]
+        plot_every = representative["method_kwargs"].get("plot_every")
+        session_plot_dir = session_dir / "plots"
+        session_plot_dir.mkdir(parents=True, exist_ok=True)
+        run_plot_paths = [session_plot_dir / f"{planned_run['run_id']}_plots.pdf" for planned_run in planned_runs]
+
+        progress_bar = None
+        if progress_position is not None:
+            from tqdm import tqdm
+
+            desc = (
+                f"worker {worker_id} {device_info['device_label']} "
+                f"{representative['run_id']} x{n_seeds} {representative['method']}"
+            )
+            progress_bar = tqdm(
+                total=max_iterations,
+                desc=desc,
+                position=progress_position,
+                leave=False,
+            )
+
+        for iteration in range(max_iterations):
+            if data_gen is not None:
+                step_batch = reshape_data_batch(next(data_gen))
+                batched_carry_dynamic, values = batched_step_fun(batched_carry_dynamic, step_batch)
+            else:
+                batched_carry_dynamic, values = batched_step_fun(batched_carry_dynamic)
+            _append_batched_metrics(values, metrics)
+
+            import numpy as np
+
+            current_losses = np.asarray(values[0], dtype=float)
+            for index, current_loss in enumerate(current_losses):
+                current_loss_value = float(current_loss)
+                if current_loss_value < best_losses[index]:
+                    best_losses[index] = current_loss_value
+                    write_checkpoint(
+                        run_dirs[index] / "checkpoints" / "best",
+                        _model_from_batched_carry(
+                            carry_specs,
+                            batched_carry_dynamic,
+                            index,
+                            deps,
+                        ),
+                        deps,
+                        planned_runs[index],
+                        "best",
+                        metric_value=current_loss_value,
+                    )
+
+            if progress_bar is not None:
+                progress_bar.update(1)
+
+            if plot_every is not None and (iteration + 1) % plot_every == 0:
+                arrays = _metric_arrays(metrics)
+                for index, planned_run in enumerate(planned_runs):
+                    plot_run_diagnostics(
+                        _model_from_batched_carry(
+                            carry_specs,
+                            batched_carry_dynamic,
+                            index,
+                            deps,
+                        ),
+                        _metric_arrays_for_lane(arrays, index),
+                        f"{planned_run['run_id']}, iteration {iteration + 1}",
+                        run_plot_paths[index],
+                        n_samples=per_seed_batch_size,
+                    )
+
+        if progress_bar is not None:
+            progress_bar.close()
+
+        arrays = _metric_arrays(metrics)
+        results = []
+        import numpy as np
+
+        for index, planned_run in enumerate(planned_runs):
+            lane_arrays = _metric_arrays_for_lane(arrays, index)
+            np.savez(run_dirs[index] / "arrays.npz", **lane_arrays)
+            model = _model_from_batched_carry(carry_specs, batched_carry_dynamic, index, deps)
+            plot_run_diagnostics(
+                model,
+                lane_arrays,
+                f"{planned_run['run_id']}, final",
+                run_plot_paths[index],
+                n_samples=per_seed_batch_size,
+            )
+            last_loss = float(lane_arrays["loss"][-1]) if "loss" in lane_arrays else None
+            write_checkpoint(
+                run_dirs[index] / "checkpoints" / "last",
+                model,
+                deps,
+                planned_run,
+                "last",
+                metric_value=last_loss,
+            )
+            write_status(
+                run_dirs[index],
+                "success",
+                planned_run,
+                worker_id,
+                device_info,
+                finished_at=_utc_now_iso(),
+                best_loss=best_losses[index],
+                best_checkpoint_criterion="minimum_loss",
+                arrays_path="arrays.npz",
+            )
+            results.append({"status": "success", "run_id": planned_run["run_id"], "run_dir": run_dirs[index]})
+        return {
+            "status": "success",
+            "success": len(results),
+            "failed": 0,
+            "results": results,
+        }
+    except Exception as exc:
+        if "progress_bar" in locals() and progress_bar is not None:
+            progress_bar.close()
+        traceback_text = traceback.format_exc()
+        results = []
+        for run_dir, planned_run in zip(run_dirs, planned_runs, strict=True):
+            write_error_file(run_dir, planned_run, worker_id, exc, traceback_text)
+            write_status(
+                run_dir,
+                "failed",
+                planned_run,
+                worker_id,
+                device_info,
+                finished_at=_utc_now_iso(),
+                error=str(exc),
+                traceback_path="error.txt",
+            )
+            results.append(
+                {
+                    "status": "failed",
+                    "run_id": planned_run["run_id"],
+                    "run_dir": run_dir,
+                    "error": str(exc),
+                }
+            )
+        return {
+            "status": "failed",
+            "success": 0,
+            "failed": len(results),
+            "results": results,
+        }
+
+
+def execute_task(
+    task: list[dict[str, Any]],
+    session_dir: Path,
+    worker_id: int,
+    device_info: dict[str, Any],
+    deps: dict[str, Any] | None = None,
+    progress_position: int | None = None,
+) -> dict[str, Any]:
+    if len(task) == 1:
+        result = execute_run(
+            task[0],
+            session_dir,
+            worker_id,
+            device_info,
+            deps=deps,
+            progress_position=progress_position,
+        )
+        return {
+            "status": result["status"],
+            "success": 1 if result["status"] == "success" else 0,
+            "failed": 1 if result["status"] == "failed" else 0,
+            "results": [result],
+        }
+    return execute_seed_group(
+        task,
+        session_dir,
+        worker_id,
+        device_info,
+        deps=deps,
+        progress_position=progress_position,
+    )
+
+
 def execute_run(
     planned_run: dict[str, Any],
     session_dir: Path,
@@ -983,20 +1366,22 @@ def run_sequential(
     device_info = get_worker_device_info(requested_gpu_id, config.get("config"))
     deps = import_runtime_dependencies()
     summary = {"success": 0, "failed": 0, "total": len(selected_runs)}
+    tasks = group_runs_for_seed_vmap(selected_runs)
     from tqdm import tqdm
 
     with tqdm(total=len(selected_runs), desc="Runs", position=0, leave=True) as runs_pbar:
-        for planned_run in selected_runs:
-            result = execute_run(
-                planned_run,
+        for task in tasks:
+            result = execute_task(
+                task,
                 session_dir,
                 worker_id,
                 device_info,
                 deps=deps,
                 progress_position=worker_id + 1,
             )
-            summary[result["status"]] += 1
-            runs_pbar.update(1)
+            summary["success"] += result["success"]
+            summary["failed"] += result["failed"]
+            runs_pbar.update(len(result["results"]))
     _write_json(session_dir / "summary.json", summary)
     return summary
 
@@ -1029,45 +1414,48 @@ def worker_loop(
         session_path = Path(session_dir)
 
         while True:
-            planned_run = task_queue.get()
-            if planned_run is None:
+            task = task_queue.get()
+            if task is None:
                 message_queue.put(
                     {"event": "worker_empty_queue", "worker_id": worker_id}
                 )
                 break
 
+            run_ids = [planned_run["run_id"] for planned_run in task]
             message_queue.put(
                 {
                     "event": "run_started",
                     "worker_id": worker_id,
-                    "run_id": planned_run["run_id"],
+                    "run_id": run_ids[0],
+                    "run_count": len(run_ids),
                 }
             )
-            result = execute_run(
-                planned_run,
+            result = execute_task(
+                task,
                 session_path,
                 worker_id,
                 device_info,
                 deps=deps,
                 progress_position=worker_id + 1,
             )
-            if result["status"] == "success":
-                message_queue.put(
-                    {
-                        "event": "run_success",
-                        "worker_id": worker_id,
-                        "run_id": planned_run["run_id"],
-                    }
-                )
-            else:
-                message_queue.put(
-                    {
-                        "event": "run_error",
-                        "worker_id": worker_id,
-                        "run_id": planned_run["run_id"],
-                        "error": result.get("error", "unknown error"),
-                    }
-                )
+            for run_result in result["results"]:
+                if run_result["status"] == "success":
+                    message_queue.put(
+                        {
+                            "event": "run_success",
+                            "worker_id": worker_id,
+                            "run_id": run_result["run_id"],
+                        }
+                    )
+                else:
+                    message_queue.put(
+                        {
+                            "event": "run_error",
+                            "worker_id": worker_id,
+                            "run_id": run_result["run_id"],
+                            "error": run_result.get("error", "unknown error"),
+                        }
+                    )
     except Exception as exc:
         message_queue.put(
             {
@@ -1090,15 +1478,16 @@ def run_parallel(
 ) -> dict[str, int]:
     from tqdm import tqdm
 
-    n_workers = min(config["parallel"]["n_workers"], len(selected_runs))
+    tasks = group_runs_for_seed_vmap(selected_runs)
+    n_workers = min(config["parallel"]["n_workers"], len(tasks))
     if n_workers <= 1:
         return run_sequential(selected_runs, session_dir, config)
 
     ctx = mp.get_context("spawn")
     task_queue = ctx.Queue()
     message_queue = ctx.Queue()
-    for planned_run in selected_runs:
-        task_queue.put(planned_run)
+    for task in tasks:
+        task_queue.put(task)
     for _ in range(n_workers):
         task_queue.put(None)
 
@@ -1139,9 +1528,15 @@ def run_parallel(
                     f"devices={message.get('jax_devices')}"
                 )
             elif event == "run_started":
-                tqdm.write(
-                    f"worker {worker_id} started {message.get('run_id')}"
-                )
+                run_count = message.get("run_count", 1)
+                if run_count > 1:
+                    tqdm.write(
+                        f"worker {worker_id} started {message.get('run_id')} x{run_count}"
+                    )
+                else:
+                    tqdm.write(
+                        f"worker {worker_id} started {message.get('run_id')}"
+                    )
             elif event in terminal_events:
                 if event == "run_success":
                     summary["success"] += 1
@@ -1344,6 +1739,33 @@ def _group_items_by_keys(
 def _is_seed_key(key: str) -> bool:
     leaf = key.rsplit(".", 1)[-1].lower()
     return leaf == "seed" or leaf.endswith("_seed")
+
+
+def _is_groupable_seed_key(key: str) -> bool:
+    return _is_seed_key(key) and key != "problem.distribution.seed"
+
+
+def _seed_group_identity(planned_run: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    flat = flatten_run_params(planned_run)
+    return tuple(
+        (key, _value_identity(value))
+        for key, value in flat.items()
+        if not _is_groupable_seed_key(key)
+    )
+
+
+def group_runs_for_seed_vmap(
+    selected_runs: list[dict[str, Any]],
+) -> list[list[dict[str, Any]]]:
+    groups: dict[tuple[tuple[str, str], ...], list[dict[str, Any]]] = {}
+    order: list[tuple[tuple[str, str], ...]] = []
+    for planned_run in selected_runs:
+        group_key = _seed_group_identity(planned_run)
+        if group_key not in groups:
+            groups[group_key] = []
+            order.append(group_key)
+        groups[group_key].append(planned_run)
+    return [groups[group_key] for group_key in order]
 
 
 def _filename_suffix(index: int, group_key: dict[str, Any]) -> str:
