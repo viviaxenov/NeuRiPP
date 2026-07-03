@@ -47,30 +47,29 @@ class MLP(nnx.Module):
     def __init__(
         self,
         dim,
+        rngs,
         n_hidden: int = 1,
         dim_hidden: int = None,
-        seed: int = 42,
         activation: nnx.Module = nnx.selu,
     ):
-        self.rngs = nnx.Rngs(seed)
         self.dim = dim
         if dim_hidden is None:
             dim_hidden = dim
 
-        # self.t_proj = nnx.Sequential(nnx.Linear(1, dim, rngs=self.rngs), nnx.selu)
+        # self.t_proj = nnx.Sequential(nnx.Linear(1, dim, rngs=rngs), nnx.selu)
 
         list_of_modules = (
             [
-                nnx.Linear(dim + 1, dim_hidden, rngs=self.rngs),
+                nnx.Linear(dim + 1, dim_hidden, rngs=rngs),
                 activation,
             ]
             + [
-                nnx.Linear(dim_hidden, dim_hidden, rngs=self.rngs),
+                nnx.Linear(dim_hidden, dim_hidden, rngs=rngs),
                 activation,
             ]
             * (n_hidden - 1)
             + [
-                nnx.Linear(dim_hidden, dim, rngs=self.rngs),
+                nnx.Linear(dim_hidden, dim, rngs=rngs),
             ]
         )
 

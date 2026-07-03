@@ -11,13 +11,14 @@ from neuripp.utility.utility import *
 
 def _compute_natural_grad(
     model,
+    rngs,
     grad,
     init_vector,
     linear_solver_regularization,
     linear_solver_tolerance,
     linear_solver_maxiter,
 ):
-    matvec_cur = model.get_matvec_fn()
+    matvec_cur = model.get_matvec_fn(rngs)
 
     def oper_cg(tang):
         Gtang = matvec_cur(tang)
@@ -41,9 +42,9 @@ def _compute_natural_grad(
 def get_ngd(
     loss: Callable,
     step_size: float,
-    linear_solver_regularization: float,
-    linear_solver_tolerance: float,
-    linear_solver_maxiter: float,
+    linear_solver_regularization: float = 1e-3,
+    linear_solver_tolerance: float = 1e-6,
+    linear_solver_maxiter: float = 50,
     linear_solver_method: str = "cg",
 ):
     """
@@ -57,39 +58,57 @@ def get_ngd(
 
     vg_fn = nnx.value_and_grad(loss, argnums=0)
 
-    def _ngd_init(_model_ngd, *args, **kwargs):
-        _, par, _ = nnx.split(_model_ngd, nnx.Param, ...)
+    def _ngd_init(
+        model,
+    ):
+        _, par, _ = nnx.split(model, nnx.Param, ...)
         previous_grad = jax.tree.map(jnp.zeros_like, par)
-        return (_model_ngd, previous_grad)
+        state = (model, previous_grad)
+        return state
 
-    def _ngd_step(carry, *args):
-        _model_ngd = carry[0]
-        _previous_grad = carry[1]
+    def _ngd_step(
+        state,
+        batch,
+        rngs,
+        step_size: float,
+        linear_solver_regularization: float,
+        linear_solver_tolerance: float,
+        linear_solver_maxiter: float,
+    ):
+        model, prev_grad = state
         # compute loss and Euclidean grad
-        f, grad = vg_fn(_model_ngd, *args)
+        f, grad = vg_fn(model, batch, rngs)
 
         # compute natural grad
         # natural_grad_norm_alt = tree_dot_product(grad, natural_grad)
         natural_grad = _compute_natural_grad(
-            _model_ngd,
+            model,
+            rngs,
             grad,
-            _previous_grad,
+            prev_grad,
             linear_solver_regularization,
             linear_solver_tolerance,
             linear_solver_maxiter,
         )
-        natural_grad_norm_sq = _model_ngd.scalar_product(natural_grad, natural_grad)
+        natural_grad_norm_sq = model.scalar_product(natural_grad, natural_grad, rngs)
         grad_norm_sq = tree_dot_product(grad, grad)
 
-        gd, params, rest = nnx.split(_model_ngd, nnx.Param, ...)
+        gd, params, rest = nnx.split(model, nnx.Param, ...)
         # update params
         params_new = jax.tree.map(lambda x, y: x - y * step_size, params, natural_grad)
-        _model_ngd = nnx.merge(gd, params_new, rest)
+        model = nnx.merge(gd, params_new, rest)
 
-        return (_model_ngd, natural_grad), (
+        return (model, natural_grad), (
             f,
             grad_norm_sq,
             natural_grad_norm_sq,
         )
 
-    return _ngd_init, _ngd_step
+    _full_args = (
+        step_size,
+        linear_solver_regularization,
+        linear_solver_tolerance,
+        linear_solver_maxiter,
+    )
+
+    return _ngd_init, _ngd_step, _full_args

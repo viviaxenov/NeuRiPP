@@ -36,8 +36,8 @@ class ParametricPushforward(nnx.Module):
     def __init__(
         self,
         rhs: nnx.Module,
+        rngs: nnx.Rngs,
         N_monte_carlo: int,
-        seed: int,
         ode_nstep_max: int = 100,
         ode_method: str = "rk45",
         ode_kwargs: dict = None,
@@ -49,7 +49,6 @@ class ParametricPushforward(nnx.Module):
             Assumes that rhs(t, x) accepts x's of shape (n_batch, dim). For images/other structured data, reshaping should be done by RHS.
             Maybe need to provide a wrapper.
         """
-        self._rngs = nnx.Rngs(seed)
         assert hasattr(
             rhs, "dim"
         ), "RHS must have a `dim` property for the dimension of `x`"
@@ -63,7 +62,7 @@ class ParametricPushforward(nnx.Module):
         self.ode_kwargs = ode_kwargs if ode_kwargs is not None else dict()
         self.div_method = divergence_method
 
-    def __call__(self, z: jnp.ndarray, with_log_density=False):
+    def __call__(self, z: jnp.ndarray, rngs: nnx.Rngs=None, with_log_density=False):
         rhs_of_system = self.rhs
         aux_args = None
         if with_log_density:
@@ -72,7 +71,7 @@ class ParametricPushforward(nnx.Module):
             if self.div_method == "exact":
                 rhs_of_system = self.rhs_div
             else:
-                eps = self._rngs.rademacher(z.shape, dtype=z.dtype)
+                eps = rngs.rademacher(z.shape, dtype=z.dtype)
                 rhs_of_system = self.rhs_div_hutchinson
                 aux_args = eps
             z = jnp.concat((z, logp_latent.reshape(-1, 1)), axis=-1)
@@ -124,7 +123,7 @@ class ParametricPushforward(nnx.Module):
     def pushforward(self, *args, **kwargs):
         return self(*args, **kwargs)
 
-    def pullback(self, x: jnp.ndarray, with_log_density=False):
+    def pullback(self, x: jnp.ndarray, rngs: nnx.Rngs=None, with_log_density=False):
         """Compute inverse of the parametric mapping"""
         rhs_of_system = self.rhs
         aux_args = None
@@ -134,7 +133,7 @@ class ParametricPushforward(nnx.Module):
             if self.div_method == "exact":
                 rhs_of_system = self.rhs_div_inv_time
             else:
-                eps = self._rngs.rademacher(x.shape, dtype=x.dtype)
+                eps = rngs.rademacher(x.shape, dtype=x.dtype)
                 rhs_of_system = self.rhs_div_hutchinson_inv_time
                 aux_args = eps
             x = jnp.concat((x, logp_latent.reshape(-1, 1)), axis=-1)
@@ -155,22 +154,23 @@ class ParametricPushforward(nnx.Module):
 
         return res
 
-    def _sample_latent(self, N_samples: int):
-        return self._rngs.normal((N_samples, self.rhs.dim))
+    def _sample_latent(self, N_samples: int, rngs: nnx.Rngs):
+        return rngs.normal((N_samples, self.rhs.dim))
 
     def _latent_log_density(self, z: jnp.ndarray):
         """Returns the log density of the latent distribution"""
         return -0.5 * ((z.reshape(z.shape[0], -1)) ** 2).sum(axis=-1)
 
-    def sample(self, N_samples: int, with_log_density=False):
+    def sample(self, N_samples: int, rngs: nnx.Rngs, with_log_density=False):
         """Returns a sample `x` of shape `(N_samples, dim)` from the current distribution :math:`\\rho_\\theta`"""
-        z = self._sample_latent(N_samples)
+        z = self._sample_latent(N_samples, rngs)
         return self(z, with_log_density=with_log_density)
 
     def scalar_product(
         self,
         tangent1: PyTree,
         tangent2: PyTree,
+        rngs: nnx.Rngs
     ):
         """Computes the scalar product of tangent vectors in the pullback Wasserstein metric
 
@@ -179,7 +179,7 @@ class ParametricPushforward(nnx.Module):
             Tangents should be trainable parameters, e.g. output of ``nnx.grad``
 
         """
-        z = self._sample_latent(self._N_mc)
+        z = self._sample_latent(self._N_mc, rngs)
         gd, params, rest = nnx.split(self, nnx.Param, ...)
 
         def _T(_par):
@@ -195,9 +195,10 @@ class ParametricPushforward(nnx.Module):
 
     def get_matvec_fn(
         self,
+        rngs: nnx.Rngs,
     ):
         """For fixed set of parameters, generates latent samples and gives a function that computes :maht:`G(\\theta)\\mathrm{d}\\theta`"""
-        z = self._sample_latent(self._N_mc)
+        z = self._sample_latent(self._N_mc, rngs)
         gd, params, rest = nnx.split(self, nnx.Param, ...)
 
         def _T(_par):
@@ -213,8 +214,8 @@ class ParametricPushforward(nnx.Module):
 
         return _matvec_fn
 
-    def norm(self, tangent: PyTree):
-        norm_sq = self.scalar_product(tangent, N_monte_carlo, param)
+    def norm(self, tangent: PyTree, rngs):
+        norm_sq = self.scalar_product(tangent, N_monte_carlo, param, rngs)
         return jnp.sqrt(jnp.maximum(norm_sq, ZERO_TOL))
 
     def riemannian_exp(

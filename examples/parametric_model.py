@@ -1,6 +1,6 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["JAX_TRACEBACK_FILTERING"] = "off"
 
@@ -18,8 +18,8 @@ import jax.scipy as jsp
 
 from flax import nnx
 from neuripp.parametric_pushforward.parametric_pushforward import ParametricPushforward
-from neuripp.functionals.KL import getKL, logpdf_st
-from neuripp.functionals.MMD import *
+from neuripp.functionals.KL import getKL
+from neuripp.functionals.MMD import getMMD
 from neuripp.functionals.CrossEntropy import cross_entropy
 from neuripp.methods.ngd import get_ngd
 from neuripp.methods.sgd import get_sgd
@@ -31,29 +31,37 @@ from time import perf_counter
 
 import matplotlib.pyplot as plt
 
-from test_rhs import LinearRHS, MLP
+from rhs_architectures import LinearRHS, MLP
+from data_generators import *
+from logpdf_targets import *
 
 import tqdm
 
 
 dim = 2
 n_iter = 6_000
+n_restarts = 5
 n_iter_scan = 100
-batch_size = 2048
+# batch_size = 2048
+batch_size = 512
 N_mc = batch_size
 lr = 1e-5
 lr_ngd = 0.0001
 Lam_reg = 1e-3
 method = sys.argv[1] if len(sys.argv) > 1 else "ngd"
-n_iter = int(sys.argv[2]) if len(sys.argv) > 2 else n_iter
+problem = sys.argv[2] if len(sys.argv) > 2 else "checkerboard"
+n_iter = int(sys.argv[3]) if len(sys.argv) > 3 else n_iter
 
-rhs_net = MLP(dim, dim_hidden=128, n_hidden=2, activation=nnx.swish)
+rngs = nnx.Rngs(42)
+
+rhs_net = MLP(dim, rngs, dim_hidden=128, n_hidden=2, activation=nnx.swish)
 
 model_args = (
     rhs_net,
+    rngs,
     N_mc,
-    42,
 )
+
 model_kwargs = dict(
     ode_nstep_max=12,
     divergence_method="hutchinson",
@@ -62,23 +70,23 @@ model_kwargs = dict(
     ode_kwargs=dict(h_max=0.3, N_iter_to_accept=15, adaptive=True),
 )
 
-data_gen = checkerboard_generator(batch_size, 30)
-loss = cross_entropy
-# loss = getMMD(batch_size, next(data_gen), jnp.array([0.025, 0.25, 2.5]))
-# loss = getKL(logpdf_st, batch_size)
 
-vg_fn = nnx.value_and_grad(loss, has_aux=True)
-
-print(f"Running {method.upper()}", flush=True)
-rhs_net = MLP(dim, dim_hidden=128, n_hidden=2, activation=nnx.swish)
-gd, par_init, rest = nnx.split(rhs_net, nnx.Param, ...)
-par_init = jax.tree.map(lambda _x: jnp.full_like(_x, 1e-9), par_init)
-nnx.update(rhs_net, par_init)
 model = ParametricPushforward(*model_args, **model_kwargs)
+
+
+match problem:
+    case "checkerboard":
+        data_gen = CheckerboardBatcher(batch_size, 30)
+        loss = cross_entropy
+    case "st":
+        data_gen = LatentBatcherFromModel(batch_size, 30, model)
+        loss = getKL(logpdf_st)
+    case _:
+        raise ValueError(f"{problem = } not yet implemented")
 
 match method:
     case "ngd":
-        init_fun, step_fun = get_ngd(
+        init_fun, step_fun, method_args = get_ngd(
             loss,
             step_size=lr_ngd,
             linear_solver_regularization=Lam_reg,
@@ -95,9 +103,7 @@ match method:
         init_fun, step_fun = get_optax(loss, method, lr)
     case _:
         raise ValueError(f"Method {x} not supported")
-
-
-step_fun = nnx.jit(step_fun)
+# step_fun = nnx.jit(step_fun)
 
 fs = []
 grads = []
@@ -105,18 +111,69 @@ natural_grads = []
 
 metrics = (fs, grads, natural_grads)
 
-carry = init_fun(model, next(data_gen))
+
+print(f"Running {method.upper()}", flush=True)
+run_no = jnp.array(range(n_restarts))
+stepsizes = jnp.array([0.01, 0.001, 0.0001])
+linear_regs = jnp.array([1e-1, 1e-2, 1e-3, 1e-4])
+ls_tol = jnp.array([1e-6])
+ls_maxiter = jnp.array([100], dtype=jnp.int32)
+
+_, SSs, LRs, LTols, LMaxs = jnp.stack(
+    jnp.meshgrid(run_no, stepsizes, linear_regs, ls_tol, ls_maxiter), axis=0
+).reshape(5, -1)
+# vectrozed_args = jnp.stack(jnp.meshgrid(run_no, stepsizes, linear_regs, ls_tol, ls_maxiter), axis=0).reshape(5, -1)[1:]
+vectorized_args = (SSs, LRs, LTols, LMaxs)
+
+n_seeds = vectorized_args[0].shape[0]
+
+vectorized_init = nnx.vmap(init_fun)
+vectorized_step = nnx.jit(nnx.vmap(step_fun))
+vectorized_rngs = rngs.fork(split=n_seeds)
+vectorized_args = nnx.vmap(lambda x, y: y, in_axes=(0, None))(
+    vectorized_rngs, method_args
+)
+
+ensemble = nnx.vmap(
+    lambda _x: ParametricPushforward(
+        MLP(dim, _x, dim_hidden=128, n_hidden=2, activation=nnx.swish),
+        _x,
+        N_mc,
+        **model_kwargs,
+    )
+)(vectorized_rngs)
+
+
+state = vectorized_init(ensemble)
+print(method_args)
 for _ in tqdm.tqdm(range(n_iter)):
-    carry, vals = step_fun(carry, next(data_gen))
+    batch = data_gen(rngs)
+    # train on the same batch for now, later will vectorize batch gen
+    batch = jnp.broadcast_to(batch[None, :, :], (n_seeds, *batch.shape))
+    state, vals = vectorized_step(state, batch, vectorized_rngs, *vectorized_args)
     [arr.append(val) for arr, val in zip(metrics, vals)]
 
-model = carry[0]
+model_ensemble = state[0]
 
-x = model.sample(3000)
+jnp.savez(
+    "ensemble_train_results.npz",
+    step_sizes=SSs,
+    linear_solver_regs=LRs,
+    grads=grads,
+    natural_grads=natural_grads,
+    fs=fs
+)
+
 
 fig, axs = plt.subplots(1, 2)
 ax = axs[0]
-ax.scatter(*x[:, :2].T, label=r"$T_{\text{opt}}(z)$", marker="*", s=5.0)
+
+gd, _, rest = nnx.split(model, nnx.Param, ...)
+_, param_ensemble, _ = nnx.split(model_ensemble, nnx.Param, ...)
+for i in range(n_restarts):
+    param = jax.tree.map(lambda x: x[0, ...], param_ensemble)
+    x = nnx.merge(gd, param, rest).sample(500, rngs)
+    ax.scatter(*x[:, :2].T, label=r"$T_{\text{opt}}^{{{i}}}(z)$", marker="*", s=5.0)
 
 ax = axs[1]
 ax.plot(fs, label="Loss")

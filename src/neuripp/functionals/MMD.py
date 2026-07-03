@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Callable, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -59,81 +59,21 @@ def gaussian_mmd(X1: jnp.ndarray, X2: jnp.ndarray, bandwidths: jnp.ndarray):
 
 
 def getMMD(
-    batch_size: int, data: jnp.ndarray = None, bw_multipliers: jnp.ndarray = None
+    data: jnp.ndarray = None, bw_multipliers: jnp.ndarray = None, bw_base: float = None,
 ):
-    bw_base = 1.0
     if data is not None:
         bw_base = bandwidth_median(data)
+    elif bw_base is None:
+        raise ValueError("Failed to determine bandwidth! Either give bw_base directly or a data batch to use with the median heuristic")
+
     if bw_multipliers is None:
         bw_multipliers = jnp.array([1.0])
 
     bandwidths = bw_multipliers * bw_base
 
-    def _MMD(model: ParametricPushforward, data_batch: jnp.ndarray):
-        x = model.sample(batch_size)
+    def _MMD(model: ParametricPushforward, batch: Tuple[jnp.ndarray]):
+        latent_batch, data_batch = batch
+        x = model(latent_batch)
         return gaussian_mmd(x, data_batch, bandwidths)
 
     return _MMD
-
-
-def checkerboard_generator(n_samples: int, resample_each: int, seed: int = 3):
-    key = jax.random.PRNGKey(seed)
-    while True:
-        key, points_key, shift_x_key, shift_y_key = jax.random.split(key, 4)
-        points = jax.random.uniform(points_key, (n_samples, 2))
-        shifts_x = jax.random.randint(shift_x_key, (n_samples,), 0, 4) - 2
-        shifts_y = (
-            jax.random.randint(shift_y_key, (n_samples,), 0, 2) * 2 + shifts_x % 2 - 2
-        )
-        points = points.at[:, 0].add(shifts_x)
-        points = points.at[:, 1].add(shifts_y)
-        for _ in range(resample_each):
-            yield points
-
-
-def two_spirals_generator(n_samples: int, resample_each: int, seed: int = 3):
-    key = jax.random.PRNGKey(seed)
-    while True:
-        key, n_key, shift_x_key, shift_y_key, noise_key = jax.random.split(key, 5)
-        n = (
-            jnp.sqrt(jax.random.uniform(n_key, (n_samples // 2, 1)))
-            * 540
-            * (2 * jnp.pi)
-            / 360
-        )
-        d1x = (
-            -jnp.cos(n) * n + jax.random.uniform(shift_x_key, (n_samples // 2, 1)) * 0.5
-        )
-        d1y = (
-            jnp.sin(n) * n + jax.random.uniform(shift_y_key, (n_samples // 2, 1)) * 0.5
-        )
-        x = jnp.vstack((jnp.hstack((d1x, d1y)), jnp.hstack((-d1x, -d1y)))) / 3
-        x += jax.random.uniform(noise_key, x.shape) * 0.1
-        for _ in range(resample_each):
-            yield x
-
-
-def eight_gaussians_generator(n_samples: int, resample_each: int, seed: int = 3):
-    theta = jnp.linspace(0.0, 2.0 * jnp.pi, 8)
-    centers = 4.0 * jnp.stack((jnp.cos(theta), jnp.sin(theta)), axis=-1)
-    key = jax.random.PRNGKey(seed)
-
-    while True:
-        key, idx_key, blob_key = jax.random.split(key, 3)
-        blob = jax.random.normal(blob_key, (n_samples, 2)) * 0.5
-        shift_ids = jax.random.randint(idx_key, n_samples, minval=0, maxval=7)
-
-        x = blob + centers[shift_ids, :]
-        x /= 1.414
-
-        for _ in range(resample_each):
-            yield x
-
-
-def file_dataset_generator(file_path: str, n_samples: int, resample_each: int):
-    raise NotImplementedError(
-        "File-based dataset generator is not implemented yet "
-        f"(requested file: {file_path})"
-    )
-
-
