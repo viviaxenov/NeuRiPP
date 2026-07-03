@@ -1,7 +1,7 @@
 import os
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+# os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["JAX_TRACEBACK_FILTERING"] = "off"
 
 
@@ -130,9 +130,6 @@ n_seeds = vectorized_args[0].shape[0]
 vectorized_init = nnx.vmap(init_fun)
 vectorized_step = nnx.jit(nnx.vmap(step_fun))
 vectorized_rngs = rngs.fork(split=n_seeds)
-vectorized_args = nnx.vmap(lambda x, y: y, in_axes=(0, None))(
-    vectorized_rngs, method_args
-)
 
 ensemble = nnx.vmap(
     lambda _x: ParametricPushforward(
@@ -161,26 +158,39 @@ jnp.savez(
     linear_solver_regs=LRs,
     grads=grads,
     natural_grads=natural_grads,
-    fs=fs
+    fs=fs,
 )
 
 
-fig, axs = plt.subplots(1, 2)
-ax = axs[0]
+fs = jnp.array(fs)
+fs = jnp.where(jnp.isfinite(fs), fs, jnp.inf)
+grads = jnp.array(grads)
+natural_grads = jnp.array(natural_grads)
 
 gd, _, rest = nnx.split(model, nnx.Param, ...)
 _, param_ensemble, _ = nnx.split(model_ensemble, nnx.Param, ...)
-for i in range(n_restarts):
-    param = jax.tree.map(lambda x: x[0, ...], param_ensemble)
-    x = nnx.merge(gd, param, rest).sample(500, rngs)
-    ax.scatter(*x[:, :2].T, label=r"$T_{\text{opt}}^{{{i}}}(z)$", marker="*", s=5.0)
+i = jnp.argmin(fs[-1, :])
+print(fs[-1, i])
+param = jax.tree.map(lambda x: x[i, ...], param_ensemble)
+x = nnx.merge(gd, param, rest).sample(500, rngs)
+loss_mean = fs[:, i // n_restarts : i // n_restarts + n_restarts].mean(axis=-1)
+loss_std = fs[:, i // n_restarts : i // n_restarts + n_restarts].std(axis=-1)
+
+fig, axs = plt.subplots(1, 3)
+ax = axs[0]
+ax.scatter(*x[:, :2].T, label=r"$T_{\text{opt}}^{{{i}}}(z)$", marker="*", s=5.0)
 
 ax = axs[1]
-ax.plot(fs, label="Loss")
-ax1 = ax.twinx()
-ax1.plot(grads, color="red", label=r"$\| \nabla L\|_2$")
+ax.plot(range(fs.shape[0]), fs[:, i], label="Loss (best)")
+ax.fill_between(
+    range(fs.shape[0]), loss_mean + 3.0 * loss_std, loss_mean - 3.0 * loss_std, alpha=0.2
+)
+
+ax = axs[2]
+ax.plot(grads[:, i], color="red", label=r"$\| \nabla L\|_2$")
 if len(natural_grads) > 0:
-    ax1.plot(natural_grads, color="tab:orange", label=r"$\| \partial_W L\|_2$")
+    ax1 = ax.twinx()
+    ax1.plot(natural_grads[:, i], color="tab:orange", label=r"$\| \partial_W L\|_2$")
 ax.set_yscale("log")
 ax1.set_yscale("log")
 fig.suptitle(method.upper())
