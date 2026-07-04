@@ -14,9 +14,12 @@ def _compute_natural_grad(
     rngs,
     grad,
     init_vector,
-    linear_solver_regularization,
-    linear_solver_tolerance,
-    linear_solver_maxiter,
+    linear_solver_regularization: float = 1e-3,
+    linear_solver_tolerance: float = 1e-6,
+    linear_solver_maxiter: float = 50,
+    # linear_solver_regularization,
+    # linear_solver_tolerance,
+    # linear_solver_maxiter,
 ):
     matvec_cur = model.get_matvec_fn(rngs)
 
@@ -41,54 +44,40 @@ def _compute_natural_grad(
 
 def get_ngd(
     loss: Callable,
-    step_size: float,
-    linear_solver_regularization: float = 1e-3,
-    linear_solver_tolerance: float = 1e-6,
-    linear_solver_maxiter: float = 50,
-    linear_solver_method: str = "cg",
 ):
     """
     Gives `jax.lax.scan`-compatible function for the Picard/NGD method
     """
-
-    if linear_solver_method != "cg":
-        raise NotImplementedError(
-            f"Linear solvers except conjugate gradient not supported, but got {linear_solver_method=}"
-        )
-
     vg_fn = nnx.value_and_grad(loss, argnums=0)
 
     def _ngd_init(
         model,
+        args,
+        kwargs,
+        # step_size: float,
+        # linear_solver_regularization: float = 1e-3,
+        # linear_solver_tolerance: float = 1e-6,
+        # linear_solver_maxiter: float = 50,
     ):
         _, par, _ = nnx.split(model, nnx.Param, ...)
         previous_grad = jax.tree.map(jnp.zeros_like, par)
-        state = (model, previous_grad)
+        state = (model, previous_grad, args, kwargs)
         return state
 
     def _ngd_step(
         state,
         batch,
         rngs,
-        step_size: float,
-        linear_solver_regularization: float,
-        linear_solver_tolerance: float,
-        linear_solver_maxiter: float,
     ):
-        model, prev_grad = state
+        model, prev_grad, args, kwargs = state
+        step_size = args[0]
         # compute loss and Euclidean grad
         f, grad = vg_fn(model, batch, rngs)
 
         # compute natural grad
         # natural_grad_norm_alt = tree_dot_product(grad, natural_grad)
         natural_grad = _compute_natural_grad(
-            model,
-            rngs,
-            grad,
-            prev_grad,
-            linear_solver_regularization,
-            linear_solver_tolerance,
-            linear_solver_maxiter,
+            model, rngs, grad, prev_grad, **kwargs
         )
         natural_grad_norm_sq = model.scalar_product(natural_grad, natural_grad, rngs)
         grad_norm_sq = tree_dot_product(grad, grad)
@@ -98,17 +87,10 @@ def get_ngd(
         params_new = jax.tree.map(lambda x, y: x - y * step_size, params, natural_grad)
         model = nnx.merge(gd, params_new, rest)
 
-        return (model, natural_grad), (
+        return (model, natural_grad, args, kwargs), (
             f,
             grad_norm_sq,
             natural_grad_norm_sq,
         )
 
-    _full_args = (
-        step_size,
-        linear_solver_regularization,
-        linear_solver_tolerance,
-        linear_solver_maxiter,
-    )
-
-    return _ngd_init, _ngd_step, _full_args
+    return _ngd_init, _ngd_step

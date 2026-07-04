@@ -1,7 +1,7 @@
 import os
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-# os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["JAX_TRACEBACK_FILTERING"] = "off"
 
 
@@ -22,7 +22,6 @@ from neuripp.functionals.KL import getKL
 from neuripp.functionals.MMD import getMMD
 from neuripp.functionals.CrossEntropy import cross_entropy
 from neuripp.methods.ngd import get_ngd
-from neuripp.methods.sgd import get_sgd
 from neuripp.methods.anderson import get_anderson
 from neuripp.methods.optax_optimizer import get_optax, optax_optimizers
 from neuripp.utility.utility import *
@@ -86,21 +85,38 @@ match problem:
 
 match method:
     case "ngd":
-        init_fun, step_fun, method_args = get_ngd(
+        init_fun, step_fun = get_ngd(
             loss,
-            step_size=lr_ngd,
-            linear_solver_regularization=Lam_reg,
-            linear_solver_tolerance=1e-6,
-            linear_solver_maxiter=100,
         )
-    case "sgd":
-        init_fun, step_fun = get_sgd(loss, step_size=lr)
+        stepsizes = jnp.array([0.01, 0.001, 0.0001])
+        linear_regs = jnp.array([1e-1, 1e-2, 1e-3, 1e-4])
+        # ls_tol = jnp.array([1e-6])
+        # ls_maxiter = jnp.array([100], dtype=jnp.int32)
+        run_no = jnp.array(range(n_restarts))
+        _, SSs, LRs = jnp.stack(
+            jnp.meshgrid(run_no, stepsizes, linear_regs), axis=0
+        ).reshape(3, -1)
+        vectorized_args = (SSs,)
+        vectorized_kwargs = dict(
+            linear_solver_regularization=LRs,
+        )
+        n_seeds = vectorized_args[0].shape[0]
     case "anderson":
         init_fun, step_fun = get_anderson(
             loss, lr_ngd, 8, 1.2, 1e-2, "l2", True, Lam_reg, 1e-6, 100
         )
     case x if x in optax_optimizers:
-        init_fun, step_fun = get_optax(loss, method, lr)
+        init_fun, step_fun = get_optax(loss, method)
+        lr_vals = jnp.array([1e-2, 1e-3, 1e-4, 1e-5])
+        lr_repeated = jnp.broadcast_to(
+            lr_vals[None, :], (n_restarts, *lr_vals.shape)
+        ).ravel()
+        vectorized_args = (lr_repeated,)
+        wd = jnp.full_like(lr_repeated, 0.002)
+        wd = wd.at[::2].set(0.00001)
+        vectorized_kwargs = {"weight_decay": wd}
+        vectorized_kwargs = dict()
+        n_seeds = lr_repeated.shape[0]
     case _:
         raise ValueError(f"Method {x} not supported")
 # step_fun = nnx.jit(step_fun)
@@ -113,19 +129,8 @@ metrics = (fs, grads, natural_grads)
 
 
 print(f"Running {method.upper()}", flush=True)
-run_no = jnp.array(range(n_restarts))
-stepsizes = jnp.array([0.01, 0.001, 0.0001])
-linear_regs = jnp.array([1e-1, 1e-2, 1e-3, 1e-4])
-ls_tol = jnp.array([1e-6])
-ls_maxiter = jnp.array([100], dtype=jnp.int32)
-
-_, SSs, LRs, LTols, LMaxs = jnp.stack(
-    jnp.meshgrid(run_no, stepsizes, linear_regs, ls_tol, ls_maxiter), axis=0
-).reshape(5, -1)
 # vectrozed_args = jnp.stack(jnp.meshgrid(run_no, stepsizes, linear_regs, ls_tol, ls_maxiter), axis=0).reshape(5, -1)[1:]
-vectorized_args = (SSs, LRs, LTols, LMaxs)
 
-n_seeds = vectorized_args[0].shape[0]
 
 vectorized_init = nnx.vmap(init_fun)
 vectorized_step = nnx.jit(nnx.vmap(step_fun))
@@ -141,25 +146,38 @@ ensemble = nnx.vmap(
 )(vectorized_rngs)
 
 
-state = vectorized_init(ensemble)
-print(method_args)
+state = vectorized_init(
+    ensemble,
+    vectorized_args,
+    vectorized_kwargs,
+)
+
 for _ in tqdm.tqdm(range(n_iter)):
     batch = data_gen(rngs)
     # train on the same batch for now, later will vectorize batch gen
     batch = jnp.broadcast_to(batch[None, :, :], (n_seeds, *batch.shape))
-    state, vals = vectorized_step(state, batch, vectorized_rngs, *vectorized_args)
+    state, vals = vectorized_step(state, batch, vectorized_rngs)
     [arr.append(val) for arr, val in zip(metrics, vals)]
 
 model_ensemble = state[0]
 
-jnp.savez(
-    "ensemble_train_results.npz",
-    step_sizes=SSs,
-    linear_solver_regs=LRs,
-    grads=grads,
-    natural_grads=natural_grads,
-    fs=fs,
-)
+match method:
+    case "ngd":
+        jnp.savez(
+            f"ensemble_train_results_{method}.npz",
+            step_sizes=SSs,
+            linear_solver_regs=LRs,
+            grads=grads,
+            natural_grads=natural_grads,
+            fs=fs,
+        )
+    case x if x in optax_optimizers:
+        jnp.savez(
+            f"ensemble_train_results_{method}.npz",
+            learning_rates=lr_repeated,
+            grads=grads,
+            fs=fs,
+        )
 
 
 fs = jnp.array(fs)
@@ -183,7 +201,10 @@ ax.scatter(*x[:, :2].T, label=r"$T_{\text{opt}}^{{{i}}}(z)$", marker="*", s=5.0)
 ax = axs[1]
 ax.plot(range(fs.shape[0]), fs[:, i], label="Loss (best)")
 ax.fill_between(
-    range(fs.shape[0]), loss_mean + 3.0 * loss_std, loss_mean - 3.0 * loss_std, alpha=0.2
+    range(fs.shape[0]),
+    loss_mean + 3.0 * loss_std,
+    loss_mean - 3.0 * loss_std,
+    alpha=0.2,
 )
 
 ax = axs[2]
@@ -191,8 +212,8 @@ ax.plot(grads[:, i], color="red", label=r"$\| \nabla L\|_2$")
 if len(natural_grads) > 0:
     ax1 = ax.twinx()
     ax1.plot(natural_grads[:, i], color="tab:orange", label=r"$\| \partial_W L\|_2$")
+    ax1.set_yscale("log")
 ax.set_yscale("log")
-ax1.set_yscale("log")
 fig.suptitle(method.upper())
 fig.legend()
 fig.savefig(f"test_pm_{method}.pdf")
