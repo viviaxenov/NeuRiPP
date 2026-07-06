@@ -1,8 +1,7 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "6"
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-# os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".90"
+os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".90"
 os.environ["JAX_TRACEBACK_FILTERING"] = "off"
 
 
@@ -42,13 +41,9 @@ from functools import partial
 dim = 2
 n_iter = 6_000
 n_restarts = 5
-n_iter_scan = 100
-# batch_size = 2048
 batch_size = 512
 N_mc = batch_size
-lr = 1e-5
-lr_ngd = 0.0001
-Lam_reg = 1e-3
+
 method = sys.argv[1] if len(sys.argv) > 1 else "ngd"
 problem = sys.argv[2] if len(sys.argv) > 2 else "checkerboard"
 n_iter = int(sys.argv[3]) if len(sys.argv) > 3 else n_iter
@@ -56,13 +51,11 @@ n_iter = int(sys.argv[3]) if len(sys.argv) > 3 else n_iter
 rngs = nnx.Rngs(42)
 
 rhs_net = MLP(dim, rngs, dim_hidden=128, n_hidden=2, activation=nnx.swish)
-
 model_args = (
     rhs_net,
     rngs,
     N_mc,
 )
-
 model_kwargs = dict(
     ode_nstep_max=12,
     divergence_method="hutchinson",
@@ -70,18 +63,15 @@ model_kwargs = dict(
     ode_method="rk45",
     ode_kwargs=dict(h_max=0.3, N_iter_to_accept=15, adaptive=True),
 )
-
-
 model = ParametricPushforward(*model_args, **model_kwargs)
 
 
 match method:
     case "ngd":
+        n_restarts = 40
         get_fn = get_ngd
         stepsizes = jnp.array([0.01, 0.001, 0.0001])
-        linear_regs = jnp.array([1e-1, 1e-2, 1e-3, 1e-4])
-        # ls_tol = jnp.array([1e-6])
-        # ls_maxiter = jnp.array([100], dtype=jnp.int32)
+        linear_regs = jnp.array([ 1e-2 ])
         run_no = jnp.array(range(n_restarts))
         _, SSs, LRs = jnp.stack(
             jnp.meshgrid(run_no, stepsizes, linear_regs), axis=0
@@ -92,13 +82,14 @@ match method:
         )
     case "anderson":
         get_fn = partial(get_anderson, history_length=6)
-        stepsizes = jnp.array([ 0.001, ])
-        relaxations = jnp.array([ 1.0, ])
-        reg_factors = jnp.array([1e-1, 1e-3, 1e-5, 1e-7])
-        linear_regs = jnp.array([ 1e-2, ])
+        stepsizes = jnp.array([0.001])
+        relaxations = jnp.array([1.0])
+        reg_factors = jnp.array([1e-1, 1e-3, 1e-5])
+        linear_regs = jnp.array([1e-2])
         run_no = jnp.array(range(n_restarts))
         _, SSs, Betas, Gammas, LRs = jnp.stack(
-            jnp.meshgrid(run_no, stepsizes, relaxations, reg_factors, linear_regs), axis=0
+            jnp.meshgrid(run_no, stepsizes, relaxations, reg_factors, linear_regs),
+            axis=0,
         ).reshape(5, -1)
         vectorized_args = (SSs, Betas, Gammas)
         vectorized_kwargs = dict(
@@ -107,6 +98,7 @@ match method:
         )
 
     case x if x in optax_optimizers:
+        n_restarts = 30
         get_fn = partial(get_optax, method=method)
         lr_vals = jnp.array([1e-2, 1e-3, 1e-4, 1e-5])
         lr_repeated = jnp.broadcast_to(
@@ -120,7 +112,7 @@ match method:
         raise ValueError(f"Method {x} not supported")
 
 n_lanes = vectorized_args[0].shape[0]
-print(n_lanes)
+print(f"Training in parallel, ensemble size {n_lanes}")
 match problem:
     case "checkerboard":
         data_gen = CheckerboardBatcher((n_lanes, batch_size), 30)
@@ -137,7 +129,7 @@ match problem:
         loss = getKL(logpdf)
     case "db":
         data_gen = LatentBatcherFromModel((n_lanes, batch_size), 1, model)
-        shift=jnp.array([2.0, 0])
+        shift = jnp.array([2.0, 0])
         logpdf = partial(logpdf_double_banana, shift=shift)
         loss = getKL(logpdf)
     case _:
@@ -179,7 +171,7 @@ state = vectorized_init(
     ensemble,
     vectorized_args,
     vectorized_kwargs,
-    batch, 
+    batch,
     vectorized_rngs,
 )
 
@@ -234,12 +226,20 @@ if problem in ("two_spirals", "eight_gaussians", "checkerboard"):
 elif problem in ("st", "db"):
     x = jnp.linspace(-4, 4, 300, endpoint=True)
     y = jnp.linspace(-4, 4, 300, endpoint=True)
-    XX, YY = jnp.meshgrid(x, y, indexing='ij')
+    XX, YY = jnp.meshgrid(x, y, indexing="ij")
     coord = jnp.stack((XX, YY), axis=-1).reshape((-1, 2))
     if problem == "db":
         coord += shift[None, :]
-    ax.contour(XX, YY, logpdf(coord).reshape(XX.shape), levels=10, linewidths=0.7, cmap='berlin', alpha=0.5, zorder=1)
-
+    ax.contour(
+        XX,
+        YY,
+        logpdf(coord).reshape(XX.shape),
+        levels=10,
+        linewidths=0.7,
+        cmap="berlin",
+        alpha=0.5,
+        zorder=1,
+    )
 
 
 ax = axs[1]
@@ -261,17 +261,3 @@ ax.set_yscale("log")
 fig.suptitle(method.upper())
 fig.legend()
 fig.savefig(f"test_pm_{problem}_{method}.pdf")
-
-exit()
-
-print("Running scan", flush=True)
-t = perf_counter()
-carry = init_fun(model)
-_, metrics = jax.lax.scan(step_fun, carry, length=n_iter_scan)
-dt = perf_counter() - t
-print(f"{method.upper()} scan [1-st run]: {dt=:.2e}, per iter {dt/n_iter_scan:.2e}")
-t = perf_counter()
-carry = init_fun(model)
-_, metrics = jax.lax.scan(step_fun, carry, length=n_iter_scan)
-dt = perf_counter() - t
-print(f"{method.upper()} scan [2-nd run]: {dt=:.2e}, per iter {dt/n_iter_scan:.2e}")
