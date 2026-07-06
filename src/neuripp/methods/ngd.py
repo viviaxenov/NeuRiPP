@@ -17,9 +17,6 @@ def _compute_natural_grad(
     linear_solver_regularization: float = 1e-3,
     linear_solver_tolerance: float = 1e-6,
     linear_solver_maxiter: float = 50,
-    # linear_solver_regularization,
-    # linear_solver_tolerance,
-    # linear_solver_maxiter,
 ):
     matvec_cur = model.get_matvec_fn(rngs)
 
@@ -44,16 +41,20 @@ def _compute_natural_grad(
 
 def get_ngd(
     loss: Callable,
+    linear_solver_method: str = "cg",
 ):
     """
     Gives `jax.lax.scan`-compatible function for the Picard/NGD method
     """
+    if linear_solver_method != 'cg':
+        raise ValueError(f"Only linear_solver_method='cg' is implemented so far, but got {linear_solver_method}")
     vg_fn = nnx.value_and_grad(loss, argnums=0)
 
     def _ngd_init(
         model,
         args,
         kwargs,
+        *rest_args
         # step_size: float,
         # linear_solver_regularization: float = 1e-3,
         # linear_solver_tolerance: float = 1e-6,

@@ -1,7 +1,8 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "6"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+# os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".90"
 os.environ["JAX_TRACEBACK_FILTERING"] = "off"
 
 
@@ -35,6 +36,7 @@ from data_generators import *
 from logpdf_targets import *
 
 import tqdm
+from functools import partial
 
 
 dim = 2
@@ -73,21 +75,9 @@ model_kwargs = dict(
 model = ParametricPushforward(*model_args, **model_kwargs)
 
 
-match problem:
-    case "checkerboard":
-        data_gen = CheckerboardBatcher(batch_size, 30)
-        loss = cross_entropy
-    case "st":
-        data_gen = LatentBatcherFromModel(batch_size, 30, model)
-        loss = getKL(logpdf_st)
-    case _:
-        raise ValueError(f"{problem = } not yet implemented")
-
 match method:
     case "ngd":
-        init_fun, step_fun = get_ngd(
-            loss,
-        )
+        get_fn = get_ngd
         stepsizes = jnp.array([0.01, 0.001, 0.0001])
         linear_regs = jnp.array([1e-1, 1e-2, 1e-3, 1e-4])
         # ls_tol = jnp.array([1e-6])
@@ -100,13 +90,24 @@ match method:
         vectorized_kwargs = dict(
             linear_solver_regularization=LRs,
         )
-        n_seeds = vectorized_args[0].shape[0]
     case "anderson":
-        init_fun, step_fun = get_anderson(
-            loss, lr_ngd, 8, 1.2, 1e-2, "l2", True, Lam_reg, 1e-6, 100
+        get_fn = partial(get_anderson, history_length=6)
+        stepsizes = jnp.array([ 0.001, ])
+        relaxations = jnp.array([ 1.0, ])
+        reg_factors = jnp.array([1e-1, 1e-3, 1e-5, 1e-7])
+        linear_regs = jnp.array([ 1e-2, ])
+        run_no = jnp.array(range(n_restarts))
+        _, SSs, Betas, Gammas, LRs = jnp.stack(
+            jnp.meshgrid(run_no, stepsizes, relaxations, reg_factors, linear_regs), axis=0
+        ).reshape(5, -1)
+        vectorized_args = (SSs, Betas, Gammas)
+        vectorized_kwargs = dict(
+            linear_solver_regularization=LRs,
+            linear_solver_maxiter=jnp.full_like(LRs, 50),
         )
+
     case x if x in optax_optimizers:
-        init_fun, step_fun = get_optax(loss, method)
+        get_fn = partial(get_optax, method=method)
         lr_vals = jnp.array([1e-2, 1e-3, 1e-4, 1e-5])
         lr_repeated = jnp.broadcast_to(
             lr_vals[None, :], (n_restarts, *lr_vals.shape)
@@ -115,12 +116,34 @@ match method:
         wd = jnp.full_like(lr_repeated, 0.002)
         wd = wd.at[::2].set(0.00001)
         vectorized_kwargs = {"weight_decay": wd}
-        vectorized_kwargs = dict()
-        n_seeds = lr_repeated.shape[0]
     case _:
         raise ValueError(f"Method {x} not supported")
-# step_fun = nnx.jit(step_fun)
 
+n_lanes = vectorized_args[0].shape[0]
+print(n_lanes)
+match problem:
+    case "checkerboard":
+        data_gen = CheckerboardBatcher((n_lanes, batch_size), 30)
+        loss = cross_entropy
+    case "two_spirals":
+        data_gen = TwoSpiralsBatcher((n_lanes, batch_size), 30)
+        loss = cross_entropy
+    case "eight_gaussians":
+        data_gen = EightGaussiansBatcher((n_lanes, batch_size), 30)
+        loss = cross_entropy
+    case "st":
+        data_gen = LatentBatcherFromModel((n_lanes, batch_size), 1, model)
+        logpdf = logpdf_st
+        loss = getKL(logpdf)
+    case "db":
+        data_gen = LatentBatcherFromModel((n_lanes, batch_size), 1, model)
+        shift=jnp.array([2.0, 0])
+        logpdf = partial(logpdf_double_banana, shift=shift)
+        loss = getKL(logpdf)
+    case _:
+        raise ValueError(f"{problem = } not yet implemented")
+
+init_fun, step_fun = get_fn(loss)
 fs = []
 grads = []
 natural_grads = []
@@ -129,13 +152,12 @@ metrics = (fs, grads, natural_grads)
 
 
 print(f"Running {method.upper()}", flush=True)
-# vectrozed_args = jnp.stack(jnp.meshgrid(run_no, stepsizes, linear_regs, ls_tol, ls_maxiter), axis=0).reshape(5, -1)[1:]
-
 
 vectorized_init = nnx.vmap(init_fun)
 vectorized_step = nnx.jit(nnx.vmap(step_fun))
-vectorized_rngs = rngs.fork(split=n_seeds)
+vectorized_rngs = rngs.fork(split=n_lanes)
 
+# Initialize multiple models
 ensemble = nnx.vmap(
     lambda _x: ParametricPushforward(
         MLP(dim, _x, dim_hidden=128, n_hidden=2, activation=nnx.swish),
@@ -145,17 +167,24 @@ ensemble = nnx.vmap(
     )
 )(vectorized_rngs)
 
+# Ensure every model in the ensemble starts with the same params
+gd, ens_params, rest = nnx.split(ensemble, nnx.Param, ...)
+ens_params = jax.tree.map(
+    lambda _leaf: jnp.broadcast_to(_leaf[:1, ...], _leaf.shape), ens_params
+)
+ensemble = nnx.merge(gd, ens_params, rest)
 
+batch = data_gen(rngs)
 state = vectorized_init(
     ensemble,
     vectorized_args,
     vectorized_kwargs,
+    batch, 
+    vectorized_rngs,
 )
 
 for _ in tqdm.tqdm(range(n_iter)):
     batch = data_gen(rngs)
-    # train on the same batch for now, later will vectorize batch gen
-    batch = jnp.broadcast_to(batch[None, :, :], (n_seeds, *batch.shape))
     state, vals = vectorized_step(state, batch, vectorized_rngs)
     [arr.append(val) for arr, val in zip(metrics, vals)]
 
@@ -194,9 +223,24 @@ x = nnx.merge(gd, param, rest).sample(500, rngs)
 loss_mean = fs[:, i // n_restarts : i // n_restarts + n_restarts].mean(axis=-1)
 loss_std = fs[:, i // n_restarts : i // n_restarts + n_restarts].std(axis=-1)
 
-fig, axs = plt.subplots(1, 3)
+fig, axs = plt.subplots(1, 3, figsize=(25, 8), layout="constrained")
 ax = axs[0]
-ax.scatter(*x[:, :2].T, label=r"$T_{\text{opt}}^{{{i}}}(z)$", marker="*", s=5.0)
+ax.scatter(
+    *x[:, :2].T, label=r"$T_{\text{opt}}^{{{i}}}(z)$", marker="*", s=8.0, zorder=2
+)
+if problem in ("two_spirals", "eight_gaussians", "checkerboard"):
+    one_batch = batch[0, :, :]
+    ax.scatter(*one_batch[:, :2].T, label="Data", s=3.0, zorder=1)
+elif problem in ("st", "db"):
+    x = jnp.linspace(-4, 4, 300, endpoint=True)
+    y = jnp.linspace(-4, 4, 300, endpoint=True)
+    XX, YY = jnp.meshgrid(x, y, indexing='ij')
+    coord = jnp.stack((XX, YY), axis=-1).reshape((-1, 2))
+    if problem == "db":
+        coord += shift[None, :]
+    ax.contour(XX, YY, logpdf(coord).reshape(XX.shape), levels=10, linewidths=0.7, cmap='berlin', alpha=0.5, zorder=1)
+
+
 
 ax = axs[1]
 ax.plot(range(fs.shape[0]), fs[:, i], label="Loss (best)")
@@ -216,7 +260,7 @@ if len(natural_grads) > 0:
 ax.set_yscale("log")
 fig.suptitle(method.upper())
 fig.legend()
-fig.savefig(f"test_pm_{method}.pdf")
+fig.savefig(f"test_pm_{problem}_{method}.pdf")
 
 exit()
 

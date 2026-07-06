@@ -1,24 +1,25 @@
 from abc import ABC, abstractmethod
+from typing import Tuple
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
+import numpy as np
 from neuripp.parametric_pushforward.parametric_pushforward import ParametricPushforward
 
 
 class BaseBatcher(nnx.Module, ABC):
-    def __init__(self, n_samples: int, resample_each: int):
-        if n_samples <= 0:
-            raise ValueError("n_samples must be positive.")
-
+    def __init__(self, shape: int | Tuple[int], resample_each: int):
+        if isinstance(shape, int):
+            shape = (shape, )
         if resample_each <= 0:
             raise ValueError("resample_each must be positive.")
 
-        self.n_samples = n_samples
+        self.shape = shape
         self.resample_each = resample_each
 
-        self.x = nnx.Variable(jnp.zeros((n_samples, 2)))
+        self.x = nnx.Variable(jnp.zeros((*shape, 2)))
         self.counter = nnx.Variable(jnp.array(0, dtype=jnp.int32))
 
     @abstractmethod
@@ -28,37 +29,34 @@ class BaseBatcher(nnx.Module, ABC):
     def __call__(self, rngs: nnx.Rngs) -> jax.Array:
         do_resample = self.counter.value == 0
 
-        def resample_fn(rngs):
-            return self._sample(rngs=rngs)
-
         def reuse_fn(*args):
             return self.x.value
 
-        x = jax.lax.cond(
+        x = nnx.cond(
             do_resample,
-            resample_fn,
+            self._sample,
             reuse_fn,
-            operand=rngs,
+            rngs,
         )
 
-        self.x.value = x
-        self.counter.value = (self.counter.value + 1) % self.resample_each
+        self.x.set_value(x)
+        self.counter.set_value((self.counter.value + 1) % self.resample_each)
 
         return x
 
 
 class CheckerboardBatcher(BaseBatcher):
-    def __init__(self, n_samples: int, resample_each: int):
-        super().__init__(n_samples=n_samples, resample_each=resample_each)
+    def __init__(self, shape: int, resample_each: int):
+        super().__init__(shape=shape, resample_each=resample_each)
 
     def _sample(self, rngs: nnx.Rngs) -> jax.Array:
         points = rngs.data.uniform(
-            shape=(self.n_samples, 2),
+            shape=(*self.shape, 2),
         )
 
         shifts_x = (
             rngs.data.randint(
-                shape=(self.n_samples,),
+                shape=self.shape,
                 minval=0,
                 maxval=4,
             )
@@ -67,7 +65,7 @@ class CheckerboardBatcher(BaseBatcher):
 
         shifts_y = (
             rngs.data.randint(
-                shape=(self.n_samples,),
+                shape=self.shape,
                 minval=0,
                 maxval=2,
             )
@@ -76,18 +74,20 @@ class CheckerboardBatcher(BaseBatcher):
             - 2
         )
 
-        points = points.at[:, 0].add(shifts_x)
-        points = points.at[:, 1].add(shifts_y)
+        points = points.at[..., 0].add(shifts_x)
+        points = points.at[..., 1].add(shifts_y)
 
         return points
 
 
 class TwoSpiralsBatcher(BaseBatcher):
-    def __init__(self, n_samples: int, resample_each: int):
-        super().__init__(n_samples=n_samples, resample_each=resample_each)
+    def __init__(self, shape: int, resample_each: int):
+        super().__init__(shape=shape, resample_each=resample_each)
+        self.n_samples = nnx.Variable(np.prod(self.shape, dtype=int))
 
     def _sample(self, rngs: nnx.Rngs) -> jax.Array:
-        half = self.n_samples // 2
+        half = self.n_samples.value // 2
+        other_half = self.n_samples.value - half
 
         n = (
             jnp.sqrt(
@@ -101,14 +101,25 @@ class TwoSpiralsBatcher(BaseBatcher):
         )
 
         d1x = -jnp.cos(n) * n + rngs.data.uniform(shape=(half, 1)) * 0.5
+        d1y = jnp.sin(n) * n + rngs.data.uniform(shape=(half, 1)) * 0.5
 
-        d1y = jnp.sin(n) * n + rngs.data.uniform(shape=(n_samples - half, 1)) * 0.5
-
+        n = (
+            jnp.sqrt(
+                rngs.data.uniform(
+                    shape=(other_half, 1),
+                )
+            )
+            * 540.0
+            * (2.0 * jnp.pi)
+            / 360.0
+        )
+        d2x = jnp.cos(n) * n + rngs.data.uniform(shape=(other_half, 1)) * 0.5
+        d2y = -jnp.sin(n) * n + rngs.data.uniform(shape=(other_half, 1)) * 0.5
         x = (
             jnp.vstack(
                 (
                     jnp.hstack((d1x, d1y)),
-                    jnp.hstack((-d1x, -d1y)),
+                    jnp.hstack((d2x, d2y)),
                 )
             )
             / 3.0
@@ -116,12 +127,12 @@ class TwoSpiralsBatcher(BaseBatcher):
 
         x = x + rngs.data.uniform(shape=x.shape) * 0.1
 
-        return x
+        return x.reshape(*self.shape, 2, order='F')
 
 
 class EightGaussiansBatcher(BaseBatcher):
-    def __init__(self, n_samples: int, resample_each: int):
-        super().__init__(n_samples=n_samples, resample_each=resample_each)
+    def __init__(self, shape: int, resample_each: int):
+        super().__init__(shape=shape, resample_each=resample_each)
 
         theta = jnp.linspace(
             0.0,
@@ -141,13 +152,13 @@ class EightGaussiansBatcher(BaseBatcher):
     def _sample(self, rngs: nnx.Rngs) -> jax.Array:
         blob = (
             rngs.data.normal(
-                shape=(self.n_samples, 2),
+                shape=(*self.shape, 2),
             )
             * 0.5
         )
 
         shift_ids = rngs.data.randint(
-            shape=(self.n_samples,),
+            shape=self.shape,
             minval=0,
             maxval=8,
         )
@@ -160,20 +171,21 @@ class EightGaussiansBatcher(BaseBatcher):
 
 class LatentBatcherFromModel(BaseBatcher):
     def __init__(
-        self, n_samples: int, resample_each: int, model: ParametricPushforward
+        self, shape: int, resample_each: int, model: ParametricPushforward
     ):
         self._model = model
-        super().__init__(n_samples=n_samples, resample_each=resample_each)
+        super().__init__(shape=shape, resample_each=resample_each)
+        self.n_samples = nnx.Variable(np.prod(self.shape, dtype=int))
 
     def _sample(self, rngs):
-        return self._model._sample_latent(self.n_samples, rngs)
+        return self._model._sample_latent(self.n_samples, rngs).reshape((*self.shape, -1))
 
 
 def ZipBatcher(BaseBatcher):
     def __init__(
-        self, n_samples: int, resample_each: int, *batchers: Tuple[BaseBatcher]
+        self, shape: int, resample_each: int, *batchers: Tuple[BaseBatcher]
     ):
-        super().__init__(n_samples=n_samples, resample_each=resample_each)
+        super().__init__(shape=n_samples, resample_each=resample_each)
         self.batchers = batchers
 
     def _sample(self, rngs: nnx.Rngs):

@@ -19,14 +19,15 @@ optax_optimizers = {
 
 def get_optax(
     loss: Callable,
-    method: str,
+    method: str = "adamw",
 ):
     vg_fn = nnx.value_and_grad(loss, argnums=0)
 
     def _init(
         model,
         optimizer_args,
-        optimizer_kwargs
+        optimizer_kwargs,
+        *args
     ):
         # this allows to vmap the method for multiple learning rates
         optax_method = optax.inject_hyperparams(optax_optimizers[method])(*optimizer_args, **optimizer_kwargs)

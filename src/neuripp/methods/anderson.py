@@ -22,47 +22,39 @@ def _update_history(history, residual, delta_x, history_length: int):
     # write new residual
     history = jax.tree.map(lambda _h, _r: _h.at[0].set(_r), history, residual)
     # write new delta_x
-    history = jax.tree.map(lambda _h, _x: _h.at[history_length].set(_x), history, delta_x)
+    history = jax.tree.map(
+        lambda _h, _x: _h.at[history_length].set(_x), history, delta_x
+    )
 
     return history
 
 
 def get_anderson(
     loss: Callable,
-    step_size: float,
-    history_length: int,
-    relaxation: float,
-    regularization_factor: float,
-    regularization_method: Literal["l2", "adaptive"],
-    ensure_descent: bool,
-    linear_solver_regularization: float,
-    linear_solver_tolerance: float,
-    linear_solver_maxiter: float,
+    history_length: int = 8,
+    regularization_method: Literal["l2", "adaptive"] = "l2",
+    ensure_descent: bool = True,
     linear_solver_method: str = "cg",
 ):
     if linear_solver_method != "cg":
         raise NotImplementedError(
-            f"Linear solvers except conjugate gradient not supported, but got {linear_solver_method=}"
+            f"Linear solvers except conjugate gradient not supported yet, but got {linear_solver_method=}"
         )
 
     vg_fn = nnx.value_and_grad(loss, argnums=0)
 
-    # TODO: init w/o calling loss
     def _init(
         model: ParametricPushforward,
-        *loss_args,
+        args,
+        kwargs,
+        batch,
+        rngs,
     ):
+        step_size = args[0]
         _, par, _ = nnx.split(model, nnx.Param, ...)
         zero_vector = jax.tree.map(jnp.zeros_like, par)
-        f, grad = vg_fn(model, *loss_args)
-        natural_grad = _compute_natural_grad(
-            model,
-            grad,
-            zero_vector,
-            linear_solver_regularization,
-            linear_solver_tolerance,
-            linear_solver_maxiter,
-        )
+        f, grad = vg_fn(model, batch, rngs)
+        natural_grad = _compute_natural_grad(model, rngs, grad, zero_vector, **kwargs)
         # initialize history with zero vectors
         # history[:m] is residuals
         # history[m:] is Delta x
@@ -72,29 +64,26 @@ def get_anderson(
             lambda _l: jnp.zeros((2 * history_length, *_l.shape)), residual
         )
         # history = _update_history(history, residual, residual, history_length)
-        return (model, natural_grad, history)
+        return (model, natural_grad, history, args, kwargs)
 
-    def _step(carry, *loss_args):
+    def _step(state, batch, rngs):
         model: ParametricPushforward
-        model, previous_grad, history = carry
-        f, grad = vg_fn(model, *loss_args)
-        natural_grad = _compute_natural_grad(
-            model,
-            grad,
-            previous_grad,
-            linear_solver_regularization,
-            linear_solver_tolerance,
-            linear_solver_maxiter,
-        )
+        model, previous_grad, history, args, kwargs = state
+
+        step_size, relaxation, regularization_factor = args
+
+        f, grad = vg_fn(model, batch, rngs)
+        natural_grad = _compute_natural_grad(model, rngs, grad, previous_grad, **kwargs)
         residual = jax.tree.map(lambda _x: -step_size * _x, natural_grad)
-        r_cur_norm_sq = model.scalar_product(residual, residual)
+        r_cur_norm_sq = model.scalar_product(residual, residual, rngs)
         # compute previous delta_r
         history = jax.tree.map(
             lambda _h, _r: _h.at[0].set(_r - _h[0]), history, residual
         )
         # precompute Gx for historical vectors
         # TODO: this requires a backward pass, maybe better use scalar product with forward passes only?
-        Ghistory = jax.vmap(model.get_matvec_fn())(history)
+        # TODO: use nnx.vmap?
+        Ghistory = jax.vmap(model.get_matvec_fn(rngs))(history)
         # compute dot products in parallel
         # <r_i, Gr_j>
         pairwise_mat = pairwise_dot_matrix(history, Ghistory)
@@ -122,7 +111,8 @@ def get_anderson(
 
         if ensure_descent:
             descending = (
-                model.scalar_product(residual, r_mixed) <= relaxation * r_cur_norm_sq
+                model.scalar_product(residual, r_mixed, rngs)
+                <= relaxation * r_cur_norm_sq
             )
             r_mixed = jax.tree.map(
                 lambda _dr: jnp.where(descending, _dr, _dr * 0.0), r_mixed
@@ -140,7 +130,7 @@ def get_anderson(
 
         grad_norm_sq = tree_dot_product(grad, grad)
 
-        return (model, natural_grad, history), (
+        return (model, natural_grad, history, args, kwargs), (
             f,
             grad_norm_sq,
             r_cur_norm_sq / step_size**2,
