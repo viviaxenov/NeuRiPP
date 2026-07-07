@@ -1477,11 +1477,45 @@ def run_parallel(
     return summary
 
 
-def load_completed_runs(session_dir: str | Path) -> list[dict[str, Any]]:
-    """Load successful benchmark runs from a session directory.
+def _load_saved_arrays(arrays_path: Path) -> dict[str, Any]:
+    import numpy as np
 
-    Failed and incomplete runs are skipped. If no successful runs are present,
-    an empty list is returned.
+    with np.load(arrays_path) as loaded_arrays:
+        return {name: loaded_arrays[name] for name in loaded_arrays.files}
+
+
+def entry_arrays(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        name: entry[name]
+        for name in entry.get("array_names", [])
+        if name in entry
+    }
+
+
+def _expanded_config_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    config_keys = (
+        "run_index",
+        "run_id",
+        "restart_index",
+        "problem",
+        "resolved_problem",
+        "architecture",
+        "method",
+        "method_kwargs",
+    )
+    return {
+        key: copy.deepcopy(entry[key])
+        for key in config_keys
+        if key in entry
+    }
+
+
+def load_experiment_entries(session_dir: str | Path) -> list[dict[str, Any]]:
+    """Load successful benchmark runs as plain analysis entries.
+
+    Each returned entry contains the expanded config fields at top level,
+    unpacked saved arrays, checkpoint paths, and derived loss summary metrics.
+    Failed and incomplete runs are skipped.
     """
 
     session_dir = Path(session_dir)
@@ -1489,36 +1523,59 @@ def load_completed_runs(session_dir: str | Path) -> list[dict[str, Any]]:
     if not runs_dir.exists():
         raise FileNotFoundError(f"Benchmark runs directory does not exist: {runs_dir}")
 
-    completed_runs: list[dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
     for run_dir in sorted(path for path in runs_dir.iterdir() if path.is_dir()):
         status_path = run_dir / "status.json"
         expanded_config_path = run_dir / "expanded_config.json"
         arrays_path = run_dir / "arrays.npz"
-        if not status_path.exists() or not expanded_config_path.exists():
+        if not status_path.exists() or not expanded_config_path.exists() or not arrays_path.exists():
             continue
 
         status = _load_json(status_path)
         if status.get("status") != "success":
             continue
-        if not arrays_path.exists():
-            continue
 
-        import numpy as np
-
-        with np.load(arrays_path) as loaded_arrays:
-            arrays = {name: loaded_arrays[name] for name in loaded_arrays.files}
-
+        arrays = _load_saved_arrays(arrays_path)
         expanded_config = _load_json(expanded_config_path)
+        entry: dict[str, Any] = copy.deepcopy(expanded_config)
+        entry["run_dir"] = run_dir
+        entry["checkpoints"] = {
+            "best": (run_dir / "checkpoints" / "best").resolve(),
+            "last": (run_dir / "checkpoints" / "last").resolve(),
+        }
+        entry["array_names"] = list(arrays)
+        entry.update(arrays)
+
+        loss = arrays.get("loss")
+        if loss is not None and getattr(loss, "size", 0) > 0:
+            import numpy as np
+
+            loss_array = np.asarray(loss, dtype=float)
+            best_iteration = int(np.argmin(loss_array))
+            entry["best_loss"] = float(loss_array[best_iteration])
+            entry["best_iteration"] = best_iteration
+            entry["final_loss"] = float(loss_array[-1])
+
+        entries.append(entry)
+
+    return entries
+
+
+def load_completed_runs(session_dir: str | Path) -> list[dict[str, Any]]:
+    """Compatibility wrapper over :func:`load_experiment_entries`."""
+
+    entries = load_experiment_entries(session_dir)
+    completed_runs: list[dict[str, Any]] = []
+    for entry in entries:
         completed_runs.append(
             {
-                "run_id": expanded_config.get("run_id", run_dir.name),
-                "run_dir": run_dir,
-                "status": status,
-                "expanded_config": expanded_config,
-                "arrays": arrays,
+                "run_id": entry.get("run_id"),
+                "run_dir": entry["run_dir"],
+                "status": {"status": "success"},
+                "expanded_config": _expanded_config_from_entry(entry),
+                "arrays": entry_arrays(entry),
             }
         )
-
     return completed_runs
 
 
@@ -1553,8 +1610,12 @@ def flatten_run_params(expanded_config: dict[str, Any]) -> dict[str, Any]:
     return flat
 
 
+def flatten_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    return flatten_run_params(entry)
+
+
 def varying_param_keys(expanded_configs: list[dict[str, Any]]) -> list[str]:
-    flattened = [flatten_run_params(config) for config in expanded_configs]
+    flattened = [flatten_entry(config) for config in expanded_configs]
     keys: list[str] = []
     for flat in flattened:
         for key in flat:
@@ -1581,28 +1642,14 @@ def _display_param_key(key: str) -> str:
 
 
 def format_run_label(expanded_config: dict[str, Any], keys: list[str]) -> str:
-    flat = flatten_run_params(expanded_config)
+    flat = flatten_entry(expanded_config)
     parts = [f"{_display_param_key(key)} {flat[key]}" for key in keys if key in flat]
     return ", ".join(parts) if parts else expanded_config.get("run_id", "run")
 
 
-def _as_expanded_config(item: dict[str, Any]) -> dict[str, Any]:
-    return item.get("expanded_config", item)
-
-
 def _loss_array(item: dict[str, Any]) -> Any:
-    arrays = item.get("arrays")
-    if arrays is not None and "loss" in arrays:
-        return arrays["loss"]
     if "loss" in item:
         return item["loss"]
-    expanded_config = item.get("expanded_config")
-    if isinstance(expanded_config, dict):
-        arrays = expanded_config.get("arrays")
-        if arrays is not None and "loss" in arrays:
-            return arrays["loss"]
-        if "loss" in expanded_config:
-            return expanded_config["loss"]
     raise KeyError("get_lines input item is missing a loss array")
 
 
@@ -1643,7 +1690,7 @@ def _group_items_by_keys(
     groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
     order: list[tuple[str, ...]] = []
     for item in items:
-        flat = flatten_run_params(_as_expanded_config(item))
+        flat = flatten_entry(item)
         group_key = tuple(_value_identity(flat.get(key)) for key in keys)
         if group_key not in groups:
             groups[group_key] = []
@@ -1652,9 +1699,100 @@ def _group_items_by_keys(
     return [(key, groups[key]) for key in order]
 
 
-def _is_seed_key(key: str) -> bool:
-    leaf = key.rsplit(".", 1)[-1].lower()
-    return leaf == "restart_index" or leaf == "seed" or leaf.endswith("_seed")
+def architecture_group_fields(entry: dict[str, Any]) -> dict[str, Any]:
+    flat = flatten_entry(entry)
+    return {key: value for key, value in flat.items() if key.startswith("architecture.")}
+
+
+def method_group_fields(entry: dict[str, Any]) -> dict[str, Any]:
+    flat = flatten_entry(entry)
+    fields = {"method": entry.get("method")}
+    if entry.get("method") == "anderson":
+        for key in (
+            "method_kwargs.history_length",
+            "method_kwargs.regularization_method",
+            "method_kwargs.ensure_descent",
+        ):
+            fields[key] = flat.get(key)
+    return fields
+
+
+def restart_group_fields(entry: dict[str, Any]) -> dict[str, Any]:
+    flat = flatten_entry(entry)
+    return {key: value for key, value in flat.items() if key != "restart_index"}
+
+
+def _frame_flattened_columns(frame: Any) -> list[str]:
+    return [
+        key
+        for key in frame.columns
+        if key == "method" or key == "restart_index" or key.startswith(("method_kwargs.", "architecture.", "problem."))
+    ]
+
+
+def architecture_group_columns(frame: Any) -> list[str]:
+    return [key for key in _frame_flattened_columns(frame) if key.startswith("architecture.")]
+
+
+def method_group_columns(frame: Any) -> list[str]:
+    columns = ["method"]
+    for key in (
+        "method_kwargs.history_length",
+        "method_kwargs.regularization_method",
+        "method_kwargs.ensure_descent",
+    ):
+        if key in frame.columns:
+            columns.append(key)
+    return columns
+
+
+def restart_group_columns(frame: Any) -> list[str]:
+    return [key for key in _frame_flattened_columns(frame) if key != "restart_index"]
+
+
+def entries_to_frame(entries: list[dict[str, Any]]) -> Any:
+    import pandas as pd
+
+    rows: list[dict[str, Any]] = []
+    for entry_index, entry in enumerate(entries):
+        row = {
+            "entry_index": entry_index,
+            "run_id": entry.get("run_id"),
+            "run_dir": entry.get("run_dir"),
+            "checkpoint_best": entry.get("checkpoints", {}).get("best"),
+            "checkpoint_last": entry.get("checkpoints", {}).get("last"),
+            "best_loss": entry.get("best_loss"),
+            "best_iteration": entry.get("best_iteration"),
+            "final_loss": entry.get("final_loss"),
+        }
+        row.update(flatten_entry(entry))
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def entries_in_same_restart_group(
+    entries: list[dict[str, Any]], entry: dict[str, Any]
+) -> list[dict[str, Any]]:
+    if not entries:
+        return []
+
+    frame = entries_to_frame(entries)
+    target_fields = restart_group_fields(entry)
+    mask = None
+    for key in restart_group_columns(frame):
+        value = target_fields.get(key)
+        current = frame[key].isna() if value is None else frame[key] == value
+        mask = current if mask is None else (mask & current)
+    if mask is None:
+        return entries
+    indices = frame.loc[mask, "entry_index"].tolist()
+    return [entries[index] for index in indices]
+
+
+def entries_in_same_restart_group_at_index(
+    entries: list[dict[str, Any]], index: int
+) -> list[dict[str, Any]]:
+    return entries_in_same_restart_group(entries, entries[index])
 
 
 def _filename_suffix(index: int, group_key: dict[str, Any]) -> str:
@@ -1664,8 +1802,8 @@ def _filename_suffix(index: int, group_key: dict[str, Any]) -> str:
 
 
 def _representative_params(items: list[dict[str, Any]], keys: list[str]) -> dict[str, Any]:
-    base = copy.deepcopy(_as_expanded_config(items[0]))
-    flat = flatten_run_params(base)
+    base = dict(items[0])
+    flat = flatten_entry(base)
     base["_line_params"] = {key: flat[key] for key in keys if key in flat}
     return base
 
@@ -1695,7 +1833,7 @@ def _assign_line_styles(
         if isinstance(line_params, dict):
             flattened.append(line_params)
         else:
-            flattened.append(flatten_run_params(representative))
+            flattened.append(flatten_entry(representative))
 
     varying_keys = _varying_keys_from_flattened(flattened)
     colormaps = style_channels.get("colormap", []) if style_channels else []
@@ -1748,33 +1886,38 @@ def _assign_line_styles(
     return styles
 
 
-def get_lines(expanded_configs: list[dict[str, Any]], style_channels: dict[str, Any]) -> list[dict[str, Any]]:
+def get_lines(entries: list[dict[str, Any]], style_channels: dict[str, Any]) -> list[dict[str, Any]]:
     """Build aggregate plotting groups and loss series definitions.
 
-    Architecture-varying parameters define top-level plot groups. Restart and
-    seed-like parameters are aggregated into mean +/- std loss tubes within
-    each architecture group. These keys are excluded from architecture grouping
-    and line identity so configs that differ only by restart/seed are treated
-    as the same architecture/problem/method.
+    Architecture-varying parameters define top-level plot groups. Runs that
+    differ only by ``restart_index`` are aggregated into mean +/- std loss
+    tubes within each architecture group.
     """
 
-    if not expanded_configs:
+    if not entries:
         return []
 
     import numpy as np
 
-    flattened_all = [flatten_run_params(_as_expanded_config(item)) for item in expanded_configs]
+    frame = entries_to_frame(entries)
+    flattened_all = [flatten_entry(entry) for entry in entries]
     varying_keys_all = _varying_keys_from_flattened(flattened_all)
     architecture_keys = [
         key
-        for key in varying_keys_all
-        if key.startswith("architecture.") and not _is_seed_key(key)
+        for key in architecture_group_columns(frame)
+        if key in varying_keys_all
     ]
-    architecture_groups = _group_items_by_keys(expanded_configs, architecture_keys)
+    if architecture_keys:
+        architecture_groups = [
+            group for _, group in frame.groupby(architecture_keys, sort=False, dropna=False)
+        ]
+    else:
+        architecture_groups = [frame]
     groups: list[dict[str, Any]] = []
 
-    for group_index, (_, group_items) in enumerate(architecture_groups):
-        group_flat = [flatten_run_params(_as_expanded_config(item)) for item in group_items]
+    for group_index, group_frame in enumerate(architecture_groups):
+        group_items = [entries[index] for index in group_frame["entry_index"].tolist()]
+        group_flat = [flatten_entry(item) for item in group_items]
         architecture_group_key = {
             key: group_flat[0][key]
             for key in architecture_keys
@@ -1790,29 +1933,36 @@ def get_lines(expanded_configs: list[dict[str, Any]], style_channels: dict[str, 
         )
 
         varying_keys = _varying_keys_from_flattened(group_flat)
-        seed_keys = [key for key in varying_keys if _is_seed_key(key)]
         line_param_keys = [
             key
-            for key in varying_keys
-            if key not in architecture_keys and key not in seed_keys
+            for key in restart_group_columns(group_frame)
+            if key in varying_keys and key not in architecture_keys
         ]
 
         line_items: list[dict[str, Any]] = []
         representatives: list[dict[str, Any]] = []
-        if seed_keys:
-            for _, seed_group_items in _group_items_by_keys(group_items, line_param_keys):
-                losses = [np.asarray(_loss_array(item), dtype=float) for item in seed_group_items]
+        if line_param_keys:
+            restart_groups = [
+                group for _, group in group_frame.groupby(line_param_keys, sort=False, dropna=False)
+            ]
+        else:
+            restart_groups = [group_frame]
+
+        for restart_group in restart_groups:
+            restart_group_items = [entries[index] for index in restart_group["entry_index"].tolist()]
+            representative = _representative_params(restart_group_items, line_param_keys)
+            representatives.append(representative)
+            losses = [np.asarray(_loss_array(item), dtype=float) for item in restart_group_items]
+            if len(losses) > 1:
                 min_length = min(loss.shape[0] for loss in losses)
                 if any(loss.shape[0] != min_length for loss in losses):
                     warnings.warn(
-                        "Loss arrays in a seed group have different lengths; truncating to minimum length.",
+                        "Loss arrays in a restart group have different lengths; truncating to minimum length.",
                         stacklevel=2,
                     )
                 stacked = np.stack([loss[:min_length] for loss in losses], axis=0)
                 mean = stacked.mean(axis=0)
                 std = stacked.std(axis=0)
-                representative = _representative_params(seed_group_items, line_param_keys)
-                representatives.append(representative)
                 line_items.append(
                     {
                         "label": _line_label(representative, line_param_keys),
@@ -1821,14 +1971,12 @@ def get_lines(expanded_configs: list[dict[str, Any]], style_channels: dict[str, 
                         "loss_lower": mean - std,
                     }
                 )
-        else:
-            for item in group_items:
-                representative = _representative_params([item], line_param_keys)
-                representatives.append(representative)
+            else:
+                item = restart_group_items[0]
+                label = _line_label(representative, line_param_keys) or item.get("run_id", "run")
                 line_items.append(
                     {
-                        "label": _line_label(representative, line_param_keys)
-                        or _as_expanded_config(item).get("run_id", "run"),
+                        "label": label,
                         "loss": np.asarray(_loss_array(item), dtype=float),
                     }
                 )
@@ -1907,12 +2055,12 @@ def generate_aggregate_plots(
 ) -> list[Path]:
     session_dir = Path(session_dir)
     plotting = plotting or {}
-    completed_runs = load_completed_runs(session_dir)
-    if not completed_runs:
+    entries = load_experiment_entries(session_dir)
+    if not entries:
         return []
 
     style_channels = plotting.get("style_channels", {})
-    groups = get_lines(completed_runs, style_channels)
+    groups = get_lines(entries, style_channels)
     if not groups:
         return []
 
@@ -1983,57 +2131,45 @@ def generate_per_run_plots(
 ) -> list[Path]:
     session_dir = Path(session_dir)
     plotting = plotting or {}
-    completed_runs = load_completed_runs(session_dir)
-    if not completed_runs:
+    entries = load_experiment_entries(session_dir)
+    if not entries:
         return []
 
     plot_dir = session_dir / "plots"
     plot_dir.mkdir(parents=True, exist_ok=True)
     planned_runs_path = session_dir / "planned_runs.json"
     if planned_runs_path.exists():
-        expanded_configs = _load_json_value(planned_runs_path)
+        label_entries = _load_json_value(planned_runs_path)
     else:
-        expanded_configs = [run["expanded_config"] for run in completed_runs]
-    varying_keys = varying_param_keys(expanded_configs)
+        label_entries = entries
+    varying_keys = varying_param_keys(label_entries)
     n_samples = plotting.get("n_samples_plot", plotting.get("n_samples", 512))
     written_paths: list[Path] = []
 
-    for run in completed_runs:
-        expanded_config = run["expanded_config"]
-        model = load_model_checkpoint(session_dir, run["run_id"], key="last")
-        title = format_run_label(expanded_config, varying_keys)
-        output_path = plot_dir / f"{run['run_id']}_plots.pdf"
-        plot_run_diagnostics(model, run["arrays"], title, output_path, n_samples=n_samples)
+    for entry in entries:
+        model = load_entry_model(entry, key="last")
+        title = format_run_label(entry, varying_keys)
+        output_path = plot_dir / f"{entry['run_id']}_plots.pdf"
+        plot_run_diagnostics(model, entry_arrays(entry), title, output_path, n_samples=n_samples)
         written_paths.append(output_path)
 
     return written_paths
 
 
-def load_model_checkpoint(
-    session_dir: str | Path,
-    run_id: str,
-    key: str = "last",
-) -> Any:
+def load_entry_model(entry: dict[str, Any], key: str = "last") -> Any:
     if key not in {"last", "best"}:
         raise ValueError("checkpoint key must be either 'last' or 'best'")
 
-    session_dir = Path(session_dir)
-    run_dir = session_dir / "runs" / run_id
-    expanded_config_path = run_dir / "expanded_config.json"
-    if not expanded_config_path.exists():
-        raise FileNotFoundError(f"Unknown run_id or missing expanded config: {run_id}")
-
-    checkpoint_dir = (run_dir / "checkpoints" / key).resolve()
+    checkpoint_dir = Path(entry["checkpoints"][key]).resolve()
     if not checkpoint_dir.exists():
         raise FileNotFoundError(f"Missing checkpoint directory: {checkpoint_dir}")
 
-    planned_run = _load_json(expanded_config_path)
     deps = import_runtime_dependencies()
     model = build_model(
-        planned_run["architecture"],
-        planned_run["method_kwargs"],
-        planned_run["resolved_problem"]["dim"],
-        rngs=deps["nnx"].Rngs(planned_run["method_kwargs"].get("master_seed", 0)),
+        entry["architecture"],
+        entry["method_kwargs"],
+        entry["resolved_problem"]["dim"],
+        rngs=deps["nnx"].Rngs(entry["method_kwargs"].get("master_seed", 0)),
         deps=deps,
     )
 
@@ -2043,6 +2179,18 @@ def load_model_checkpoint(
     checkpointer = ocp.StandardCheckpointer()
     state = checkpointer.restore(checkpoint_dir, target=state)
     return deps["nnx"].merge(graphdef, state)
+
+
+def load_model_checkpoint(
+    session_dir: str | Path,
+    run_id: str,
+    key: str = "last",
+) -> Any:
+    entries = load_experiment_entries(session_dir)
+    for entry in entries:
+        if entry.get("run_id") == run_id:
+            return load_entry_model(entry, key=key)
+    raise FileNotFoundError(f"Unknown run_id or missing expanded config: {run_id}")
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
