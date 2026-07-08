@@ -1,6 +1,6 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "7"
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".90"
 os.environ["JAX_TRACEBACK_FILTERING"] = "off"
 
@@ -50,7 +50,8 @@ n_iter = int(sys.argv[3]) if len(sys.argv) > 3 else n_iter
 
 rngs = nnx.Rngs(42)
 
-rhs_net = MLP(dim, rngs, dim_hidden=128, n_hidden=2, activation=nnx.swish)
+# rhs_net = MLP(dim, rngs, dim_hidden=128, n_hidden=2, activation=nnx.swish)
+rhs_net = MLP(dim, rngs, dim_hidden=16, n_hidden=1, activation=nnx.swish)
 model_args = (
     rhs_net,
     rngs,
@@ -69,9 +70,9 @@ model = ParametricPushforward(*model_args, **model_kwargs)
 match method:
     case "ngd":
         n_restarts = 40
-        get_fn = get_ngd
+        get_fn = partial(get_ngd, natural_grad_clipping_threshold=10.)
         stepsizes = jnp.array([0.01, 0.001, 0.0001])
-        linear_regs = jnp.array([ 1e-2 ])
+        linear_regs = jnp.array([ 1e-3 ])
         run_no = jnp.array(range(n_restarts))
         _, SSs, LRs = jnp.stack(
             jnp.meshgrid(run_no, stepsizes, linear_regs), axis=0
@@ -81,8 +82,9 @@ match method:
             linear_solver_regularization=LRs,
         )
     case "anderson":
-        get_fn = partial(get_anderson, history_length=6)
-        stepsizes = jnp.array([0.001])
+        # get_fn = partial(get_anderson, history_length=6, natural_grad_clipping_threshold=10.)
+        get_fn = partial(get_anderson, history_length=6, )
+        stepsizes = jnp.array([0.01])
         relaxations = jnp.array([1.0])
         reg_factors = jnp.array([1e-1, 1e-3, 1e-5])
         linear_regs = jnp.array([1e-2])
@@ -152,7 +154,7 @@ vectorized_rngs = rngs.fork(split=n_lanes)
 # Initialize multiple models
 ensemble = nnx.vmap(
     lambda _x: ParametricPushforward(
-        MLP(dim, _x, dim_hidden=128, n_hidden=2, activation=nnx.swish),
+        MLP(dim, _x, dim_hidden=16, n_hidden=1, activation=nnx.swish),
         _x,
         N_mc,
         **model_kwargs,

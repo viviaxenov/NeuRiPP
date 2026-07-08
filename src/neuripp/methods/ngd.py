@@ -9,6 +9,10 @@ from neuripp.parametric_pushforward.parametric_pushforward import ParametricPush
 from neuripp.utility.utility import *
 
 
+def _clip_by_max_norm(natural_grad, norm, max_norm: float):
+    return jax.tree.map(lambda _x: max_norm / norm * _x, natural_grad)
+
+
 def _compute_natural_grad(
     model,
     rngs,
@@ -17,6 +21,8 @@ def _compute_natural_grad(
     linear_solver_regularization: float = 1e-3,
     linear_solver_tolerance: float = 1e-6,
     linear_solver_maxiter: float = 50,
+    *,
+    max_norm_clipping: float = None,
 ):
     matvec_cur = model.get_matvec_fn(rngs)
 
@@ -36,30 +42,38 @@ def _compute_natural_grad(
         maxiter=linear_solver_maxiter,
     )[0]
 
-    return natural_grad
+    natural_grad_norm_sq = model.scalar_product(natural_grad, natural_grad, rngs)
+    norm = jnp.maximum(natural_grad_norm_sq, 0.0) ** 0.5
+
+    # Gradient clipping
+    if max_norm_clipping is not None:
+        natural_grad = jax.lax.cond(
+            norm > max_norm_clipping,
+            _clip_by_max_norm,
+            lambda *args: args[0],
+            natural_grad,
+            norm,
+            max_norm_clipping,
+        )
+
+    return natural_grad, natural_grad_norm_sq
 
 
 def get_ngd(
     loss: Callable,
     linear_solver_method: str = "cg",
+    natural_grad_clipping_threshold: float = None,
 ):
     """
     Gives `jax.lax.scan`-compatible function for the Picard/NGD method
     """
-    if linear_solver_method != 'cg':
-        raise ValueError(f"Only linear_solver_method='cg' is implemented so far, but got {linear_solver_method}")
+    if linear_solver_method != "cg":
+        raise ValueError(
+            f"Only linear_solver_method='cg' is implemented so far, but got {linear_solver_method}"
+        )
     vg_fn = nnx.value_and_grad(loss, argnums=0)
 
-    def _ngd_init(
-        model,
-        args,
-        kwargs,
-        *rest_args
-        # step_size: float,
-        # linear_solver_regularization: float = 1e-3,
-        # linear_solver_tolerance: float = 1e-6,
-        # linear_solver_maxiter: float = 50,
-    ):
+    def _ngd_init(model, args, kwargs, *rest_args):
         _, par, _ = nnx.split(model, nnx.Param, ...)
         previous_grad = jax.tree.map(jnp.zeros_like, par)
         state = (model, previous_grad, args, kwargs)
@@ -77,10 +91,14 @@ def get_ngd(
 
         # compute natural grad
         # natural_grad_norm_alt = tree_dot_product(grad, natural_grad)
-        natural_grad = _compute_natural_grad(
-            model, rngs, grad, prev_grad, **kwargs
+        natural_grad, natural_grad_norm_sq = _compute_natural_grad(
+            model,
+            rngs,
+            grad,
+            prev_grad,
+            **kwargs,
+            max_norm_clipping=natural_grad_clipping_threshold,
         )
-        natural_grad_norm_sq = model.scalar_product(natural_grad, natural_grad, rngs)
         grad_norm_sq = tree_dot_product(grad, grad)
 
         gd, params, rest = nnx.split(model, nnx.Param, ...)

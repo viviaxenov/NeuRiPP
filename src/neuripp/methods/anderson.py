@@ -35,6 +35,7 @@ def get_anderson(
     regularization_method: Literal["l2", "adaptive"] = "l2",
     ensure_descent: bool = True,
     linear_solver_method: str = "cg",
+    natural_grad_clipping_threshold: float = None,
 ):
     if linear_solver_method != "cg":
         raise NotImplementedError(
@@ -54,7 +55,14 @@ def get_anderson(
         _, par, _ = nnx.split(model, nnx.Param, ...)
         zero_vector = jax.tree.map(jnp.zeros_like, par)
         f, grad = vg_fn(model, batch, rngs)
-        natural_grad = _compute_natural_grad(model, rngs, grad, zero_vector, **kwargs)
+        natural_grad, _ = _compute_natural_grad(
+            model,
+            rngs,
+            grad,
+            zero_vector,
+            **kwargs,
+            max_norm_clipping=natural_grad_clipping_threshold,
+        )
         # initialize history with zero vectors
         # history[:m] is residuals
         # history[m:] is Delta x
@@ -73,9 +81,16 @@ def get_anderson(
         step_size, relaxation, regularization_factor = args
 
         f, grad = vg_fn(model, batch, rngs)
-        natural_grad = _compute_natural_grad(model, rngs, grad, previous_grad, **kwargs)
+        natural_grad, natural_grad_norm_sq = _compute_natural_grad(
+            model,
+            rngs,
+            grad,
+            previous_grad,
+            **kwargs,
+            max_norm_clipping=natural_grad_clipping_threshold,
+        )
         residual = jax.tree.map(lambda _x: -step_size * _x, natural_grad)
-        r_cur_norm_sq = model.scalar_product(residual, residual, rngs)
+        r_cur_norm_sq = natural_grad_norm_sq * step_size**2
         # compute previous delta_r
         history = jax.tree.map(
             lambda _h, _r: _h.at[0].set(_r - _h[0]), history, residual
@@ -133,7 +148,7 @@ def get_anderson(
         return (model, natural_grad, history, args, kwargs), (
             f,
             grad_norm_sq,
-            r_cur_norm_sq / step_size**2,
+            natural_grad_norm_sq,
         )
 
     return _init, _step
