@@ -48,11 +48,11 @@ def _compute_natural_grad(
     # Gradient clipping
     if max_norm_clipping is not None:
         natural_grad = jax.lax.cond(
-            norm > max_norm_clipping,
+            step_size * norm > max_norm_clipping,
             _clip_by_max_norm,
             lambda *args: args[0],
             natural_grad,
-            norm,
+            step_size * norm,
             max_norm_clipping,
         )
 
