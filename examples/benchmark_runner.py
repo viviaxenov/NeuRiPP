@@ -103,7 +103,9 @@ def _validate_architecture(architecture: dict[str, Any], index: int) -> None:
 
     rhs = _require_object(architecture.get("rhs"), f"{name}.rhs")
     if "dim" in rhs:
-        raise ValueError(f"{name}.rhs.dim is not supported; dim is inferred from problem")
+        raise ValueError(
+            f"{name}.rhs.dim is not supported; dim is inferred from problem"
+        )
     if not isinstance(rhs.get("model"), str):
         raise ValueError(f"{name}.rhs.model must be a string")
 
@@ -162,7 +164,9 @@ def _sample_data_distribution(
     )
 
 
-def resolve_problem(problem: dict[str, Any], common_params: dict[str, Any]) -> dict[str, Any]:
+def resolve_problem(
+    problem: dict[str, Any], common_params: dict[str, Any]
+) -> dict[str, Any]:
     """Resolve problem metadata that execution can trust later.
 
     Data-backed distributions infer dimension once here. Analytic KL targets use
@@ -223,7 +227,9 @@ def resolve_problem(problem: dict[str, Any], common_params: dict[str, Any]) -> d
     raise ValueError(f"Unsupported functional kind {kind!r}")
 
 
-def _expand_template(template: dict[str, Any], skip_keys: set[str] | None = None) -> list[dict[str, Any]]:
+def _expand_template(
+    template: dict[str, Any], skip_keys: set[str] | None = None
+) -> list[dict[str, Any]]:
     skip_keys = skip_keys or set()
     scalar_items: list[tuple[str, Any]] = []
     grid_items: list[tuple[str, list[Any]]] = []
@@ -256,7 +262,9 @@ def _expand_architectures(architectures: list[dict[str, Any]]) -> list[dict[str,
         top_level = {key: value for key, value in architecture.items() if key != "rhs"}
         expanded_top_level = _expand_template(top_level)
         expanded_rhs = _expand_template(architecture["rhs"])
-        for top_values, rhs_values in itertools.product(expanded_top_level, expanded_rhs):
+        for top_values, rhs_values in itertools.product(
+            expanded_top_level, expanded_rhs
+        ):
             expanded_architecture = {}
             for key in architecture:
                 if key == "rhs":
@@ -338,12 +346,13 @@ def _method_factory_group_fields(
 ) -> tuple[tuple[str, str], ...]:
     factory_kwargs, _, _ = split_method_kwargs(method_name, method_kwargs, deps=deps)
     return tuple(
-        (key, _value_identity(factory_kwargs[key]))
-        for key in sorted(factory_kwargs)
+        (key, _value_identity(factory_kwargs[key])) for key in sorted(factory_kwargs)
     )
 
 
-def execution_group_key(planned_run: dict[str, Any]) -> tuple[str, str, tuple[Any, ...]]:
+def execution_group_key(
+    planned_run: dict[str, Any],
+) -> tuple[str, str, tuple[Any, ...]]:
     method = planned_run["method"]
     architecture_key = _value_identity(planned_run["architecture"])
     return (
@@ -420,7 +429,9 @@ def _write_json(path: Path, data: Any) -> None:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
 
 
 def write_expanded_run_config(run_dir: Path, planned_run: dict[str, Any]) -> None:
@@ -568,7 +579,9 @@ def initialize_session(
     _write_json(session_dir / "planned_runs.json", planned_runs)
 
 
-def assigned_gpu_id(parallel_config: dict[str, Any], worker_id: int) -> int | str | None:
+def assigned_gpu_id(
+    parallel_config: dict[str, Any], worker_id: int
+) -> int | str | None:
     gpu_ids = parallel_config.get("gpu_ids")
     if not gpu_ids:
         return None
@@ -635,7 +648,9 @@ def import_runtime_dependencies() -> dict[str, Any]:
     from neuripp.methods.anderson import get_anderson
     from neuripp.methods.ngd import get_ngd
     from neuripp.methods.optax_optimizer import get_optax, optax_optimizers
-    from neuripp.parametric_pushforward.parametric_pushforward import ParametricPushforward
+    from neuripp.parametric_pushforward.parametric_pushforward import (
+        ParametricPushforward,
+    )
 
     logpdf_targets = import_module("logpdf_targets")
     rhs_architectures = import_module("rhs_architectures")
@@ -718,7 +733,7 @@ def build_rhs(
 
 
 def split_architecture_kwargs(
-    architecture: dict[str, Any]
+    architecture: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     rhs_config = architecture["rhs"]
     direct_keys = {
@@ -780,7 +795,9 @@ def build_data_batcher(
     return data_batchers[name](shape, distribution.get("resample_each", 1))
 
 
-def build_gaussian_logpdf(dim: int, distribution: dict[str, Any], deps: dict[str, Any]) -> Any:
+def build_gaussian_logpdf(
+    dim: int, distribution: dict[str, Any], deps: dict[str, Any]
+) -> Any:
     jnp = deps["jnp"]
     mean_value = distribution.get("mean_value", 0.0)
     sigma_diag = distribution.get("sigma_diag")
@@ -882,7 +899,9 @@ def method_factory_param_names(
     method_registry = deps["method_registry"]
     if method_name not in method_registry:
         supported = ", ".join(sorted(method_registry))
-        raise ValueError(f"Unsupported method {method_name!r}; expected one of: {supported}")
+        raise ValueError(
+            f"Unsupported method {method_name!r}; expected one of: {supported}"
+        )
 
     signature = inspect.signature(method_registry[method_name])
     excluded = {"loss"}
@@ -911,9 +930,7 @@ def split_method_kwargs(
     }
     factory_param_names = method_factory_param_names(method_name, deps=deps)
     factory_kwargs = {
-        key: kwargs.pop(key)
-        for key in list(kwargs)
-        if key in factory_param_names
+        key: kwargs.pop(key) for key in list(kwargs) if key in factory_param_names
     }
 
     if method_name == "anderson":
@@ -937,7 +954,9 @@ def split_method_kwargs(
     if method_name in deps["optax_methods"]:
         learning_rate = kwargs.pop("learning_rate", kwargs.pop("step_size", None))
         if learning_rate is None:
-            raise ValueError(f"{method_name} methods require learning_rate or step_size")
+            raise ValueError(
+                f"{method_name} methods require learning_rate or step_size"
+            )
         return factory_kwargs, (learning_rate,), kwargs
 
     raise ValueError(f"Unsupported method {method_name!r}")
@@ -953,7 +972,9 @@ def build_method(
     method_registry = deps["method_registry"]
     if method_name not in method_registry:
         supported = ", ".join(sorted(method_registry))
-        raise ValueError(f"Unsupported method {method_name!r}; expected one of: {supported}")
+        raise ValueError(
+            f"Unsupported method {method_name!r}; expected one of: {supported}"
+        )
 
     if method_name in deps["optax_methods"]:
         return method_registry[method_name](loss, method=method_name, **factory_kwargs)
@@ -1034,7 +1055,9 @@ def lane_model_from_ensemble(
     return nnx.merge(template_graphdef, lane_params, template_rest)
 
 
-def lane_metric_arrays(stacked_metrics: dict[str, Any], lane_index: int) -> dict[str, Any]:
+def lane_metric_arrays(
+    stacked_metrics: dict[str, Any], lane_index: int
+) -> dict[str, Any]:
     return {
         name: values[:, lane_index]
         for name, values in stacked_metrics.items()
@@ -1084,6 +1107,8 @@ def execute_run_chunk(
 ) -> list[dict[str, Any]]:
     deps = deps or import_runtime_dependencies()
     nnx = deps["nnx"]
+    jax = deps["jax"]
+    jnp = deps["jnp"]
     planned_runs = chunk["planned_runs"]
     session_plot_dir = session_dir / "plots"
     session_plot_dir.mkdir(parents=True, exist_ok=True)
@@ -1114,17 +1139,22 @@ def execute_run_chunk(
         if plot_every is not None and (
             not isinstance(plot_every, int) or plot_every < 1
         ):
-            raise ValueError("method_kwargs.plot_every must be a positive integer when provided")
+            raise ValueError(
+                "method_kwargs.plot_every must be a positive integer when provided"
+            )
 
         chunk_seed = config["common_params"]["master_seed"] + chunk["chunk_index"]
+
+        master_rngs = nnx.Rngs(config["common_params"]["master_seed"])
         chunk_rngs = nnx.Rngs(chunk_seed)
+
         lane_rngs = chunk_rngs.fork(split=len(planned_runs))
 
         template_model = build_model(
             reference_run["architecture"],
             reference_run["method_kwargs"],
             reference_run["resolved_problem"]["dim"],
-            rngs=nnx.Rngs(chunk_seed),
+            rngs=master_rngs,
             deps=deps,
         )
         problem_state = build_vectorized_problem(
@@ -1152,7 +1182,17 @@ def execute_run_chunk(
             deps,
         )
 
-        init_batch = problem_state["next_batch"](chunk_rngs)
+        # Set initial weights equal for all the runs!
+        _, template_par, _ = nnx.split(template_model, nnx.Param, ...)
+        gd, ensemble_par, rest = nnx.split(ensemble, nnx.Param, ...)
+        ensemble_par = jax.tree.map(
+            lambda _xs, _x0: jnp.broadcast_to(_x0[jnp.newaxis, ...], _xs.shape),
+            ensemble_par,
+            template_par,
+        )
+        ensemble = nnx.merge(gd, ensemble_par, rest)
+
+        init_batch = problem_state["next_batch"](master_rngs)
         state = vectorized_init(
             ensemble,
             vectorized_args,
@@ -1324,7 +1364,9 @@ def run_sequential(
     summary = {"success": 0, "failed": 0, "total": len(selected_runs)}
     from tqdm import tqdm
 
-    with tqdm(total=len(selected_runs), desc="Runs", position=0, leave=True) as runs_pbar:
+    with tqdm(
+        total=len(selected_runs), desc="Runs", position=0, leave=True
+    ) as runs_pbar:
         for chunk in chunks:
             results = execute_run_chunk(
                 chunk,
@@ -1372,7 +1414,9 @@ def worker_loop(
         while True:
             chunk = task_queue.get()
             if chunk is None:
-                message_queue.put({"event": "worker_empty_queue", "worker_id": worker_id})
+                message_queue.put(
+                    {"event": "worker_empty_queue", "worker_id": worker_id}
+                )
                 break
 
             message_queue.put(
@@ -1381,7 +1425,9 @@ def worker_loop(
                     "worker_id": worker_id,
                     "chunk_index": chunk["chunk_index"],
                     "method": chunk["method"],
-                    "run_ids": [planned_run["run_id"] for planned_run in chunk["planned_runs"]],
+                    "run_ids": [
+                        planned_run["run_id"] for planned_run in chunk["planned_runs"]
+                    ],
                 }
             )
             results = execute_run_chunk(
@@ -1455,7 +1501,9 @@ def run_parallel(
     summary = {"success": 0, "failed": 0, "total": len(selected_runs)}
     exited_workers: set[int] = set()
 
-    with tqdm(total=len(selected_runs), desc="Runs", position=0, leave=True) as runs_pbar:
+    with tqdm(
+        total=len(selected_runs), desc="Runs", position=0, leave=True
+    ) as runs_pbar:
         while len(exited_workers) < n_workers:
             try:
                 message = message_queue.get(timeout=0.2)
@@ -1508,11 +1556,7 @@ def _load_saved_arrays(arrays_path: Path) -> dict[str, Any]:
 
 
 def entry_arrays(entry: dict[str, Any]) -> dict[str, Any]:
-    return {
-        name: entry[name]
-        for name in entry.get("array_names", [])
-        if name in entry
-    }
+    return {name: entry[name] for name in entry.get("array_names", []) if name in entry}
 
 
 def _expanded_config_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
@@ -1526,11 +1570,7 @@ def _expanded_config_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
         "method",
         "method_kwargs",
     )
-    return {
-        key: copy.deepcopy(entry[key])
-        for key in config_keys
-        if key in entry
-    }
+    return {key: copy.deepcopy(entry[key]) for key in config_keys if key in entry}
 
 
 def load_experiment_entries(session_dir: str | Path) -> list[dict[str, Any]]:
@@ -1551,7 +1591,11 @@ def load_experiment_entries(session_dir: str | Path) -> list[dict[str, Any]]:
         status_path = run_dir / "status.json"
         expanded_config_path = run_dir / "expanded_config.json"
         arrays_path = run_dir / "arrays.npz"
-        if not status_path.exists() or not expanded_config_path.exists() or not arrays_path.exists():
+        if (
+            not status_path.exists()
+            or not expanded_config_path.exists()
+            or not arrays_path.exists()
+        ):
             continue
 
         status = _load_json(status_path)
@@ -1647,11 +1691,7 @@ def varying_param_keys(expanded_configs: list[dict[str, Any]]) -> list[str]:
 
     varying: list[str] = []
     for key in keys:
-        values = {
-            _value_identity(flat[key])
-            for flat in flattened
-            if key in flat
-        }
+        values = {_value_identity(flat[key]) for flat in flattened if key in flat}
         if len(values) > 1:
             varying.append(key)
     return varying
@@ -1724,14 +1764,16 @@ def _group_items_by_keys(
 
 def architecture_group_fields(entry: dict[str, Any]) -> dict[str, Any]:
     flat = flatten_entry(entry)
-    return {key: value for key, value in flat.items() if key.startswith("architecture.")}
+    return {
+        key: value for key, value in flat.items() if key.startswith("architecture.")
+    }
 
 
 def method_group_fields(entry: dict[str, Any]) -> dict[str, Any]:
     fields = {"method": entry.get("method")}
-    for key, value in split_method_kwargs(
-        entry["method"], entry["method_kwargs"]
-    )[0].items():
+    for key, value in split_method_kwargs(entry["method"], entry["method_kwargs"])[
+        0
+    ].items():
         fields[f"method_kwargs.{key}"] = value
     return fields
 
@@ -1745,18 +1787,26 @@ def _frame_flattened_columns(frame: Any) -> list[str]:
     return [
         key
         for key in frame.columns
-        if key == "method" or key == "restart_index" or key.startswith(("method_kwargs.", "architecture.", "problem."))
+        if key == "method"
+        or key == "restart_index"
+        or key.startswith(("method_kwargs.", "architecture.", "problem."))
     ]
 
 
 def architecture_group_columns(frame: Any) -> list[str]:
-    return [key for key in _frame_flattened_columns(frame) if key.startswith("architecture.")]
+    return [
+        key
+        for key in _frame_flattened_columns(frame)
+        if key.startswith("architecture.")
+    ]
 
 
 def method_group_columns(frame: Any) -> list[str]:
     columns = ["method"]
     method_series = frame["method"] if "method" in frame.columns else None
-    method_names = [] if method_series is None else method_series.dropna().unique().tolist()
+    method_names = (
+        [] if method_series is None else method_series.dropna().unique().tolist()
+    )
     for method_name in method_names:
         for key in sorted(method_factory_param_names(method_name)):
             column = f"method_kwargs.{key}"
@@ -1820,7 +1870,9 @@ def _filename_suffix(index: int, group_key: dict[str, Any]) -> str:
     return f"arch_{index:03d}"
 
 
-def _representative_params(items: list[dict[str, Any]], keys: list[str]) -> dict[str, Any]:
+def _representative_params(
+    items: list[dict[str, Any]], keys: list[str]
+) -> dict[str, Any]:
     base = dict(items[0])
     flat = flatten_entry(base)
     base["_line_params"] = {key: flat[key] for key in keys if key in flat}
@@ -1905,7 +1957,9 @@ def _assign_line_styles(
     return styles
 
 
-def get_lines(entries: list[dict[str, Any]], style_channels: dict[str, Any]) -> list[dict[str, Any]]:
+def get_lines(
+    entries: list[dict[str, Any]], style_channels: dict[str, Any]
+) -> list[dict[str, Any]]:
     """Build aggregate plotting groups and loss series definitions.
 
     Architecture-varying parameters define top-level plot groups. Runs that
@@ -1922,13 +1976,12 @@ def get_lines(entries: list[dict[str, Any]], style_channels: dict[str, Any]) -> 
     flattened_all = [flatten_entry(entry) for entry in entries]
     varying_keys_all = _varying_keys_from_flattened(flattened_all)
     architecture_keys = [
-        key
-        for key in architecture_group_columns(frame)
-        if key in varying_keys_all
+        key for key in architecture_group_columns(frame) if key in varying_keys_all
     ]
     if architecture_keys:
         architecture_groups = [
-            group for _, group in frame.groupby(architecture_keys, sort=False, dropna=False)
+            group
+            for _, group in frame.groupby(architecture_keys, sort=False, dropna=False)
         ]
     else:
         architecture_groups = [frame]
@@ -1938,9 +1991,7 @@ def get_lines(entries: list[dict[str, Any]], style_channels: dict[str, Any]) -> 
         group_items = [entries[index] for index in group_frame["entry_index"].tolist()]
         group_flat = [flatten_entry(item) for item in group_items]
         architecture_group_key = {
-            key: group_flat[0][key]
-            for key in architecture_keys
-            if key in group_flat[0]
+            key: group_flat[0][key] for key in architecture_keys if key in group_flat[0]
         }
         title = (
             ", ".join(
@@ -1962,16 +2013,26 @@ def get_lines(entries: list[dict[str, Any]], style_channels: dict[str, Any]) -> 
         representatives: list[dict[str, Any]] = []
         if line_param_keys:
             restart_groups = [
-                group for _, group in group_frame.groupby(line_param_keys, sort=False, dropna=False)
+                group
+                for _, group in group_frame.groupby(
+                    line_param_keys, sort=False, dropna=False
+                )
             ]
         else:
             restart_groups = [group_frame]
 
         for restart_group in restart_groups:
-            restart_group_items = [entries[index] for index in restart_group["entry_index"].tolist()]
-            representative = _representative_params(restart_group_items, line_param_keys)
+            restart_group_items = [
+                entries[index] for index in restart_group["entry_index"].tolist()
+            ]
+            representative = _representative_params(
+                restart_group_items, line_param_keys
+            )
             representatives.append(representative)
-            losses = [np.asarray(_loss_array(item), dtype=float) for item in restart_group_items]
+            losses = [
+                np.asarray(_loss_array(item), dtype=float)
+                for item in restart_group_items
+            ]
             if len(losses) > 1:
                 min_length = min(loss.shape[0] for loss in losses)
                 if any(loss.shape[0] != min_length for loss in losses):
@@ -1992,7 +2053,9 @@ def get_lines(entries: list[dict[str, Any]], style_channels: dict[str, Any]) -> 
                 )
             else:
                 item = restart_group_items[0]
-                label = _line_label(representative, line_param_keys) or item.get("run_id", "run")
+                label = _line_label(representative, line_param_keys) or item.get(
+                    "run_id", "run"
+                )
                 line_items.append(
                     {
                         "label": label,
@@ -2008,7 +2071,9 @@ def get_lines(entries: list[dict[str, Any]], style_channels: dict[str, Any]) -> 
             {
                 "group_key": architecture_group_key,
                 "title": title,
-                "filename_suffix": _filename_suffix(group_index, architecture_group_key),
+                "filename_suffix": _filename_suffix(
+                    group_index, architecture_group_key
+                ),
                 "lines": line_items,
             }
         )
@@ -2088,7 +2153,7 @@ def generate_aggregate_plots(
     written_paths: list[Path] = []
 
     for group in groups:
-        suffix = group['filename_suffix']
+        suffix = group["filename_suffix"]
         filename = f"aggregate_loss_{suffix}.pdf" if suffix else "aggregate_loss.pdf"
         output_path = plot_dir / filename
         _plot_aggregate_group(group, output_path)
@@ -2169,7 +2234,9 @@ def generate_per_run_plots(
         model = load_entry_model(entry, key="last")
         title = format_run_label(entry, varying_keys)
         output_path = plot_dir / f"{entry['run_id']}_plots.pdf"
-        plot_run_diagnostics(model, entry_arrays(entry), title, output_path, n_samples=n_samples)
+        plot_run_diagnostics(
+            model, entry_arrays(entry), title, output_path, n_samples=n_samples
+        )
         written_paths.append(output_path)
 
     return written_paths
@@ -2245,7 +2312,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if not isinstance(batch_size, int) or batch_size < 1:
         raise ValueError("common_params.batch_size must be a positive integer")
     problem = _require_object(config["problem"], "problem")
-    architectures = _require_non_empty_object_list(config["architectures"], "architectures")
+    architectures = _require_non_empty_object_list(
+        config["architectures"], "architectures"
+    )
     methods = _require_non_empty_object_list(config["methods"], "methods")
     _require_object(config["plotting"], "plotting")
 
@@ -2255,7 +2324,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
     functional = _require_object(problem.get("functional"), "problem.functional")
     if "name" in functional:
-        raise ValueError("problem.functional.name is not supported; use functional.kind")
+        raise ValueError(
+            "problem.functional.name is not supported; use functional.kind"
+        )
     kind = functional.get("kind")
     if kind not in SUPPORTED_FUNCTIONAL_KINDS:
         supported = ", ".join(sorted(SUPPORTED_FUNCTIONAL_KINDS))
@@ -2304,7 +2375,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
                 f"parallel.gpu_ids[{index}] must be an integer or string device id"
             )
 
-    max_parallel = _require_object(parallel.get("max_parallel"), "parallel.max_parallel")
+    max_parallel = _require_object(
+        parallel.get("max_parallel"), "parallel.max_parallel"
+    )
     for method in methods:
         method_name = method["method"]
         method_parallel = max_parallel.get(method_name)
@@ -2318,9 +2391,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
         raise ValueError("config must be a list")
     for index, entry in enumerate(jax_config):
         if not isinstance(entry, (list, tuple)) or len(entry) != 2:
-            raise ValueError(
-                f"config[{index}] must be a [flag, value] pair"
-            )
+            raise ValueError(f"config[{index}] must be a [flag, value] pair")
         flag, value = entry
         if not isinstance(flag, str):
             raise ValueError(
