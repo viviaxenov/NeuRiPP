@@ -10,7 +10,7 @@ from functools import partial
 
 from ..parametric_pushforward.parametric_pushforward import ParametricPushforward
 from ..utility.utility import tree_dot_product
-from .ngd import _compute_natural_grad
+from .ngd import _compute_natural_grad, _clip_gradient, _clip_gradient
 
 pairwise_dot_col = jax.vmap(tree_dot_product, in_axes=[0, None])
 pairwise_dot_matrix = jax.vmap(pairwise_dot_col, in_axes=[None, 0], out_axes=1)
@@ -55,13 +55,12 @@ def get_anderson(
         _, par, _ = nnx.split(model, nnx.Param, ...)
         zero_vector = jax.tree.map(jnp.zeros_like, par)
         f, grad = vg_fn(model, batch, rngs)
-        natural_grad, _ = _compute_natural_grad(
+        natural_grad = _compute_natural_grad(
             model,
             rngs,
             grad,
             zero_vector,
             **kwargs,
-            max_norm_clipping=natural_grad_clipping_threshold,
         )
         # initialize history with zero vectors
         # history[:m] is residuals
@@ -81,14 +80,21 @@ def get_anderson(
         step_size, relaxation, regularization_factor = args
 
         f, grad = vg_fn(model, batch, rngs)
-        natural_grad, natural_grad_norm_sq = _compute_natural_grad(
+        natural_grad = _compute_natural_grad(
             model,
             rngs,
             grad,
             previous_grad,
             **kwargs,
-            max_norm_clipping=natural_grad_clipping_threshold,
         )
+        
+        grad_norm_sq = tree_dot_product(grad, grad)
+        natural_grad_norm_sq = model.scalar_product(natural_grad, natural_grad, rngs)
+        norm = jnp.maximum(natural_grad_norm_sq, 0.0) ** 0.5
+        # Gradient clipping
+        if natural_grad_clipping_threshold is not None:
+            natural_grad = _clip_gradient(natural_grad, norm*step_size, natural_grad_clipping_threshold)
+
         residual = jax.tree.map(lambda _x: -step_size * _x, natural_grad)
         r_cur_norm_sq = natural_grad_norm_sq * step_size**2
         # compute previous delta_r
@@ -142,8 +148,6 @@ def get_anderson(
         # update params
         params_new = jax.tree.map(lambda _x, _dx: _x + _dx, params, delta_x)
         model = nnx.merge(gd, params_new, rest)
-
-        grad_norm_sq = tree_dot_product(grad, grad)
 
         return (model, natural_grad, history, args, kwargs), (
             f,
