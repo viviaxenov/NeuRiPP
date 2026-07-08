@@ -576,7 +576,8 @@ def setup_worker_environment(
     """Set worker environment before JAX is imported."""
 
     requested_gpu_id = assigned_gpu_id(parallel_config, worker_id)
-    os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+    # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+    os.environ["XLA_PYTHON_CLIENT_MEME_FRACTION"] = ".90"
     if requested_gpu_id is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(requested_gpu_id)
     return requested_gpu_id
