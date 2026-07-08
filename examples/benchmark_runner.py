@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import inspect
 import itertools
 import json
 import multiprocessing as mp
@@ -332,20 +333,24 @@ def plan_runs(config: dict[str, Any]) -> list[dict[str, Any]]:
     return planned_runs
 
 
-def _anderson_group_fields(method_kwargs: dict[str, Any]) -> tuple[Any, Any, Any]:
-    return (
-        method_kwargs.get("history_length", 8),
-        method_kwargs.get("regularization_method", "l2"),
-        method_kwargs.get("ensure_descent", True),
+def _method_factory_group_fields(
+    method_name: str, method_kwargs: dict[str, Any], deps: dict[str, Any] | None = None
+) -> tuple[tuple[str, str], ...]:
+    factory_kwargs, _, _ = split_method_kwargs(method_name, method_kwargs, deps=deps)
+    return tuple(
+        (key, _value_identity(factory_kwargs[key]))
+        for key in sorted(factory_kwargs)
     )
 
 
 def execution_group_key(planned_run: dict[str, Any]) -> tuple[str, str, tuple[Any, ...]]:
     method = planned_run["method"]
     architecture_key = _value_identity(planned_run["architecture"])
-    if method == "anderson":
-        return (architecture_key, method, _anderson_group_fields(planned_run["method_kwargs"]))
-    return (architecture_key, method, ())
+    return (
+        architecture_key,
+        method,
+        _method_factory_group_fields(method, planned_run["method_kwargs"]),
+    )
 
 
 def chunk_planned_runs(
@@ -870,12 +875,29 @@ METHOD_EXECUTION_KEYS = {
 }
 
 
-ANDERSON_FACTORY_KEYS = {
-    "history_length",
-    "regularization_method",
-    "ensure_descent",
-    "linear_solver_method",
-}
+def method_factory_param_names(
+    method_name: str, deps: dict[str, Any] | None = None
+) -> set[str]:
+    deps = deps or import_runtime_dependencies()
+    method_registry = deps["method_registry"]
+    if method_name not in method_registry:
+        supported = ", ".join(sorted(method_registry))
+        raise ValueError(f"Unsupported method {method_name!r}; expected one of: {supported}")
+
+    signature = inspect.signature(method_registry[method_name])
+    excluded = {"loss"}
+    if method_name in deps["optax_methods"]:
+        excluded.add("method")
+    return {
+        name
+        for name, parameter in signature.parameters.items()
+        if name not in excluded
+        and parameter.kind
+        in {
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        }
+    }
 
 
 def split_method_kwargs(
@@ -887,13 +909,14 @@ def split_method_kwargs(
         for key, value in method_kwargs.items()
         if key not in METHOD_EXECUTION_KEYS
     }
+    factory_param_names = method_factory_param_names(method_name, deps=deps)
+    factory_kwargs = {
+        key: kwargs.pop(key)
+        for key in list(kwargs)
+        if key in factory_param_names
+    }
 
     if method_name == "anderson":
-        factory_kwargs = {
-            key: kwargs.pop(key)
-            for key in list(kwargs)
-            if key in ANDERSON_FACTORY_KEYS
-        }
         step_size = kwargs.pop("step_size", None)
         relaxation = kwargs.pop("relaxation", 1.0)
         regularization_factor = kwargs.pop(
@@ -906,17 +929,16 @@ def split_method_kwargs(
         return factory_kwargs, (step_size, relaxation, regularization_factor), kwargs
 
     if method_name == "ngd":
-        linear_solver_method = kwargs.pop("linear_solver_method", "cg")
         step_size = kwargs.pop("step_size", None)
         if step_size is None:
             raise ValueError("NGD methods require step_size")
-        return {"linear_solver_method": linear_solver_method}, (step_size,), kwargs
+        return factory_kwargs, (step_size,), kwargs
 
     if method_name in deps["optax_methods"]:
         learning_rate = kwargs.pop("learning_rate", kwargs.pop("step_size", None))
         if learning_rate is None:
             raise ValueError(f"{method_name} methods require learning_rate or step_size")
-        return {}, (learning_rate,), kwargs
+        return factory_kwargs, (learning_rate,), kwargs
 
     raise ValueError(f"Unsupported method {method_name!r}")
 
@@ -1706,15 +1728,11 @@ def architecture_group_fields(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 def method_group_fields(entry: dict[str, Any]) -> dict[str, Any]:
-    flat = flatten_entry(entry)
     fields = {"method": entry.get("method")}
-    if entry.get("method") == "anderson":
-        for key in (
-            "method_kwargs.history_length",
-            "method_kwargs.regularization_method",
-            "method_kwargs.ensure_descent",
-        ):
-            fields[key] = flat.get(key)
+    for key, value in split_method_kwargs(
+        entry["method"], entry["method_kwargs"]
+    )[0].items():
+        fields[f"method_kwargs.{key}"] = value
     return fields
 
 
@@ -1737,13 +1755,13 @@ def architecture_group_columns(frame: Any) -> list[str]:
 
 def method_group_columns(frame: Any) -> list[str]:
     columns = ["method"]
-    for key in (
-        "method_kwargs.history_length",
-        "method_kwargs.regularization_method",
-        "method_kwargs.ensure_descent",
-    ):
-        if key in frame.columns:
-            columns.append(key)
+    method_series = frame["method"] if "method" in frame.columns else None
+    method_names = [] if method_series is None else method_series.dropna().unique().tolist()
+    for method_name in method_names:
+        for key in sorted(method_factory_param_names(method_name)):
+            column = f"method_kwargs.{key}"
+            if column in frame.columns and column not in columns:
+                columns.append(column)
     return columns
 
 
