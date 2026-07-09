@@ -8,11 +8,13 @@ from flax import nnx
 import numpy as np
 from neuripp.parametric_pushforward.parametric_pushforward import ParametricPushforward
 
+import datasets
+
 
 class BaseBatcher(nnx.Module, ABC):
     def __init__(self, shape: int | Tuple[int], resample_each: int):
         if isinstance(shape, int):
-            shape = (shape, )
+            shape = (shape,)
         if resample_each <= 0:
             raise ValueError("resample_each must be positive.")
 
@@ -32,12 +34,14 @@ class BaseBatcher(nnx.Module, ABC):
         def reuse_fn(*args):
             return self.x.value
 
-        x = nnx.cond(
-            do_resample,
-            self._sample,
-            reuse_fn,
-            rngs,
-        )
+        # x = nnx.cond(
+        #     do_resample,
+        #     self._sample,
+        #     reuse_fn,
+        #     rngs,
+        # )
+        if do_resample:
+            x = self._sample(rngs)
 
         self.x.set_value(x)
         self.counter.set_value((self.counter.value + 1) % self.resample_each)
@@ -127,7 +131,7 @@ class TwoSpiralsBatcher(BaseBatcher):
 
         x = x + rngs.data.uniform(shape=x.shape) * 0.1
 
-        return x.reshape(*self.shape, 2, order='F')
+        return x.reshape(*self.shape, 2, order="F")
 
 
 class EightGaussiansBatcher(BaseBatcher):
@@ -169,22 +173,41 @@ class EightGaussiansBatcher(BaseBatcher):
         return x
 
 
-class LatentBatcherFromModel(BaseBatcher):
+class DatasetBatcher(BaseBatcher):
     def __init__(
-        self, shape: int, resample_each: int, model: ParametricPushforward
+        self,
+        batch_size: int,
+        resample_each: int,
+        X_train,
     ):
+        super().__init__(shape=batch_size, resample_each=resample_each)
+        self.batch_size = batch_size
+        self.X_train = X_train
+        self.i = nnx.Variable(-1)
+
+    def _sample(self, rngs: nnx.Rngs):
+        self.i.value = (self.i.value + 1) % (self.X_train.shape[0] // self.batch_size)
+        if self.i.value == 0:
+            self.X_train = rngs.permutation(self.X_train)
+        return self.X_train[
+            self.i.value * self.batch_size : (self.i.value + 1) * self.batch_size, ...
+        ]
+
+
+class LatentBatcherFromModel(BaseBatcher):
+    def __init__(self, shape: int, resample_each: int, model: ParametricPushforward):
         self._model = model
         super().__init__(shape=shape, resample_each=resample_each)
         self.n_samples = nnx.Variable(np.prod(self.shape, dtype=int))
 
     def _sample(self, rngs):
-        return self._model._sample_latent(self.n_samples, rngs).reshape((*self.shape, -1))
+        return self._model._sample_latent(self.n_samples, rngs).reshape(
+            (*self.shape, -1)
+        )
 
 
 def ZipBatcher(BaseBatcher):
-    def __init__(
-        self, shape: int, resample_each: int, *batchers: Tuple[BaseBatcher]
-    ):
+    def __init__(self, shape: int, resample_each: int, *batchers: Tuple[BaseBatcher]):
         super().__init__(shape=n_samples, resample_each=resample_each)
         self.batchers = batchers
 
