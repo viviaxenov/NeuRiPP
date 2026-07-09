@@ -10,9 +10,8 @@ from neuripp.utility.utility import *
 
 
 def _clip_gradient(natural_grad, snorm: float, max_snorm: float):
-    def _clip(ng):
-        return jax.tree.map(lambda _x: max_snorm / snorm * _x, ng)
-    return jax.lax.cond(snorm > max_snorm, _clip, lambda _x: _x, natural_grad)
+    factor = jnp.minimum(1.0, max_snorm / snorm)
+    return jax.tree.map(lambda _x: _x * factor, natural_grad)
 
 
 def _compute_natural_grad(
@@ -41,7 +40,6 @@ def _compute_natural_grad(
         tol=linear_solver_tolerance,
         maxiter=linear_solver_maxiter,
     )[0]
-
 
     return natural_grad
 
@@ -91,7 +89,9 @@ def get_ngd(
         norm = jnp.maximum(natural_grad_norm_sq, 0.0) ** 0.5
         # Gradient clipping
         if natural_grad_clipping_threshold is not None:
-            natural_grad = _clip_gradient(natural_grad, norm*step_size, natural_grad_clipping_threshold)
+            natural_grad = _clip_gradient(
+                natural_grad, norm * step_size, natural_grad_clipping_threshold
+            )
 
         gd, params, rest = nnx.split(model, nnx.Param, ...)
         # update params
