@@ -37,7 +37,10 @@ REQUIRED_TOP_LEVEL_KEYS = {
 OPTIONAL_TOP_LEVEL_KEYS = {"parallel", "config"}
 SUPPORTED_FUNCTIONAL_KINDS = {"KL", "MMD", "CrossEntropy"}
 DATA_DISTRIBUTIONS = {"checkerboard", "two_spirals", "eight_gaussians"}
+IMAGE_DATA_DISTRIBUTIONS = {"mnist", "fashion_mnist"}
 ANALYTIC_KL_DISTRIBUTIONS = {"gaussian", "st"}
+
+_IMAGE_DATASET_CACHE: dict[str, dict[str, Any]] = {}
 
 # Stage 3 validates method names without importing JAX/Optax at module import time.
 # Later stages will replace these placeholders with the real dispatch callables.
@@ -122,6 +125,62 @@ def _distribution_name(distribution: dict[str, Any]) -> str:
     return name
 
 
+def _is_image_distribution(name: str) -> bool:
+    return name in IMAGE_DATA_DISTRIBUTIONS
+
+
+def _image_dataset_hf_name(name: str) -> str:
+    if name == "mnist":
+        return "mnist"
+    if name == "fashion_mnist":
+        return "zalando-datasets/fashion_mnist"
+    raise ValueError(f"Unsupported image dataset {name!r}")
+
+
+def load_image_dataset(name: str) -> dict[str, Any]:
+    import numpy as np
+    from datasets import load_dataset
+
+    if name in _IMAGE_DATASET_CACHE:
+        return _IMAGE_DATASET_CACHE[name]
+
+    dataset = load_dataset(_image_dataset_hf_name(name))
+
+    def _stack_images(split_name: str) -> np.ndarray:
+        return (
+            np.stack(
+                [np.asarray(image, dtype=np.float32) for image in dataset[split_name]["image"]],
+                axis=0,
+            )
+            / 255.0
+        )
+
+    train_images = _stack_images("train")
+    test_images = _stack_images("test")
+    mean = train_images.mean(axis=0)
+    std = train_images.std(axis=0)
+    std = np.where(std > 1e-6, std, 1.0)
+
+    train_flat = ((train_images - mean[None, ...]) / std[None, ...]).reshape(
+        train_images.shape[0], -1
+    )
+    test_flat = ((test_images - mean[None, ...]) / std[None, ...]).reshape(
+        test_images.shape[0], -1
+    )
+    log_det = float(np.log(255.0 * std.reshape(-1)).sum(dtype=np.float64))
+
+    payload = {
+        "train": train_flat,
+        "test": test_flat,
+        "mean": mean,
+        "std": std,
+        "image_shape": tuple(mean.shape),
+        "pixel_log_det_per_example": log_det,
+    }
+    _IMAGE_DATASET_CACHE[name] = payload
+    return payload
+
+
 def _sample_data_distribution(
     distribution: dict[str, Any], common_params: dict[str, Any]
 ) -> Any:
@@ -133,6 +192,16 @@ def _sample_data_distribution(
         raise ValueError("common_params.batch_size must be a positive integer")
     seed = distribution.get("seed", 3)
     rng = np.random.default_rng(seed)
+
+    if _is_image_distribution(name):
+        dataset = load_image_dataset(name)
+        train = dataset["train"]
+        if sample_count > train.shape[0]:
+            raise ValueError(
+                f"common_params.batch_size={sample_count} exceeds dataset size for {name!r}"
+            )
+        indices = rng.choice(train.shape[0], size=sample_count, replace=False)
+        return train[indices]
 
     if name == "checkerboard":
         points = rng.uniform(size=(sample_count, 2))
@@ -158,7 +227,7 @@ def _sample_data_distribution(
         shift_ids = rng.integers(0, 7, size=sample_count)
         return (blob + centers[shift_ids, :]) / 1.414
 
-    supported = ", ".join(sorted(DATA_DISTRIBUTIONS))
+    supported = ", ".join(sorted(DATA_DISTRIBUTIONS | IMAGE_DATA_DISTRIBUTIONS))
     raise ValueError(
         f"Unsupported data distribution {name!r}. Supported data distributions: {supported}"
     )
@@ -183,7 +252,7 @@ def resolve_problem(
     ):
         raise ValueError("problem.dim must be a positive integer when provided")
 
-    if name in DATA_DISTRIBUTIONS:
+    if name in DATA_DISTRIBUTIONS | IMAGE_DATA_DISTRIBUTIONS:
         data_batch = _sample_data_distribution(distribution, common_params)
         if len(data_batch.shape) < 2:
             raise ValueError(
@@ -200,6 +269,7 @@ def resolve_problem(
             "dim": inferred_dim,
             "dim_source": "data",
             "distribution_name": name,
+            **({"rhs_dim": load_image_dataset(name)["image_shape"]} if _is_image_distribution(name) else {}),
         }
 
     if kind == "KL" and name in ANALYTIC_KL_DISTRIBUTIONS:
@@ -212,7 +282,7 @@ def resolve_problem(
         }
 
     if kind in {"CrossEntropy", "MMD"}:
-        supported = ", ".join(sorted(DATA_DISTRIBUTIONS))
+        supported = ", ".join(sorted(DATA_DISTRIBUTIONS | IMAGE_DATA_DISTRIBUTIONS))
         raise ValueError(
             f"Functional {kind} requires a data-backed distribution; got {name!r}. "
             f"Supported data distributions: {supported}"
@@ -684,11 +754,13 @@ def import_runtime_dependencies() -> dict[str, Any]:
             "two_spirals": data_generators.TwoSpiralsBatcher,
             "eight_gaussians": data_generators.EightGaussiansBatcher,
         },
+        "DatasetBatcher": data_generators.DatasetBatcher,
         "LatentBatcherFromModel": data_generators.LatentBatcherFromModel,
         "ZipBatcher": data_generators.ZipBatcher,
         "rhs_registry": {
             "MLP": rhs_architectures.MLP,
             "LinearRHS": rhs_architectures.LinearRHS,
+            "CFMConv2D": rhs_architectures.CFMConv2D,
         },
         "activation_registry": activation_registry,
         "method_registry": {
@@ -786,6 +858,14 @@ def build_data_batcher(
 ) -> Any:
     deps = deps or import_runtime_dependencies()
     name = _distribution_name(distribution)
+    if _is_image_distribution(name):
+        dataset = load_image_dataset(name)
+        return deps["DatasetBatcher"](
+            shape,
+            distribution.get("resample_each", 1),
+            deps["jnp"].asarray(dataset["train"]),
+        )
+
     data_batchers = deps["data_batchers"]
     if name not in data_batchers:
         supported = ", ".join(sorted(data_batchers))
@@ -834,10 +914,22 @@ def build_vectorized_problem(
 
     if kind == "CrossEntropy":
         data_batcher = build_data_batcher(distribution, batch_shape, deps=deps)
-        return {
+        state = {
             "loss": deps["cross_entropy"],
             "next_batch": lambda rngs: data_batcher(rngs),
         }
+        name = _distribution_name(distribution)
+        if _is_image_distribution(name):
+            dataset = load_image_dataset(name)
+            state["image_eval_context"] = {
+                "distribution_name": name,
+                "test": deps["jnp"].asarray(dataset["test"]),
+                "mean": deps["jnp"].asarray(dataset["mean"]),
+                "std": deps["jnp"].asarray(dataset["std"]),
+                "image_shape": dataset["image_shape"],
+                "pixel_log_det_per_example": dataset["pixel_log_det_per_example"],
+            }
+        return state
 
     if kind == "MMD":
         latent_batcher = deps["LatentBatcherFromModel"](
@@ -883,12 +975,97 @@ def build_vectorized_problem(
     raise ValueError(f"Unsupported functional kind {kind!r}")
 
 
+def _plotting_config_from_session(session_dir: Path) -> dict[str, Any]:
+    normalized_config_path = session_dir / "normalized_config.json"
+    if not normalized_config_path.exists():
+        return {}
+    normalized_config = _load_json(normalized_config_path)
+    plotting = normalized_config.get("plotting", {})
+    return plotting if isinstance(plotting, dict) else {}
+
+
+def image_grid_shape(plotting: dict[str, Any]) -> tuple[int, int]:
+    nrows = plotting.get("nrows", 3)
+    ncols = plotting.get("ncols", 3)
+    if not isinstance(nrows, int) or nrows < 1:
+        raise ValueError("plotting.nrows must be a positive integer when provided")
+    if not isinstance(ncols, int) or ncols < 1:
+        raise ValueError("plotting.ncols must be a positive integer when provided")
+    return nrows, ncols
+
+
+def is_image_problem(problem: dict[str, Any]) -> bool:
+    return _is_image_distribution(_distribution_name(problem["distribution"]))
+
+
+def unnormalize_image_samples(samples: Any, image_eval_context: dict[str, Any], deps: dict[str, Any]) -> Any:
+    jnp = deps["jnp"]
+    mean = image_eval_context["mean"]
+    std = image_eval_context["std"]
+    image_shape = image_eval_context["image_shape"]
+    images = samples.reshape((-1, *image_shape)) * std[None, ...] + mean[None, ...]
+    return jnp.clip(images, 0.0, 1.0)
+
+
+def evaluate_image_model(
+    model: Any,
+    image_eval_context: dict[str, Any],
+    eval_batch_size: int,
+    rng_seed: int,
+    deps: dict[str, Any],
+) -> dict[str, float]:
+    import numpy as np
+
+    test_data = image_eval_context["test"]
+    pixel_log_det = image_eval_context["pixel_log_det_per_example"]
+    total_logp = 0.0
+    total_count = 0
+    for start in range(0, int(test_data.shape[0]), eval_batch_size):
+        batch = test_data[start : start + eval_batch_size]
+        _, logp_normalized = model.pullback(
+            batch,
+            deps["nnx"].Rngs(rng_seed + start),
+            with_log_density=True,
+        )
+        logp_normalized = np.asarray(logp_normalized, dtype=float)
+        total_logp += float(logp_normalized.sum()) - pixel_log_det * logp_normalized.shape[0]
+        total_count += int(logp_normalized.shape[0])
+
+    nll = -total_logp / total_count
+    n_dim = int(np.prod(image_eval_context["image_shape"], dtype=int))
+    bits_dim = nll / (n_dim * np.log(2.0))
+    return {
+        "test_nll": float(nll),
+        "test_bits_dim": float(bits_dim),
+    }
+
+
+def build_lane_arrays(
+    stacked_metrics: dict[str, Any],
+    eval_history: dict[str, list[Any]],
+    lane_index: int,
+) -> dict[str, Any]:
+    import numpy as np
+
+    arrays = {
+        name: values[:, lane_index]
+        for name, values in stacked_metrics.items()
+        if getattr(values, "ndim", 0) >= 2
+    }
+    for name, values in eval_history.items():
+        if not values:
+            continue
+        lane_values = [value[lane_index] for value in values]
+        arrays[name] = np.asarray(lane_values)
+    return arrays
+
+
 METHOD_EXECUTION_KEYS = {
     "max_iterations",
     "batch_size",
     "N_monte_carlo",
     "master_seed",
-    "plot_every",
+    "eval_every",
 }
 
 
@@ -1072,19 +1249,25 @@ def write_run_intermediate_artifacts(
     arrays: dict[str, Any],
     deps: dict[str, Any],
     session_dir: Path,
+    plotting: dict[str, Any],
     checkpoint_key: str,
     checkpoint_metric: float | None,
     title: str,
+    image_eval_context: dict[str, Any] | None = None,
 ) -> None:
     import numpy as np
 
     np.savez(run_dir / "arrays.npz", **arrays)
     plot_run_diagnostics(
         model,
+        planned_run["problem"],
         arrays,
         title,
         session_dir / "plots" / f"{planned_run['run_id']}_plots.pdf",
+        plotting=plotting,
         n_samples=planned_run["method_kwargs"]["batch_size"],
+        image_eval_context=image_eval_context,
+        deps=deps,
     )
     write_checkpoint(
         run_dir / "checkpoints" / checkpoint_key,
@@ -1110,6 +1293,7 @@ def execute_run_chunk(
     jax = deps["jax"]
     jnp = deps["jnp"]
     planned_runs = chunk["planned_runs"]
+    plotting = config.get("plotting", {})
     session_plot_dir = session_dir / "plots"
     session_plot_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1135,12 +1319,12 @@ def execute_run_chunk(
         max_iterations = reference_run["method_kwargs"].get("max_iterations")
         if not isinstance(max_iterations, int) or max_iterations < 1:
             raise ValueError("method_kwargs.max_iterations must be a positive integer")
-        plot_every = reference_run["method_kwargs"].get("plot_every")
-        if plot_every is not None and (
-            not isinstance(plot_every, int) or plot_every < 1
+        eval_every = reference_run["method_kwargs"].get("eval_every")
+        if eval_every is not None and (
+            not isinstance(eval_every, int) or eval_every < 1
         ):
             raise ValueError(
-                "method_kwargs.plot_every must be a positive integer when provided"
+                "method_kwargs.eval_every must be a positive integer when provided"
             )
 
         chunk_seed = config["common_params"]["master_seed"] + chunk["chunk_index"]
@@ -1153,7 +1337,9 @@ def execute_run_chunk(
         template_model = build_model(
             reference_run["architecture"],
             reference_run["method_kwargs"],
-            reference_run["resolved_problem"]["dim"],
+            reference_run["resolved_problem"].get(
+                "rhs_dim", reference_run["resolved_problem"]["dim"]
+            ),
             rngs=master_rngs,
             deps=deps,
         )
@@ -1172,12 +1358,16 @@ def execute_run_chunk(
         init_fun, step_fun = build_method(
             reference_run["method"], factory_kwargs, problem_state["loss"], deps=deps
         )
+        image_eval_context = problem_state.get("image_eval_context")
+        image_problem = image_eval_context is not None
         vectorized_init = nnx.vmap(init_fun)
         vectorized_step = nnx.jit(nnx.vmap(step_fun))
         ensemble = build_model_ensemble(
             reference_run["architecture"],
             reference_run["method_kwargs"],
-            reference_run["resolved_problem"]["dim"],
+            reference_run["resolved_problem"].get(
+                "rhs_dim", reference_run["resolved_problem"]["dim"]
+            ),
             lane_rngs,
             deps,
         )
@@ -1203,7 +1393,18 @@ def execute_run_chunk(
 
         metric_names = ("loss", "grad_norm", "natural_grad_norm")
         metric_lists: dict[str, list[Any]] = {name: [] for name in metric_names}
+        eval_history: dict[str, list[Any]] = {
+            "eval_iteration": [],
+            "test_nll": [],
+            "test_bits_dim": [],
+        }
         best_losses = [float("inf")] * len(planned_runs)
+        best_test_nlls = [float("inf")] * len(planned_runs)
+        best_test_bits_dims = [None] * len(planned_runs)
+        best_eval_iterations = [None] * len(planned_runs)
+        last_test_nlls = [None] * len(planned_runs)
+        last_test_bits_dims = [None] * len(planned_runs)
+        last_eval_iterations = [None] * len(planned_runs)
         progress_bar = None
         if progress_position is not None:
             from tqdm import tqdm
@@ -1232,30 +1433,74 @@ def execute_run_chunk(
             for lane_index, current_loss in enumerate(current_losses):
                 if current_loss < best_losses[lane_index]:
                     best_losses[lane_index] = current_loss
-                    lane_model = lane_model_from_ensemble(
-                        model_ensemble, template_model, lane_index, deps
-                    )
-                    write_checkpoint(
-                        run_dirs[lane_index] / "checkpoints" / "best",
-                        lane_model,
-                        deps,
-                        planned_runs[lane_index],
-                        "best",
-                        metric_value=current_loss,
-                    )
+                    if not image_problem:
+                        lane_model = lane_model_from_ensemble(
+                            model_ensemble, template_model, lane_index, deps
+                        )
+                        write_checkpoint(
+                            run_dirs[lane_index] / "checkpoints" / "best",
+                            lane_model,
+                            deps,
+                            planned_runs[lane_index],
+                            "best",
+                            metric_value=current_loss,
+                        )
 
             if progress_bar is not None:
                 progress_bar.update(1)
 
-            should_flush = plot_every is not None and (iteration + 1) % plot_every == 0
+            should_flush = eval_every is not None and (iteration + 1) % eval_every == 0
             if should_flush:
                 stacked_metrics = {
                     name: np.stack([np.asarray(value) for value in values_list], axis=0)
                     for name, values_list in metric_lists.items()
                     if values_list
                 }
+                if image_problem:
+                    eval_iteration = iteration + 1
+                    eval_results = []
+                    for lane_index in range(len(planned_runs)):
+                        lane_model = lane_model_from_ensemble(
+                            model_ensemble, template_model, lane_index, deps
+                        )
+                        metrics = evaluate_image_model(
+                            lane_model,
+                            image_eval_context,
+                            reference_run["method_kwargs"]["batch_size"],
+                            reference_run["method_kwargs"].get("master_seed", 0)
+                            + eval_iteration
+                            + lane_index,
+                            deps,
+                        )
+                        eval_results.append(metrics)
+                        last_test_nlls[lane_index] = metrics["test_nll"]
+                        last_test_bits_dims[lane_index] = metrics["test_bits_dim"]
+                        last_eval_iterations[lane_index] = eval_iteration
+                        if metrics["test_nll"] < best_test_nlls[lane_index]:
+                            best_test_nlls[lane_index] = metrics["test_nll"]
+                            best_test_bits_dims[lane_index] = metrics["test_bits_dim"]
+                            best_eval_iterations[lane_index] = eval_iteration
+                            write_checkpoint(
+                                run_dirs[lane_index] / "checkpoints" / "best",
+                                lane_model,
+                                deps,
+                                planned_runs[lane_index],
+                                "best",
+                                metric_value=metrics["test_nll"],
+                            )
+                    eval_history["eval_iteration"].append(
+                        np.asarray([eval_iteration] * len(planned_runs), dtype=int)
+                    )
+                    eval_history["test_nll"].append(
+                        np.asarray([item["test_nll"] for item in eval_results], dtype=float)
+                    )
+                    eval_history["test_bits_dim"].append(
+                        np.asarray(
+                            [item["test_bits_dim"] for item in eval_results], dtype=float
+                        )
+                    )
                 for lane_index, planned_run in enumerate(planned_runs):
-                    lane_arrays = lane_metric_arrays(stacked_metrics, lane_index)
+                    lane_arrays = build_lane_arrays(stacked_metrics, eval_history, lane_index)
                     lane_model = lane_model_from_ensemble(
                         model_ensemble, template_model, lane_index, deps
                     )
@@ -1266,9 +1511,11 @@ def execute_run_chunk(
                         lane_arrays,
                         deps,
                         session_dir,
+                        plotting,
                         checkpoint_key="last",
                         checkpoint_metric=float(current_losses[lane_index]),
                         title=f"{planned_run['run_id']}, iteration {iteration + 1}",
+                        image_eval_context=image_eval_context,
                     )
 
         if progress_bar is not None:
@@ -1282,9 +1529,49 @@ def execute_run_chunk(
             if values_list
         }
         final_model_ensemble = state[0]
+        if image_problem and last_eval_iterations[0] != max_iterations:
+            eval_results = []
+            for lane_index in range(len(planned_runs)):
+                lane_model = lane_model_from_ensemble(
+                    final_model_ensemble, template_model, lane_index, deps
+                )
+                metrics = evaluate_image_model(
+                    lane_model,
+                    image_eval_context,
+                    reference_run["method_kwargs"]["batch_size"],
+                    reference_run["method_kwargs"].get("master_seed", 0)
+                    + max_iterations
+                    + lane_index,
+                    deps,
+                )
+                eval_results.append(metrics)
+                last_test_nlls[lane_index] = metrics["test_nll"]
+                last_test_bits_dims[lane_index] = metrics["test_bits_dim"]
+                last_eval_iterations[lane_index] = max_iterations
+                if metrics["test_nll"] < best_test_nlls[lane_index]:
+                    best_test_nlls[lane_index] = metrics["test_nll"]
+                    best_test_bits_dims[lane_index] = metrics["test_bits_dim"]
+                    best_eval_iterations[lane_index] = max_iterations
+                    write_checkpoint(
+                        run_dirs[lane_index] / "checkpoints" / "best",
+                        lane_model,
+                        deps,
+                        planned_runs[lane_index],
+                        "best",
+                        metric_value=metrics["test_nll"],
+                    )
+            eval_history["eval_iteration"].append(
+                np.asarray([max_iterations] * len(planned_runs), dtype=int)
+            )
+            eval_history["test_nll"].append(
+                np.asarray([item["test_nll"] for item in eval_results], dtype=float)
+            )
+            eval_history["test_bits_dim"].append(
+                np.asarray([item["test_bits_dim"] for item in eval_results], dtype=float)
+            )
         results: list[dict[str, Any]] = []
         for lane_index, planned_run in enumerate(planned_runs):
-            lane_arrays = lane_metric_arrays(stacked_metrics, lane_index)
+            lane_arrays = build_lane_arrays(stacked_metrics, eval_history, lane_index)
             lane_model = lane_model_from_ensemble(
                 final_model_ensemble, template_model, lane_index, deps
             )
@@ -1298,23 +1585,53 @@ def execute_run_chunk(
                 lane_arrays,
                 deps,
                 session_dir,
+                plotting,
                 checkpoint_key="last",
                 checkpoint_metric=final_loss,
                 title=f"{planned_run['run_id']}, final",
+                image_eval_context=image_eval_context,
             )
+            status_extra = {
+                "finished_at": _utc_now_iso(),
+                "best_loss": best_losses[lane_index],
+                "best_checkpoint_criterion": "minimum_loss",
+                "arrays_path": "arrays.npz",
+                "chunk_index": chunk["chunk_index"],
+                "restart_index": planned_run["restart_index"],
+            }
+            if image_problem:
+                status_extra.update(
+                    {
+                        "best_checkpoint_criterion": "minimum_test_nll_at_eval",
+                        "best_test_nll": best_test_nlls[lane_index],
+                        "best_test_bits_dim": best_test_bits_dims[lane_index],
+                        "best_eval_iteration": best_eval_iterations[lane_index],
+                        "last_test_nll": last_test_nlls[lane_index],
+                        "last_test_bits_dim": last_test_bits_dims[lane_index],
+                        "last_eval_iteration": last_eval_iterations[lane_index],
+                    }
+                )
             write_status(
                 run_dirs[lane_index],
                 "success",
                 planned_run,
                 worker_id,
                 device_info,
-                finished_at=_utc_now_iso(),
-                best_loss=best_losses[lane_index],
-                best_checkpoint_criterion="minimum_loss",
-                arrays_path="arrays.npz",
-                chunk_index=chunk["chunk_index"],
-                restart_index=planned_run["restart_index"],
+                **status_extra,
             )
+            summary_parts = [
+                f"run {planned_run['run_id']} success",
+                f"final_loss={final_loss:.6g}" if final_loss is not None else None,
+            ]
+            if image_problem and last_test_nlls[lane_index] is not None:
+                summary_parts.extend(
+                    [
+                        f"last_test_nll={last_test_nlls[lane_index]:.6g}",
+                        f"best_test_nll={best_test_nlls[lane_index]:.6g}",
+                        f"last_test_bits_dim={last_test_bits_dims[lane_index]:.6g}",
+                    ]
+                )
+            print("; ".join(part for part in summary_parts if part), flush=True)
             results.append(
                 {
                     "status": "success",
@@ -1573,6 +1890,18 @@ def _expanded_config_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
     return {key: copy.deepcopy(entry[key]) for key in config_keys if key in entry}
 
 
+ENTRY_STATUS_KEYS = {
+    "best_checkpoint_criterion",
+    "best_loss",
+    "best_test_nll",
+    "best_test_bits_dim",
+    "best_eval_iteration",
+    "last_test_nll",
+    "last_test_bits_dim",
+    "last_eval_iteration",
+}
+
+
 def load_experiment_entries(session_dir: str | Path) -> list[dict[str, Any]]:
     """Load successful benchmark runs as plain analysis entries.
 
@@ -1610,6 +1939,9 @@ def load_experiment_entries(session_dir: str | Path) -> list[dict[str, Any]]:
             "best": (run_dir / "checkpoints" / "best").resolve(),
             "last": (run_dir / "checkpoints" / "last").resolve(),
         }
+        for key in ENTRY_STATUS_KEYS:
+            if key in status:
+                entry[key] = copy.deepcopy(status[key])
         entry["array_names"] = list(arrays)
         entry.update(arrays)
 
@@ -2138,7 +2470,7 @@ def generate_aggregate_plots(
     plotting: dict[str, Any] | None = None,
 ) -> list[Path]:
     session_dir = Path(session_dir)
-    plotting = plotting or {}
+    plotting = plotting or _plotting_config_from_session(session_dir)
     entries = load_experiment_entries(session_dir)
     if not entries:
         return []
@@ -2164,28 +2496,57 @@ def generate_aggregate_plots(
 
 def plot_run_diagnostics(
     model: Any,
+    problem: dict[str, Any],
     arrays: dict[str, Any],
     title: str,
     output_path: Path,
+    plotting: dict[str, Any] | None = None,
     n_samples: int = 512,
+    image_eval_context: dict[str, Any] | None = None,
+    deps: dict[str, Any] | None = None,
 ) -> None:
     import matplotlib.pyplot as plt
 
-    deps = import_runtime_dependencies()
+    plotting = plotting or {}
+    deps = deps or import_runtime_dependencies()
+    image_problem = is_image_problem(problem)
+    if image_problem:
+        nrows, ncols = image_grid_shape(plotting)
+        n_samples = nrows * ncols
 
     x = model.sample(n_samples, deps["nnx"].Rngs(0))
     fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(25, 8), layout="constrained")
 
     ax = axs[0]
-    if x.shape[-1] >= 2:
+    if image_problem:
+        if image_eval_context is None:
+            dataset = load_image_dataset(_distribution_name(problem["distribution"]))
+            image_eval_context = {
+                "mean": deps["jnp"].asarray(dataset["mean"]),
+                "std": deps["jnp"].asarray(dataset["std"]),
+                "image_shape": dataset["image_shape"],
+            }
+        images = unnormalize_image_samples(x, image_eval_context, deps)
+        images = images.reshape((nrows, ncols, *image_eval_context["image_shape"]))
+        canvas = images.transpose((0, 2, 1, 3)).reshape(
+            nrows * image_eval_context["image_shape"][0],
+            ncols * image_eval_context["image_shape"][1],
+        )
+        ax.imshow(canvas, cmap="gray", vmin=0.0, vmax=1.0)
+        ax.set_title("Generated samples")
+        ax.axis("off")
+    elif x.shape[-1] >= 2:
         ax.scatter(*x[:, :2].T, label=r"$T_{\text{opt}}(z)$", marker="*", s=5.0)
+        ax.legend()
     else:
         ax.hist(x[:, 0], bins=40, label=r"$T_{\text{opt}}(z)$")
-    ax.legend()
+        ax.legend()
 
     ax = axs[1]
     if "loss" in arrays:
         ax.plot(arrays["loss"], label="Loss")
+    if "eval_iteration" in arrays and "test_nll" in arrays:
+        ax.plot(arrays["eval_iteration"], arrays["test_nll"], label="Test NLL")
     ax.legend()
 
     ax = axs[2]
@@ -2203,7 +2564,8 @@ def plot_run_diagnostics(
     ax.legend()
 
     for ax in axs:
-        ax.grid()
+        if ax is not axs[0] or not image_problem:
+            ax.grid()
     fig.suptitle(title)
     fig.savefig(output_path)
     plt.close(fig)
@@ -2214,7 +2576,7 @@ def generate_per_run_plots(
     plotting: dict[str, Any] | None = None,
 ) -> list[Path]:
     session_dir = Path(session_dir)
-    plotting = plotting or {}
+    plotting = plotting or _plotting_config_from_session(session_dir)
     entries = load_experiment_entries(session_dir)
     if not entries:
         return []
@@ -2235,7 +2597,13 @@ def generate_per_run_plots(
         title = format_run_label(entry, varying_keys)
         output_path = plot_dir / f"{entry['run_id']}_plots.pdf"
         plot_run_diagnostics(
-            model, entry_arrays(entry), title, output_path, n_samples=n_samples
+            model,
+            entry["problem"],
+            entry_arrays(entry),
+            title,
+            output_path,
+            plotting=plotting,
+            n_samples=n_samples,
         )
         written_paths.append(output_path)
 
@@ -2254,7 +2622,7 @@ def load_entry_model(entry: dict[str, Any], key: str = "last") -> Any:
     model = build_model(
         entry["architecture"],
         entry["method_kwargs"],
-        entry["resolved_problem"]["dim"],
+        entry["resolved_problem"].get("rhs_dim", entry["resolved_problem"]["dim"]),
         rngs=deps["nnx"].Rngs(entry["method_kwargs"].get("master_seed", 0)),
         deps=deps,
     )
@@ -2308,15 +2676,32 @@ def load_config(path: str | Path) -> dict[str, Any]:
         raise ValueError(
             "common_params.N_samples is not supported; use common_params.batch_size"
         )
+    if "plot_every" in common_params:
+        raise ValueError(
+            "common_params.plot_every is not supported; use common_params.eval_every"
+        )
     batch_size = common_params.get("batch_size")
     if not isinstance(batch_size, int) or batch_size < 1:
         raise ValueError("common_params.batch_size must be a positive integer")
+    eval_every = common_params.get("eval_every")
+    if eval_every is not None and (
+        not isinstance(eval_every, int) or eval_every < 1
+    ):
+        raise ValueError("common_params.eval_every must be a positive integer when provided")
     problem = _require_object(config["problem"], "problem")
     architectures = _require_non_empty_object_list(
         config["architectures"], "architectures"
     )
     methods = _require_non_empty_object_list(config["methods"], "methods")
-    _require_object(config["plotting"], "plotting")
+    plotting = _require_object(config["plotting"], "plotting")
+    if plotting.get("nrows") is not None and (
+        not isinstance(plotting["nrows"], int) or plotting["nrows"] < 1
+    ):
+        raise ValueError("plotting.nrows must be a positive integer when provided")
+    if plotting.get("ncols") is not None and (
+        not isinstance(plotting["ncols"], int) or plotting["ncols"] < 1
+    ):
+        raise ValueError("plotting.ncols must be a positive integer when provided")
 
     master_seed = common_params.setdefault("master_seed", 0)
     if not isinstance(master_seed, int):

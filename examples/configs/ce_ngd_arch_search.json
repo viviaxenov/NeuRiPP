@@ -5,7 +5,7 @@
     "batch_size": 512,
     "N_monte_carlo": 512,
     "master_seed": 42,
-    "plot_every": 600
+    "eval_every": 600
   },
   "problem": {
     "functional": {
