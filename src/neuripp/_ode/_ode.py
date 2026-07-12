@@ -2,6 +2,7 @@ import abc
 from typing import Callable, Tuple, Literal, Union
 import jax
 import jax.numpy as jnp
+import jax.ad_checkpoint
 from flax import nnx
 from functools import partial
 
