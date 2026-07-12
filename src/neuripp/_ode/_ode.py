@@ -177,7 +177,7 @@ class RK45Step(ODEStep):
         self,
         h_min: float,
     ):
-        return (h_min + self._h_max) / 2.
+        return (h_min + self._h_max) / 2.0
 
     def tree_flatten(self):
         children = None
@@ -300,6 +300,8 @@ def solve_ode_batched(
     N_steps_max: int = 100,
     method: Literal["rk45", "euler", "heun"] = "rk45",
     adaptive: bool = False,
+    grad_checkpointing: Literal[None, "dots_only", "save", "offload"] = None,
+    grad_checkpoint_every: int = 2,
     **method_kw,
 ):
     """Batched ODE solver that avoids vmap overhead by implementing proper batched logic.
@@ -317,6 +319,11 @@ def solve_ode_batched(
     Returns:
         Batch of solutions at t=1.0 with shape (B, ...)
     """
+    if grad_checkpointing in []:
+        raise NotImplementedError(
+            f"Checkpointing strategy {grad_checkpointing} not supported yet"
+        )
+
     batch_size = x0_batched.shape[0]
     h_min = 1.0 / N_steps_max
     step = _method_name_to_class.get(method)(rhs, **(method_kw | dict(h_min=h_min)))
@@ -325,11 +332,11 @@ def solve_ode_batched(
 
     # Initialize batched state
     x_batch = x0_batched
+    t_batch = jnp.zeros((batch_size,))
+    h_batch = jnp.full((batch_size,), h0)
 
     if adaptive:
         get_step_batched = jax.vmap(step.iterate_for_step)
-        t_batch = jnp.zeros((batch_size,))
-        h_batch = jnp.full((batch_size,), h0)
 
         def _do_step_fn(carry):
             t, x, h = carry
@@ -340,30 +347,33 @@ def solve_ode_batched(
 
             return t_new, x_new, h_new
 
-        def _cond_fn():
-            pass
+        @nnx.remat
+        def _skip_fn(carry):
+            return carry
+
+        if grad_checkpointing is not None:
+            _do_step_fn = nnx.remat(
+                _do_step_fn,
+                prevent_cse=False,
+                policy=jax.ad_checkpoint.checkpoint_policies.dots_with_no_batch_dims_saveable,
+            )
 
         def _body_fn(i, carry):
             t_batch, x_batch, h_batch = carry
 
             # Only step if we haven't reached the target time
-            needs_step = t_batch < 1.
+            needs_step = t_batch < 1.0
 
             t_new, x_new, h_new = jax.lax.cond(
                 jnp.any(needs_step),
                 _do_step_fn,
-                lambda _c: _c,
+                _skip_fn,
                 carry,
             )
 
             x_new = jnp.where(needs_step[:, jnp.newaxis], x_new, x_batch)
-            
+
             return t_new, x_new, h_new
-
-        carry = nnx.fori_loop(0, N_steps_max, _body_fn, (t_batch, x_batch, h_batch))
-        x_final = carry[1]
-
-        return x_final
 
     else:
         times = jnp.broadcast_to(
@@ -372,8 +382,18 @@ def solve_ode_batched(
         )
         steps = jnp.full_like(times, h_min)
 
-        def body_fn(x, scan_args):
-            t, h = scan_args
-            return step_batched(t, x, h, *aux_args_batched), None
+        def _body_fn(i, carry):
+            t, x, h = carry
+            return t + h, step_batched(t, x, h, *aux_args_batched), h
 
-        return jax.lax.scan(body_fn, x0_batched, (times, steps))[0]
+        if grad_checkpointing is not None:
+            _body_fn = nnx.remat(
+                _body_fn,
+                prevent_cse=False,
+                policy=jax.ad_checkpoint.checkpoint_policies.dots_with_no_batch_dims_saveable,
+            )
+
+    carry = nnx.fori_loop(0, N_steps_max, _body_fn, (t_batch, x_batch, h_batch))
+    x_final = carry[1]
+
+    return x_final

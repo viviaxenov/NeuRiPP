@@ -59,7 +59,7 @@ class ParametricPushforward(nnx.Module):
         self.rhs = rhs
         self.dim = rhs.dim
         if isinstance(rhs.dim, int):
-            self.dim = (dim,)
+            self.dim = (rhs.dim,)
 
         self._N_mc = N_monte_carlo
         self.ode_nstep_max = ode_nstep_max
@@ -160,7 +160,7 @@ class ParametricPushforward(nnx.Module):
         return res
 
     def _sample_latent(self, N_samples: int, rngs: nnx.Rngs):
-        return rngs.normal((N_samples, *self.rhs.dim)).reshape(N_samples, -1)
+        return rngs.normal((N_samples, *self.dim)).reshape(N_samples, -1)
 
     def _latent_log_density(self, z: jnp.ndarray):
         """Returns the log density of the latent distribution"""

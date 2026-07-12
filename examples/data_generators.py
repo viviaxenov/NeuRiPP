@@ -34,19 +34,13 @@ class BaseBatcher(nnx.Module, ABC):
         def reuse_fn(*args):
             return self.x.value
 
-        # x = nnx.cond(
-        #     do_resample,
-        #     self._sample,
-        #     reuse_fn,
-        #     rngs,
-        # )
         if do_resample:
             x = self._sample(rngs)
+            self.x.set_value(x)
 
-        self.x.set_value(x)
         self.counter.set_value((self.counter.value + 1) % self.resample_each)
 
-        return x
+        return self.x.value
 
 
 class CheckerboardBatcher(BaseBatcher):
