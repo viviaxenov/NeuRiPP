@@ -106,7 +106,7 @@ class RK45Step(ODEStep):
             h_new, ten_new = self(t, x, h, *args, return_err=True)
             return h_new, ten_new, i + 1
 
-        h_suggested, _, _ = jax.lax.while_loop(cond_fn, body_fn, (h_cur, 1.0, 0))
+        h_suggested, _, _ = nnx.while_loop(cond_fn, body_fn, (h_cur, 1.0, 0))
         return self.check_step(h_suggested, t)
 
     def __call__(
@@ -152,7 +152,6 @@ class RK45Step(ODEStep):
             # instead of computing the error as difference between x_4 and x_5
             # use formula |\Sum((c^4_i - c^5_i)k_i)|
             # with E_i := (c^4_i - c^5_i)
-            # trunc_err = jax.lax.stop_gradient(trunc_err)
             k6 = self._rhs(t + h_cur, x_new, *args)
             trunc_err = h_cur * jnp.linalg.norm(
                 (
@@ -364,7 +363,7 @@ def solve_ode_batched(
             # Only step if we haven't reached the target time
             needs_step = t_batch < 1.0
 
-            t_new, x_new, h_new = jax.lax.cond(
+            t_new, x_new, h_new = nnx.cond(
                 jnp.any(needs_step),
                 _do_step_fn,
                 _skip_fn,
