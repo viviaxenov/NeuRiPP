@@ -53,8 +53,13 @@ class ParametricPushforward(nnx.Module):
             rhs, "dim"
         ), "RHS must have a `dim` property for the dimension of `x`"
 
+        assert isinstance(rhs.dim, (int, tuple)), f"rhs.dim must be int or Tuple[int], but got {rhs.dim}"
+
         # TODO: if rhs doesn't accept *args, do a wrapper?
         self.rhs = rhs
+        self.dim = rhs.dim
+        if isinstance(rhs.dim, int):
+            self.dim = (rhs.dim,)
 
         self._N_mc = N_monte_carlo
         self.ode_nstep_max = ode_nstep_max
@@ -155,7 +160,7 @@ class ParametricPushforward(nnx.Module):
         return res
 
     def _sample_latent(self, N_samples: int, rngs: nnx.Rngs):
-        return rngs.normal((N_samples, self.rhs.dim))
+        return rngs.normal((N_samples, *self.dim)).reshape(N_samples, -1)
 
     def _latent_log_density(self, z: jnp.ndarray):
         """Returns the log density of the latent distribution"""
@@ -164,7 +169,7 @@ class ParametricPushforward(nnx.Module):
     def sample(self, N_samples: int, rngs: nnx.Rngs, with_log_density=False):
         """Returns a sample `x` of shape `(N_samples, dim)` from the current distribution :math:`\\rho_\\theta`"""
         z = self._sample_latent(N_samples, rngs)
-        return self(z, with_log_density=with_log_density)
+        return self(z, rngs, with_log_density=with_log_density)
 
     def scalar_product(
         self,

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import inspect
 import itertools
 import json
 import multiprocessing as mp
@@ -36,7 +37,10 @@ REQUIRED_TOP_LEVEL_KEYS = {
 OPTIONAL_TOP_LEVEL_KEYS = {"parallel", "config"}
 SUPPORTED_FUNCTIONAL_KINDS = {"KL", "MMD", "CrossEntropy"}
 DATA_DISTRIBUTIONS = {"checkerboard", "two_spirals", "eight_gaussians"}
+IMAGE_DATA_DISTRIBUTIONS = {"mnist", "fashion_mnist"}
 ANALYTIC_KL_DISTRIBUTIONS = {"gaussian", "st"}
+
+_IMAGE_DATASET_CACHE: dict[str, dict[str, Any]] = {}
 
 # Stage 3 validates method names without importing JAX/Optax at module import time.
 # Later stages will replace these placeholders with the real dispatch callables.
@@ -102,7 +106,9 @@ def _validate_architecture(architecture: dict[str, Any], index: int) -> None:
 
     rhs = _require_object(architecture.get("rhs"), f"{name}.rhs")
     if "dim" in rhs:
-        raise ValueError(f"{name}.rhs.dim is not supported; dim is inferred from problem")
+        raise ValueError(
+            f"{name}.rhs.dim is not supported; dim is inferred from problem"
+        )
     if not isinstance(rhs.get("model"), str):
         raise ValueError(f"{name}.rhs.model must be a string")
 
@@ -119,6 +125,62 @@ def _distribution_name(distribution: dict[str, Any]) -> str:
     return name
 
 
+def _is_image_distribution(name: str) -> bool:
+    return name in IMAGE_DATA_DISTRIBUTIONS
+
+
+def _image_dataset_hf_name(name: str) -> str:
+    if name == "mnist":
+        return "mnist"
+    if name == "fashion_mnist":
+        return "zalando-datasets/fashion_mnist"
+    raise ValueError(f"Unsupported image dataset {name!r}")
+
+
+def load_image_dataset(name: str) -> dict[str, Any]:
+    import numpy as np
+    from datasets import load_dataset
+
+    if name in _IMAGE_DATASET_CACHE:
+        return _IMAGE_DATASET_CACHE[name]
+
+    dataset = load_dataset(_image_dataset_hf_name(name))
+
+    def _stack_images(split_name: str) -> np.ndarray:
+        return (
+            np.stack(
+                [np.asarray(image, dtype=np.float32) for image in dataset[split_name]["image"]],
+                axis=0,
+            )
+            / 255.0
+        )
+
+    train_images = _stack_images("train")
+    test_images = _stack_images("test")
+    mean = train_images.mean(axis=0)
+    std = train_images.std(axis=0)
+    std = np.where(std > 1e-6, std, 1.0)
+
+    train_flat = ((train_images - mean[None, ...]) / std[None, ...]).reshape(
+        train_images.shape[0], -1
+    )
+    test_flat = ((test_images - mean[None, ...]) / std[None, ...]).reshape(
+        test_images.shape[0], -1
+    )
+    log_det = float(np.log(255.0 * std.reshape(-1)).sum(dtype=np.float64))
+
+    payload = {
+        "train": train_flat,
+        "test": test_flat,
+        "mean": mean,
+        "std": std,
+        "image_shape": tuple(mean.shape),
+        "pixel_log_det_per_example": log_det,
+    }
+    _IMAGE_DATASET_CACHE[name] = payload
+    return payload
+
+
 def _sample_data_distribution(
     distribution: dict[str, Any], common_params: dict[str, Any]
 ) -> Any:
@@ -130,6 +192,16 @@ def _sample_data_distribution(
         raise ValueError("common_params.batch_size must be a positive integer")
     seed = distribution.get("seed", 3)
     rng = np.random.default_rng(seed)
+
+    if _is_image_distribution(name):
+        dataset = load_image_dataset(name)
+        train = dataset["train"]
+        if sample_count > train.shape[0]:
+            raise ValueError(
+                f"common_params.batch_size={sample_count} exceeds dataset size for {name!r}"
+            )
+        indices = rng.choice(train.shape[0], size=sample_count, replace=False)
+        return train[indices]
 
     if name == "checkerboard":
         points = rng.uniform(size=(sample_count, 2))
@@ -155,13 +227,15 @@ def _sample_data_distribution(
         shift_ids = rng.integers(0, 7, size=sample_count)
         return (blob + centers[shift_ids, :]) / 1.414
 
-    supported = ", ".join(sorted(DATA_DISTRIBUTIONS))
+    supported = ", ".join(sorted(DATA_DISTRIBUTIONS | IMAGE_DATA_DISTRIBUTIONS))
     raise ValueError(
         f"Unsupported data distribution {name!r}. Supported data distributions: {supported}"
     )
 
 
-def resolve_problem(problem: dict[str, Any], common_params: dict[str, Any]) -> dict[str, Any]:
+def resolve_problem(
+    problem: dict[str, Any], common_params: dict[str, Any]
+) -> dict[str, Any]:
     """Resolve problem metadata that execution can trust later.
 
     Data-backed distributions infer dimension once here. Analytic KL targets use
@@ -178,7 +252,7 @@ def resolve_problem(problem: dict[str, Any], common_params: dict[str, Any]) -> d
     ):
         raise ValueError("problem.dim must be a positive integer when provided")
 
-    if name in DATA_DISTRIBUTIONS:
+    if name in DATA_DISTRIBUTIONS | IMAGE_DATA_DISTRIBUTIONS:
         data_batch = _sample_data_distribution(distribution, common_params)
         if len(data_batch.shape) < 2:
             raise ValueError(
@@ -195,6 +269,7 @@ def resolve_problem(problem: dict[str, Any], common_params: dict[str, Any]) -> d
             "dim": inferred_dim,
             "dim_source": "data",
             "distribution_name": name,
+            **({"rhs_dim": load_image_dataset(name)["image_shape"]} if _is_image_distribution(name) else {}),
         }
 
     if kind == "KL" and name in ANALYTIC_KL_DISTRIBUTIONS:
@@ -207,7 +282,7 @@ def resolve_problem(problem: dict[str, Any], common_params: dict[str, Any]) -> d
         }
 
     if kind in {"CrossEntropy", "MMD"}:
-        supported = ", ".join(sorted(DATA_DISTRIBUTIONS))
+        supported = ", ".join(sorted(DATA_DISTRIBUTIONS | IMAGE_DATA_DISTRIBUTIONS))
         raise ValueError(
             f"Functional {kind} requires a data-backed distribution; got {name!r}. "
             f"Supported data distributions: {supported}"
@@ -222,7 +297,9 @@ def resolve_problem(problem: dict[str, Any], common_params: dict[str, Any]) -> d
     raise ValueError(f"Unsupported functional kind {kind!r}")
 
 
-def _expand_template(template: dict[str, Any], skip_keys: set[str] | None = None) -> list[dict[str, Any]]:
+def _expand_template(
+    template: dict[str, Any], skip_keys: set[str] | None = None
+) -> list[dict[str, Any]]:
     skip_keys = skip_keys or set()
     scalar_items: list[tuple[str, Any]] = []
     grid_items: list[tuple[str, list[Any]]] = []
@@ -255,7 +332,9 @@ def _expand_architectures(architectures: list[dict[str, Any]]) -> list[dict[str,
         top_level = {key: value for key, value in architecture.items() if key != "rhs"}
         expanded_top_level = _expand_template(top_level)
         expanded_rhs = _expand_template(architecture["rhs"])
-        for top_values, rhs_values in itertools.product(expanded_top_level, expanded_rhs):
+        for top_values, rhs_values in itertools.product(
+            expanded_top_level, expanded_rhs
+        ):
             expanded_architecture = {}
             for key in architecture:
                 if key == "rhs":
@@ -332,20 +411,25 @@ def plan_runs(config: dict[str, Any]) -> list[dict[str, Any]]:
     return planned_runs
 
 
-def _anderson_group_fields(method_kwargs: dict[str, Any]) -> tuple[Any, Any, Any]:
-    return (
-        method_kwargs.get("history_length", 8),
-        method_kwargs.get("regularization_method", "l2"),
-        method_kwargs.get("ensure_descent", True),
+def _method_factory_group_fields(
+    method_name: str, method_kwargs: dict[str, Any], deps: dict[str, Any] | None = None
+) -> tuple[tuple[str, str], ...]:
+    factory_kwargs, _, _ = split_method_kwargs(method_name, method_kwargs, deps=deps)
+    return tuple(
+        (key, _value_identity(factory_kwargs[key])) for key in sorted(factory_kwargs)
     )
 
 
-def execution_group_key(planned_run: dict[str, Any]) -> tuple[str, str, tuple[Any, ...]]:
+def execution_group_key(
+    planned_run: dict[str, Any],
+) -> tuple[str, str, tuple[Any, ...]]:
     method = planned_run["method"]
     architecture_key = _value_identity(planned_run["architecture"])
-    if method == "anderson":
-        return (architecture_key, method, _anderson_group_fields(planned_run["method_kwargs"]))
-    return (architecture_key, method, ())
+    return (
+        architecture_key,
+        method,
+        _method_factory_group_fields(method, planned_run["method_kwargs"]),
+    )
 
 
 def chunk_planned_runs(
@@ -415,7 +499,9 @@ def _write_json(path: Path, data: Any) -> None:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
 
 
 def write_expanded_run_config(run_dir: Path, planned_run: dict[str, Any]) -> None:
@@ -563,7 +649,9 @@ def initialize_session(
     _write_json(session_dir / "planned_runs.json", planned_runs)
 
 
-def assigned_gpu_id(parallel_config: dict[str, Any], worker_id: int) -> int | str | None:
+def assigned_gpu_id(
+    parallel_config: dict[str, Any], worker_id: int
+) -> int | str | None:
     gpu_ids = parallel_config.get("gpu_ids")
     if not gpu_ids:
         return None
@@ -576,7 +664,8 @@ def setup_worker_environment(
     """Set worker environment before JAX is imported."""
 
     requested_gpu_id = assigned_gpu_id(parallel_config, worker_id)
-    os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+    # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+    os.environ["XLA_PYTHON_CLIENT_MEME_FRACTION"] = ".90"
     if requested_gpu_id is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(requested_gpu_id)
     return requested_gpu_id
@@ -629,7 +718,9 @@ def import_runtime_dependencies() -> dict[str, Any]:
     from neuripp.methods.anderson import get_anderson
     from neuripp.methods.ngd import get_ngd
     from neuripp.methods.optax_optimizer import get_optax, optax_optimizers
-    from neuripp.parametric_pushforward.parametric_pushforward import ParametricPushforward
+    from neuripp.parametric_pushforward.parametric_pushforward import (
+        ParametricPushforward,
+    )
 
     logpdf_targets = import_module("logpdf_targets")
     rhs_architectures = import_module("rhs_architectures")
@@ -663,11 +754,13 @@ def import_runtime_dependencies() -> dict[str, Any]:
             "two_spirals": data_generators.TwoSpiralsBatcher,
             "eight_gaussians": data_generators.EightGaussiansBatcher,
         },
+        "DatasetBatcher": data_generators.DatasetBatcher,
         "LatentBatcherFromModel": data_generators.LatentBatcherFromModel,
         "ZipBatcher": data_generators.ZipBatcher,
         "rhs_registry": {
             "MLP": rhs_architectures.MLP,
             "LinearRHS": rhs_architectures.LinearRHS,
+            "CFMConv2D": rhs_architectures.CFMConv2D,
         },
         "activation_registry": activation_registry,
         "method_registry": {
@@ -712,7 +805,7 @@ def build_rhs(
 
 
 def split_architecture_kwargs(
-    architecture: dict[str, Any]
+    architecture: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     rhs_config = architecture["rhs"]
     direct_keys = {
@@ -765,6 +858,14 @@ def build_data_batcher(
 ) -> Any:
     deps = deps or import_runtime_dependencies()
     name = _distribution_name(distribution)
+    if _is_image_distribution(name):
+        dataset = load_image_dataset(name)
+        return deps["DatasetBatcher"](
+            shape,
+            distribution.get("resample_each", 1),
+            deps["jnp"].asarray(dataset["train"]),
+        )
+
     data_batchers = deps["data_batchers"]
     if name not in data_batchers:
         supported = ", ".join(sorted(data_batchers))
@@ -774,7 +875,9 @@ def build_data_batcher(
     return data_batchers[name](shape, distribution.get("resample_each", 1))
 
 
-def build_gaussian_logpdf(dim: int, distribution: dict[str, Any], deps: dict[str, Any]) -> Any:
+def build_gaussian_logpdf(
+    dim: int, distribution: dict[str, Any], deps: dict[str, Any]
+) -> Any:
     jnp = deps["jnp"]
     mean_value = distribution.get("mean_value", 0.0)
     sigma_diag = distribution.get("sigma_diag")
@@ -811,10 +914,22 @@ def build_vectorized_problem(
 
     if kind == "CrossEntropy":
         data_batcher = build_data_batcher(distribution, batch_shape, deps=deps)
-        return {
+        state = {
             "loss": deps["cross_entropy"],
             "next_batch": lambda rngs: data_batcher(rngs),
         }
+        name = _distribution_name(distribution)
+        if _is_image_distribution(name):
+            dataset = load_image_dataset(name)
+            state["image_eval_context"] = {
+                "distribution_name": name,
+                "test": deps["jnp"].asarray(dataset["test"]),
+                "mean": deps["jnp"].asarray(dataset["mean"]),
+                "std": deps["jnp"].asarray(dataset["std"]),
+                "image_shape": dataset["image_shape"],
+                "pixel_log_det_per_example": dataset["pixel_log_det_per_example"],
+            }
+        return state
 
     if kind == "MMD":
         latent_batcher = deps["LatentBatcherFromModel"](
@@ -860,21 +975,125 @@ def build_vectorized_problem(
     raise ValueError(f"Unsupported functional kind {kind!r}")
 
 
+def _plotting_config_from_session(session_dir: Path) -> dict[str, Any]:
+    normalized_config_path = session_dir / "normalized_config.json"
+    if not normalized_config_path.exists():
+        return {}
+    normalized_config = _load_json(normalized_config_path)
+    plotting = normalized_config.get("plotting", {})
+    return plotting if isinstance(plotting, dict) else {}
+
+
+def image_grid_shape(plotting: dict[str, Any]) -> tuple[int, int]:
+    nrows = plotting.get("nrows", 3)
+    ncols = plotting.get("ncols", 3)
+    if not isinstance(nrows, int) or nrows < 1:
+        raise ValueError("plotting.nrows must be a positive integer when provided")
+    if not isinstance(ncols, int) or ncols < 1:
+        raise ValueError("plotting.ncols must be a positive integer when provided")
+    return nrows, ncols
+
+
+def is_image_problem(problem: dict[str, Any]) -> bool:
+    return _is_image_distribution(_distribution_name(problem["distribution"]))
+
+
+def unnormalize_image_samples(samples: Any, image_eval_context: dict[str, Any], deps: dict[str, Any]) -> Any:
+    jnp = deps["jnp"]
+    mean = image_eval_context["mean"]
+    std = image_eval_context["std"]
+    image_shape = image_eval_context["image_shape"]
+    images = samples.reshape((-1, *image_shape)) * std[None, ...] + mean[None, ...]
+    return jnp.clip(images, 0.0, 1.0)
+
+
+def evaluate_image_model(
+    model: Any,
+    image_eval_context: dict[str, Any],
+    eval_batch_size: int,
+    rng_seed: int,
+    deps: dict[str, Any],
+) -> dict[str, float]:
+    import numpy as np
+
+    test_data = image_eval_context["test"]
+    pixel_log_det = image_eval_context["pixel_log_det_per_example"]
+    total_logp = 0.0
+    total_count = 0
+    for start in range(0, int(test_data.shape[0]), eval_batch_size):
+        batch = test_data[start : start + eval_batch_size]
+        _, logp_normalized = model.pullback(
+            batch,
+            deps["nnx"].Rngs(rng_seed + start),
+            with_log_density=True,
+        )
+        logp_normalized = np.asarray(logp_normalized, dtype=float)
+        total_logp += float(logp_normalized.sum()) - pixel_log_det * logp_normalized.shape[0]
+        total_count += int(logp_normalized.shape[0])
+
+    nll = -total_logp / total_count
+    n_dim = int(np.prod(image_eval_context["image_shape"], dtype=int))
+    bits_dim = nll / (n_dim * np.log(2.0))
+    return {
+        "test_nll": float(nll),
+        "test_bits_dim": float(bits_dim),
+    }
+
+
+def build_lane_arrays(
+    stacked_metrics: dict[str, Any],
+    eval_history: dict[str, list[Any]],
+    lane_index: int,
+) -> dict[str, Any]:
+    import numpy as np
+
+    arrays = {
+        name: values[:, lane_index]
+        for name, values in stacked_metrics.items()
+        if getattr(values, "ndim", 0) >= 2
+    }
+    for name, values in eval_history.items():
+        if not values:
+            continue
+        lane_values = [value[lane_index] for value in values]
+        arrays[name] = np.asarray(lane_values)
+    return arrays
+
+
 METHOD_EXECUTION_KEYS = {
     "max_iterations",
     "batch_size",
     "N_monte_carlo",
     "master_seed",
-    "plot_every",
+    "eval_every",
 }
 
 
-ANDERSON_FACTORY_KEYS = {
-    "history_length",
-    "regularization_method",
-    "ensure_descent",
-    "linear_solver_method",
-}
+def method_factory_param_names(
+    method_name: str, deps: dict[str, Any] | None = None
+) -> set[str]:
+    deps = deps or import_runtime_dependencies()
+    method_registry = deps["method_registry"]
+    if method_name not in method_registry:
+        supported = ", ".join(sorted(method_registry))
+        raise ValueError(
+            f"Unsupported method {method_name!r}; expected one of: {supported}"
+        )
+
+    signature = inspect.signature(method_registry[method_name])
+    excluded = {"loss"}
+    if method_name in deps["optax_methods"]:
+        excluded.add("method")
+    return {
+        name
+        for name, parameter in signature.parameters.items()
+        if name not in excluded
+        and parameter.kind
+        in {
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        }
+    }
 
 
 def split_method_kwargs(
@@ -886,13 +1105,12 @@ def split_method_kwargs(
         for key, value in method_kwargs.items()
         if key not in METHOD_EXECUTION_KEYS
     }
+    factory_param_names = method_factory_param_names(method_name, deps=deps)
+    factory_kwargs = {
+        key: kwargs.pop(key) for key in list(kwargs) if key in factory_param_names
+    }
 
     if method_name == "anderson":
-        factory_kwargs = {
-            key: kwargs.pop(key)
-            for key in list(kwargs)
-            if key in ANDERSON_FACTORY_KEYS
-        }
         step_size = kwargs.pop("step_size", None)
         relaxation = kwargs.pop("relaxation", 1.0)
         regularization_factor = kwargs.pop(
@@ -905,17 +1123,18 @@ def split_method_kwargs(
         return factory_kwargs, (step_size, relaxation, regularization_factor), kwargs
 
     if method_name == "ngd":
-        linear_solver_method = kwargs.pop("linear_solver_method", "cg")
         step_size = kwargs.pop("step_size", None)
         if step_size is None:
             raise ValueError("NGD methods require step_size")
-        return {"linear_solver_method": linear_solver_method}, (step_size,), kwargs
+        return factory_kwargs, (step_size,), kwargs
 
     if method_name in deps["optax_methods"]:
         learning_rate = kwargs.pop("learning_rate", kwargs.pop("step_size", None))
         if learning_rate is None:
-            raise ValueError(f"{method_name} methods require learning_rate or step_size")
-        return {}, (learning_rate,), kwargs
+            raise ValueError(
+                f"{method_name} methods require learning_rate or step_size"
+            )
+        return factory_kwargs, (learning_rate,), kwargs
 
     raise ValueError(f"Unsupported method {method_name!r}")
 
@@ -930,7 +1149,9 @@ def build_method(
     method_registry = deps["method_registry"]
     if method_name not in method_registry:
         supported = ", ".join(sorted(method_registry))
-        raise ValueError(f"Unsupported method {method_name!r}; expected one of: {supported}")
+        raise ValueError(
+            f"Unsupported method {method_name!r}; expected one of: {supported}"
+        )
 
     if method_name in deps["optax_methods"]:
         return method_registry[method_name](loss, method=method_name, **factory_kwargs)
@@ -1011,7 +1232,9 @@ def lane_model_from_ensemble(
     return nnx.merge(template_graphdef, lane_params, template_rest)
 
 
-def lane_metric_arrays(stacked_metrics: dict[str, Any], lane_index: int) -> dict[str, Any]:
+def lane_metric_arrays(
+    stacked_metrics: dict[str, Any], lane_index: int
+) -> dict[str, Any]:
     return {
         name: values[:, lane_index]
         for name, values in stacked_metrics.items()
@@ -1026,19 +1249,25 @@ def write_run_intermediate_artifacts(
     arrays: dict[str, Any],
     deps: dict[str, Any],
     session_dir: Path,
+    plotting: dict[str, Any],
     checkpoint_key: str,
     checkpoint_metric: float | None,
     title: str,
+    image_eval_context: dict[str, Any] | None = None,
 ) -> None:
     import numpy as np
 
     np.savez(run_dir / "arrays.npz", **arrays)
     plot_run_diagnostics(
         model,
+        planned_run["problem"],
         arrays,
         title,
         session_dir / "plots" / f"{planned_run['run_id']}_plots.pdf",
+        plotting=plotting,
         n_samples=planned_run["method_kwargs"]["batch_size"],
+        image_eval_context=image_eval_context,
+        deps=deps,
     )
     write_checkpoint(
         run_dir / "checkpoints" / checkpoint_key,
@@ -1061,7 +1290,10 @@ def execute_run_chunk(
 ) -> list[dict[str, Any]]:
     deps = deps or import_runtime_dependencies()
     nnx = deps["nnx"]
+    jax = deps["jax"]
+    jnp = deps["jnp"]
     planned_runs = chunk["planned_runs"]
+    plotting = config.get("plotting", {})
     session_plot_dir = session_dir / "plots"
     session_plot_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1087,21 +1319,28 @@ def execute_run_chunk(
         max_iterations = reference_run["method_kwargs"].get("max_iterations")
         if not isinstance(max_iterations, int) or max_iterations < 1:
             raise ValueError("method_kwargs.max_iterations must be a positive integer")
-        plot_every = reference_run["method_kwargs"].get("plot_every")
-        if plot_every is not None and (
-            not isinstance(plot_every, int) or plot_every < 1
+        eval_every = reference_run["method_kwargs"].get("eval_every")
+        if eval_every is not None and (
+            not isinstance(eval_every, int) or eval_every < 1
         ):
-            raise ValueError("method_kwargs.plot_every must be a positive integer when provided")
+            raise ValueError(
+                "method_kwargs.eval_every must be a positive integer when provided"
+            )
 
         chunk_seed = config["common_params"]["master_seed"] + chunk["chunk_index"]
+
+        master_rngs = nnx.Rngs(config["common_params"]["master_seed"])
         chunk_rngs = nnx.Rngs(chunk_seed)
+
         lane_rngs = chunk_rngs.fork(split=len(planned_runs))
 
         template_model = build_model(
             reference_run["architecture"],
             reference_run["method_kwargs"],
-            reference_run["resolved_problem"]["dim"],
-            rngs=nnx.Rngs(chunk_seed),
+            reference_run["resolved_problem"].get(
+                "rhs_dim", reference_run["resolved_problem"]["dim"]
+            ),
+            rngs=master_rngs,
             deps=deps,
         )
         problem_state = build_vectorized_problem(
@@ -1119,17 +1358,31 @@ def execute_run_chunk(
         init_fun, step_fun = build_method(
             reference_run["method"], factory_kwargs, problem_state["loss"], deps=deps
         )
+        image_eval_context = problem_state.get("image_eval_context")
+        image_problem = image_eval_context is not None
         vectorized_init = nnx.vmap(init_fun)
         vectorized_step = nnx.jit(nnx.vmap(step_fun))
         ensemble = build_model_ensemble(
             reference_run["architecture"],
             reference_run["method_kwargs"],
-            reference_run["resolved_problem"]["dim"],
+            reference_run["resolved_problem"].get(
+                "rhs_dim", reference_run["resolved_problem"]["dim"]
+            ),
             lane_rngs,
             deps,
         )
 
-        init_batch = problem_state["next_batch"](chunk_rngs)
+        # Set initial weights equal for all the runs!
+        _, template_par, _ = nnx.split(template_model, nnx.Param, ...)
+        gd, ensemble_par, rest = nnx.split(ensemble, nnx.Param, ...)
+        ensemble_par = jax.tree.map(
+            lambda _xs, _x0: jnp.broadcast_to(_x0[jnp.newaxis, ...], _xs.shape),
+            ensemble_par,
+            template_par,
+        )
+        ensemble = nnx.merge(gd, ensemble_par, rest)
+
+        init_batch = problem_state["next_batch"](master_rngs)
         state = vectorized_init(
             ensemble,
             vectorized_args,
@@ -1140,7 +1393,18 @@ def execute_run_chunk(
 
         metric_names = ("loss", "grad_norm", "natural_grad_norm")
         metric_lists: dict[str, list[Any]] = {name: [] for name in metric_names}
+        eval_history: dict[str, list[Any]] = {
+            "eval_iteration": [],
+            "test_nll": [],
+            "test_bits_dim": [],
+        }
         best_losses = [float("inf")] * len(planned_runs)
+        best_test_nlls = [float("inf")] * len(planned_runs)
+        best_test_bits_dims = [None] * len(planned_runs)
+        best_eval_iterations = [None] * len(planned_runs)
+        last_test_nlls = [None] * len(planned_runs)
+        last_test_bits_dims = [None] * len(planned_runs)
+        last_eval_iterations = [None] * len(planned_runs)
         progress_bar = None
         if progress_position is not None:
             from tqdm import tqdm
@@ -1169,30 +1433,74 @@ def execute_run_chunk(
             for lane_index, current_loss in enumerate(current_losses):
                 if current_loss < best_losses[lane_index]:
                     best_losses[lane_index] = current_loss
-                    lane_model = lane_model_from_ensemble(
-                        model_ensemble, template_model, lane_index, deps
-                    )
-                    write_checkpoint(
-                        run_dirs[lane_index] / "checkpoints" / "best",
-                        lane_model,
-                        deps,
-                        planned_runs[lane_index],
-                        "best",
-                        metric_value=current_loss,
-                    )
+                    if not image_problem:
+                        lane_model = lane_model_from_ensemble(
+                            model_ensemble, template_model, lane_index, deps
+                        )
+                        write_checkpoint(
+                            run_dirs[lane_index] / "checkpoints" / "best",
+                            lane_model,
+                            deps,
+                            planned_runs[lane_index],
+                            "best",
+                            metric_value=current_loss,
+                        )
 
             if progress_bar is not None:
                 progress_bar.update(1)
 
-            should_flush = plot_every is not None and (iteration + 1) % plot_every == 0
+            should_flush = eval_every is not None and (iteration + 1) % eval_every == 0
             if should_flush:
                 stacked_metrics = {
                     name: np.stack([np.asarray(value) for value in values_list], axis=0)
                     for name, values_list in metric_lists.items()
                     if values_list
                 }
+                if image_problem:
+                    eval_iteration = iteration + 1
+                    eval_results = []
+                    for lane_index in range(len(planned_runs)):
+                        lane_model = lane_model_from_ensemble(
+                            model_ensemble, template_model, lane_index, deps
+                        )
+                        metrics = evaluate_image_model(
+                            lane_model,
+                            image_eval_context,
+                            reference_run["method_kwargs"]["batch_size"],
+                            reference_run["method_kwargs"].get("master_seed", 0)
+                            + eval_iteration
+                            + lane_index,
+                            deps,
+                        )
+                        eval_results.append(metrics)
+                        last_test_nlls[lane_index] = metrics["test_nll"]
+                        last_test_bits_dims[lane_index] = metrics["test_bits_dim"]
+                        last_eval_iterations[lane_index] = eval_iteration
+                        if metrics["test_nll"] < best_test_nlls[lane_index]:
+                            best_test_nlls[lane_index] = metrics["test_nll"]
+                            best_test_bits_dims[lane_index] = metrics["test_bits_dim"]
+                            best_eval_iterations[lane_index] = eval_iteration
+                            write_checkpoint(
+                                run_dirs[lane_index] / "checkpoints" / "best",
+                                lane_model,
+                                deps,
+                                planned_runs[lane_index],
+                                "best",
+                                metric_value=metrics["test_nll"],
+                            )
+                    eval_history["eval_iteration"].append(
+                        np.asarray([eval_iteration] * len(planned_runs), dtype=int)
+                    )
+                    eval_history["test_nll"].append(
+                        np.asarray([item["test_nll"] for item in eval_results], dtype=float)
+                    )
+                    eval_history["test_bits_dim"].append(
+                        np.asarray(
+                            [item["test_bits_dim"] for item in eval_results], dtype=float
+                        )
+                    )
                 for lane_index, planned_run in enumerate(planned_runs):
-                    lane_arrays = lane_metric_arrays(stacked_metrics, lane_index)
+                    lane_arrays = build_lane_arrays(stacked_metrics, eval_history, lane_index)
                     lane_model = lane_model_from_ensemble(
                         model_ensemble, template_model, lane_index, deps
                     )
@@ -1203,9 +1511,11 @@ def execute_run_chunk(
                         lane_arrays,
                         deps,
                         session_dir,
+                        plotting,
                         checkpoint_key="last",
                         checkpoint_metric=float(current_losses[lane_index]),
                         title=f"{planned_run['run_id']}, iteration {iteration + 1}",
+                        image_eval_context=image_eval_context,
                     )
 
         if progress_bar is not None:
@@ -1219,9 +1529,49 @@ def execute_run_chunk(
             if values_list
         }
         final_model_ensemble = state[0]
+        if image_problem and last_eval_iterations[0] != max_iterations:
+            eval_results = []
+            for lane_index in range(len(planned_runs)):
+                lane_model = lane_model_from_ensemble(
+                    final_model_ensemble, template_model, lane_index, deps
+                )
+                metrics = evaluate_image_model(
+                    lane_model,
+                    image_eval_context,
+                    reference_run["method_kwargs"]["batch_size"],
+                    reference_run["method_kwargs"].get("master_seed", 0)
+                    + max_iterations
+                    + lane_index,
+                    deps,
+                )
+                eval_results.append(metrics)
+                last_test_nlls[lane_index] = metrics["test_nll"]
+                last_test_bits_dims[lane_index] = metrics["test_bits_dim"]
+                last_eval_iterations[lane_index] = max_iterations
+                if metrics["test_nll"] < best_test_nlls[lane_index]:
+                    best_test_nlls[lane_index] = metrics["test_nll"]
+                    best_test_bits_dims[lane_index] = metrics["test_bits_dim"]
+                    best_eval_iterations[lane_index] = max_iterations
+                    write_checkpoint(
+                        run_dirs[lane_index] / "checkpoints" / "best",
+                        lane_model,
+                        deps,
+                        planned_runs[lane_index],
+                        "best",
+                        metric_value=metrics["test_nll"],
+                    )
+            eval_history["eval_iteration"].append(
+                np.asarray([max_iterations] * len(planned_runs), dtype=int)
+            )
+            eval_history["test_nll"].append(
+                np.asarray([item["test_nll"] for item in eval_results], dtype=float)
+            )
+            eval_history["test_bits_dim"].append(
+                np.asarray([item["test_bits_dim"] for item in eval_results], dtype=float)
+            )
         results: list[dict[str, Any]] = []
         for lane_index, planned_run in enumerate(planned_runs):
-            lane_arrays = lane_metric_arrays(stacked_metrics, lane_index)
+            lane_arrays = build_lane_arrays(stacked_metrics, eval_history, lane_index)
             lane_model = lane_model_from_ensemble(
                 final_model_ensemble, template_model, lane_index, deps
             )
@@ -1235,23 +1585,53 @@ def execute_run_chunk(
                 lane_arrays,
                 deps,
                 session_dir,
+                plotting,
                 checkpoint_key="last",
                 checkpoint_metric=final_loss,
                 title=f"{planned_run['run_id']}, final",
+                image_eval_context=image_eval_context,
             )
+            status_extra = {
+                "finished_at": _utc_now_iso(),
+                "best_loss": best_losses[lane_index],
+                "best_checkpoint_criterion": "minimum_loss",
+                "arrays_path": "arrays.npz",
+                "chunk_index": chunk["chunk_index"],
+                "restart_index": planned_run["restart_index"],
+            }
+            if image_problem:
+                status_extra.update(
+                    {
+                        "best_checkpoint_criterion": "minimum_test_nll_at_eval",
+                        "best_test_nll": best_test_nlls[lane_index],
+                        "best_test_bits_dim": best_test_bits_dims[lane_index],
+                        "best_eval_iteration": best_eval_iterations[lane_index],
+                        "last_test_nll": last_test_nlls[lane_index],
+                        "last_test_bits_dim": last_test_bits_dims[lane_index],
+                        "last_eval_iteration": last_eval_iterations[lane_index],
+                    }
+                )
             write_status(
                 run_dirs[lane_index],
                 "success",
                 planned_run,
                 worker_id,
                 device_info,
-                finished_at=_utc_now_iso(),
-                best_loss=best_losses[lane_index],
-                best_checkpoint_criterion="minimum_loss",
-                arrays_path="arrays.npz",
-                chunk_index=chunk["chunk_index"],
-                restart_index=planned_run["restart_index"],
+                **status_extra,
             )
+            summary_parts = [
+                f"run {planned_run['run_id']} success",
+                f"final_loss={final_loss:.6g}" if final_loss is not None else None,
+            ]
+            if image_problem and last_test_nlls[lane_index] is not None:
+                summary_parts.extend(
+                    [
+                        f"last_test_nll={last_test_nlls[lane_index]:.6g}",
+                        f"best_test_nll={best_test_nlls[lane_index]:.6g}",
+                        f"last_test_bits_dim={last_test_bits_dims[lane_index]:.6g}",
+                    ]
+                )
+            print("; ".join(part for part in summary_parts if part), flush=True)
             results.append(
                 {
                     "status": "success",
@@ -1301,7 +1681,9 @@ def run_sequential(
     summary = {"success": 0, "failed": 0, "total": len(selected_runs)}
     from tqdm import tqdm
 
-    with tqdm(total=len(selected_runs), desc="Runs", position=0, leave=True) as runs_pbar:
+    with tqdm(
+        total=len(selected_runs), desc="Runs", position=0, leave=True
+    ) as runs_pbar:
         for chunk in chunks:
             results = execute_run_chunk(
                 chunk,
@@ -1349,7 +1731,9 @@ def worker_loop(
         while True:
             chunk = task_queue.get()
             if chunk is None:
-                message_queue.put({"event": "worker_empty_queue", "worker_id": worker_id})
+                message_queue.put(
+                    {"event": "worker_empty_queue", "worker_id": worker_id}
+                )
                 break
 
             message_queue.put(
@@ -1358,7 +1742,9 @@ def worker_loop(
                     "worker_id": worker_id,
                     "chunk_index": chunk["chunk_index"],
                     "method": chunk["method"],
-                    "run_ids": [planned_run["run_id"] for planned_run in chunk["planned_runs"]],
+                    "run_ids": [
+                        planned_run["run_id"] for planned_run in chunk["planned_runs"]
+                    ],
                 }
             )
             results = execute_run_chunk(
@@ -1432,7 +1818,9 @@ def run_parallel(
     summary = {"success": 0, "failed": 0, "total": len(selected_runs)}
     exited_workers: set[int] = set()
 
-    with tqdm(total=len(selected_runs), desc="Runs", position=0, leave=True) as runs_pbar:
+    with tqdm(
+        total=len(selected_runs), desc="Runs", position=0, leave=True
+    ) as runs_pbar:
         while len(exited_workers) < n_workers:
             try:
                 message = message_queue.get(timeout=0.2)
@@ -1477,11 +1865,49 @@ def run_parallel(
     return summary
 
 
-def load_completed_runs(session_dir: str | Path) -> list[dict[str, Any]]:
-    """Load successful benchmark runs from a session directory.
+def _load_saved_arrays(arrays_path: Path) -> dict[str, Any]:
+    import numpy as np
 
-    Failed and incomplete runs are skipped. If no successful runs are present,
-    an empty list is returned.
+    with np.load(arrays_path) as loaded_arrays:
+        return {name: loaded_arrays[name] for name in loaded_arrays.files}
+
+
+def entry_arrays(entry: dict[str, Any]) -> dict[str, Any]:
+    return {name: entry[name] for name in entry.get("array_names", []) if name in entry}
+
+
+def _expanded_config_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    config_keys = (
+        "run_index",
+        "run_id",
+        "restart_index",
+        "problem",
+        "resolved_problem",
+        "architecture",
+        "method",
+        "method_kwargs",
+    )
+    return {key: copy.deepcopy(entry[key]) for key in config_keys if key in entry}
+
+
+ENTRY_STATUS_KEYS = {
+    "best_checkpoint_criterion",
+    "best_loss",
+    "best_test_nll",
+    "best_test_bits_dim",
+    "best_eval_iteration",
+    "last_test_nll",
+    "last_test_bits_dim",
+    "last_eval_iteration",
+}
+
+
+def load_experiment_entries(session_dir: str | Path) -> list[dict[str, Any]]:
+    """Load successful benchmark runs as plain analysis entries.
+
+    Each returned entry contains the expanded config fields at top level,
+    unpacked saved arrays, checkpoint paths, and derived loss summary metrics.
+    Failed and incomplete runs are skipped.
     """
 
     session_dir = Path(session_dir)
@@ -1489,36 +1915,66 @@ def load_completed_runs(session_dir: str | Path) -> list[dict[str, Any]]:
     if not runs_dir.exists():
         raise FileNotFoundError(f"Benchmark runs directory does not exist: {runs_dir}")
 
-    completed_runs: list[dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
     for run_dir in sorted(path for path in runs_dir.iterdir() if path.is_dir()):
         status_path = run_dir / "status.json"
         expanded_config_path = run_dir / "expanded_config.json"
         arrays_path = run_dir / "arrays.npz"
-        if not status_path.exists() or not expanded_config_path.exists():
+        if (
+            not status_path.exists()
+            or not expanded_config_path.exists()
+            or not arrays_path.exists()
+        ):
             continue
 
         status = _load_json(status_path)
         if status.get("status") != "success":
             continue
-        if not arrays_path.exists():
-            continue
 
-        import numpy as np
-
-        with np.load(arrays_path) as loaded_arrays:
-            arrays = {name: loaded_arrays[name] for name in loaded_arrays.files}
-
+        arrays = _load_saved_arrays(arrays_path)
         expanded_config = _load_json(expanded_config_path)
+        entry: dict[str, Any] = copy.deepcopy(expanded_config)
+        entry["run_dir"] = run_dir
+        entry["checkpoints"] = {
+            "best": (run_dir / "checkpoints" / "best").resolve(),
+            "last": (run_dir / "checkpoints" / "last").resolve(),
+        }
+        for key in ENTRY_STATUS_KEYS:
+            if key in status:
+                entry[key] = copy.deepcopy(status[key])
+        entry["array_names"] = list(arrays)
+        entry.update(arrays)
+
+        loss = arrays.get("loss")
+        if loss is not None and getattr(loss, "size", 0) > 0:
+            import numpy as np
+
+            loss_array = np.asarray(loss, dtype=float)
+            best_iteration = int(np.argmin(loss_array))
+            entry["best_loss"] = float(loss_array[best_iteration])
+            entry["best_iteration"] = best_iteration
+            entry["final_loss"] = float(loss_array[-1])
+
+        entries.append(entry)
+
+    return entries
+
+
+def load_completed_runs(session_dir: str | Path) -> list[dict[str, Any]]:
+    """Compatibility wrapper over :func:`load_experiment_entries`."""
+
+    entries = load_experiment_entries(session_dir)
+    completed_runs: list[dict[str, Any]] = []
+    for entry in entries:
         completed_runs.append(
             {
-                "run_id": expanded_config.get("run_id", run_dir.name),
-                "run_dir": run_dir,
-                "status": status,
-                "expanded_config": expanded_config,
-                "arrays": arrays,
+                "run_id": entry.get("run_id"),
+                "run_dir": entry["run_dir"],
+                "status": {"status": "success"},
+                "expanded_config": _expanded_config_from_entry(entry),
+                "arrays": entry_arrays(entry),
             }
         )
-
     return completed_runs
 
 
@@ -1553,8 +2009,12 @@ def flatten_run_params(expanded_config: dict[str, Any]) -> dict[str, Any]:
     return flat
 
 
+def flatten_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    return flatten_run_params(entry)
+
+
 def varying_param_keys(expanded_configs: list[dict[str, Any]]) -> list[str]:
-    flattened = [flatten_run_params(config) for config in expanded_configs]
+    flattened = [flatten_entry(config) for config in expanded_configs]
     keys: list[str] = []
     for flat in flattened:
         for key in flat:
@@ -1563,11 +2023,7 @@ def varying_param_keys(expanded_configs: list[dict[str, Any]]) -> list[str]:
 
     varying: list[str] = []
     for key in keys:
-        values = {
-            _value_identity(flat[key])
-            for flat in flattened
-            if key in flat
-        }
+        values = {_value_identity(flat[key]) for flat in flattened if key in flat}
         if len(values) > 1:
             varying.append(key)
     return varying
@@ -1581,28 +2037,14 @@ def _display_param_key(key: str) -> str:
 
 
 def format_run_label(expanded_config: dict[str, Any], keys: list[str]) -> str:
-    flat = flatten_run_params(expanded_config)
+    flat = flatten_entry(expanded_config)
     parts = [f"{_display_param_key(key)} {flat[key]}" for key in keys if key in flat]
     return ", ".join(parts) if parts else expanded_config.get("run_id", "run")
 
 
-def _as_expanded_config(item: dict[str, Any]) -> dict[str, Any]:
-    return item.get("expanded_config", item)
-
-
 def _loss_array(item: dict[str, Any]) -> Any:
-    arrays = item.get("arrays")
-    if arrays is not None and "loss" in arrays:
-        return arrays["loss"]
     if "loss" in item:
         return item["loss"]
-    expanded_config = item.get("expanded_config")
-    if isinstance(expanded_config, dict):
-        arrays = expanded_config.get("arrays")
-        if arrays is not None and "loss" in arrays:
-            return arrays["loss"]
-        if "loss" in expanded_config:
-            return expanded_config["loss"]
     raise KeyError("get_lines input item is missing a loss array")
 
 
@@ -1643,7 +2085,7 @@ def _group_items_by_keys(
     groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
     order: list[tuple[str, ...]] = []
     for item in items:
-        flat = flatten_run_params(_as_expanded_config(item))
+        flat = flatten_entry(item)
         group_key = tuple(_value_identity(flat.get(key)) for key in keys)
         if group_key not in groups:
             groups[group_key] = []
@@ -1652,9 +2094,106 @@ def _group_items_by_keys(
     return [(key, groups[key]) for key in order]
 
 
-def _is_seed_key(key: str) -> bool:
-    leaf = key.rsplit(".", 1)[-1].lower()
-    return leaf == "restart_index" or leaf == "seed" or leaf.endswith("_seed")
+def architecture_group_fields(entry: dict[str, Any]) -> dict[str, Any]:
+    flat = flatten_entry(entry)
+    return {
+        key: value for key, value in flat.items() if key.startswith("architecture.")
+    }
+
+
+def method_group_fields(entry: dict[str, Any]) -> dict[str, Any]:
+    fields = {"method": entry.get("method")}
+    for key, value in split_method_kwargs(entry["method"], entry["method_kwargs"])[
+        0
+    ].items():
+        fields[f"method_kwargs.{key}"] = value
+    return fields
+
+
+def restart_group_fields(entry: dict[str, Any]) -> dict[str, Any]:
+    flat = flatten_entry(entry)
+    return {key: value for key, value in flat.items() if key != "restart_index"}
+
+
+def _frame_flattened_columns(frame: Any) -> list[str]:
+    return [
+        key
+        for key in frame.columns
+        if key == "method"
+        or key == "restart_index"
+        or key.startswith(("method_kwargs.", "architecture.", "problem."))
+    ]
+
+
+def architecture_group_columns(frame: Any) -> list[str]:
+    return [
+        key
+        for key in _frame_flattened_columns(frame)
+        if key.startswith("architecture.")
+    ]
+
+
+def method_group_columns(frame: Any) -> list[str]:
+    columns = ["method"]
+    method_series = frame["method"] if "method" in frame.columns else None
+    method_names = (
+        [] if method_series is None else method_series.dropna().unique().tolist()
+    )
+    for method_name in method_names:
+        for key in sorted(method_factory_param_names(method_name)):
+            column = f"method_kwargs.{key}"
+            if column in frame.columns and column not in columns:
+                columns.append(column)
+    return columns
+
+
+def restart_group_columns(frame: Any) -> list[str]:
+    return [key for key in _frame_flattened_columns(frame) if key != "restart_index"]
+
+
+def entries_to_frame(entries: list[dict[str, Any]]) -> Any:
+    import pandas as pd
+
+    rows: list[dict[str, Any]] = []
+    for entry_index, entry in enumerate(entries):
+        row = {
+            "entry_index": entry_index,
+            "run_id": entry.get("run_id"),
+            "run_dir": entry.get("run_dir"),
+            "checkpoint_best": entry.get("checkpoints", {}).get("best"),
+            "checkpoint_last": entry.get("checkpoints", {}).get("last"),
+            "best_loss": entry.get("best_loss"),
+            "best_iteration": entry.get("best_iteration"),
+            "final_loss": entry.get("final_loss"),
+        }
+        row.update(flatten_entry(entry))
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def entries_in_same_restart_group(
+    entries: list[dict[str, Any]], entry: dict[str, Any]
+) -> list[dict[str, Any]]:
+    if not entries:
+        return []
+
+    frame = entries_to_frame(entries)
+    target_fields = restart_group_fields(entry)
+    mask = None
+    for key in restart_group_columns(frame):
+        value = target_fields.get(key)
+        current = frame[key].isna() if value is None else frame[key] == value
+        mask = current if mask is None else (mask & current)
+    if mask is None:
+        return entries
+    indices = frame.loc[mask, "entry_index"].tolist()
+    return [entries[index] for index in indices]
+
+
+def entries_in_same_restart_group_at_index(
+    entries: list[dict[str, Any]], index: int
+) -> list[dict[str, Any]]:
+    return entries_in_same_restart_group(entries, entries[index])
 
 
 def _filename_suffix(index: int, group_key: dict[str, Any]) -> str:
@@ -1663,9 +2202,11 @@ def _filename_suffix(index: int, group_key: dict[str, Any]) -> str:
     return f"arch_{index:03d}"
 
 
-def _representative_params(items: list[dict[str, Any]], keys: list[str]) -> dict[str, Any]:
-    base = copy.deepcopy(_as_expanded_config(items[0]))
-    flat = flatten_run_params(base)
+def _representative_params(
+    items: list[dict[str, Any]], keys: list[str]
+) -> dict[str, Any]:
+    base = dict(items[0])
+    flat = flatten_entry(base)
     base["_line_params"] = {key: flat[key] for key in keys if key in flat}
     return base
 
@@ -1695,7 +2236,7 @@ def _assign_line_styles(
         if isinstance(line_params, dict):
             flattened.append(line_params)
         else:
-            flattened.append(flatten_run_params(representative))
+            flattened.append(flatten_entry(representative))
 
     varying_keys = _varying_keys_from_flattened(flattened)
     colormaps = style_channels.get("colormap", []) if style_channels else []
@@ -1748,37 +2289,41 @@ def _assign_line_styles(
     return styles
 
 
-def get_lines(expanded_configs: list[dict[str, Any]], style_channels: dict[str, Any]) -> list[dict[str, Any]]:
+def get_lines(
+    entries: list[dict[str, Any]], style_channels: dict[str, Any]
+) -> list[dict[str, Any]]:
     """Build aggregate plotting groups and loss series definitions.
 
-    Architecture-varying parameters define top-level plot groups. Restart and
-    seed-like parameters are aggregated into mean +/- std loss tubes within
-    each architecture group. These keys are excluded from architecture grouping
-    and line identity so configs that differ only by restart/seed are treated
-    as the same architecture/problem/method.
+    Architecture-varying parameters define top-level plot groups. Runs that
+    differ only by ``restart_index`` are aggregated into mean +/- std loss
+    tubes within each architecture group.
     """
 
-    if not expanded_configs:
+    if not entries:
         return []
 
     import numpy as np
 
-    flattened_all = [flatten_run_params(_as_expanded_config(item)) for item in expanded_configs]
+    frame = entries_to_frame(entries)
+    flattened_all = [flatten_entry(entry) for entry in entries]
     varying_keys_all = _varying_keys_from_flattened(flattened_all)
     architecture_keys = [
-        key
-        for key in varying_keys_all
-        if key.startswith("architecture.") and not _is_seed_key(key)
+        key for key in architecture_group_columns(frame) if key in varying_keys_all
     ]
-    architecture_groups = _group_items_by_keys(expanded_configs, architecture_keys)
+    if architecture_keys:
+        architecture_groups = [
+            group
+            for _, group in frame.groupby(architecture_keys, sort=False, dropna=False)
+        ]
+    else:
+        architecture_groups = [frame]
     groups: list[dict[str, Any]] = []
 
-    for group_index, (_, group_items) in enumerate(architecture_groups):
-        group_flat = [flatten_run_params(_as_expanded_config(item)) for item in group_items]
+    for group_index, group_frame in enumerate(architecture_groups):
+        group_items = [entries[index] for index in group_frame["entry_index"].tolist()]
+        group_flat = [flatten_entry(item) for item in group_items]
         architecture_group_key = {
-            key: group_flat[0][key]
-            for key in architecture_keys
-            if key in group_flat[0]
+            key: group_flat[0][key] for key in architecture_keys if key in group_flat[0]
         }
         title = (
             ", ".join(
@@ -1790,29 +2335,46 @@ def get_lines(expanded_configs: list[dict[str, Any]], style_channels: dict[str, 
         )
 
         varying_keys = _varying_keys_from_flattened(group_flat)
-        seed_keys = [key for key in varying_keys if _is_seed_key(key)]
         line_param_keys = [
             key
-            for key in varying_keys
-            if key not in architecture_keys and key not in seed_keys
+            for key in restart_group_columns(group_frame)
+            if key in varying_keys and key not in architecture_keys
         ]
 
         line_items: list[dict[str, Any]] = []
         representatives: list[dict[str, Any]] = []
-        if seed_keys:
-            for _, seed_group_items in _group_items_by_keys(group_items, line_param_keys):
-                losses = [np.asarray(_loss_array(item), dtype=float) for item in seed_group_items]
+        if line_param_keys:
+            restart_groups = [
+                group
+                for _, group in group_frame.groupby(
+                    line_param_keys, sort=False, dropna=False
+                )
+            ]
+        else:
+            restart_groups = [group_frame]
+
+        for restart_group in restart_groups:
+            restart_group_items = [
+                entries[index] for index in restart_group["entry_index"].tolist()
+            ]
+            representative = _representative_params(
+                restart_group_items, line_param_keys
+            )
+            representatives.append(representative)
+            losses = [
+                np.asarray(_loss_array(item), dtype=float)
+                for item in restart_group_items
+            ]
+            if len(losses) > 1:
                 min_length = min(loss.shape[0] for loss in losses)
                 if any(loss.shape[0] != min_length for loss in losses):
                     warnings.warn(
-                        "Loss arrays in a seed group have different lengths; truncating to minimum length.",
+                        "Loss arrays in a restart group have different lengths; truncating to minimum length.",
                         stacklevel=2,
                     )
                 stacked = np.stack([loss[:min_length] for loss in losses], axis=0)
                 mean = stacked.mean(axis=0)
                 std = stacked.std(axis=0)
-                representative = _representative_params(seed_group_items, line_param_keys)
-                representatives.append(representative)
                 line_items.append(
                     {
                         "label": _line_label(representative, line_param_keys),
@@ -1821,14 +2383,14 @@ def get_lines(expanded_configs: list[dict[str, Any]], style_channels: dict[str, 
                         "loss_lower": mean - std,
                     }
                 )
-        else:
-            for item in group_items:
-                representative = _representative_params([item], line_param_keys)
-                representatives.append(representative)
+            else:
+                item = restart_group_items[0]
+                label = _line_label(representative, line_param_keys) or item.get(
+                    "run_id", "run"
+                )
                 line_items.append(
                     {
-                        "label": _line_label(representative, line_param_keys)
-                        or _as_expanded_config(item).get("run_id", "run"),
+                        "label": label,
                         "loss": np.asarray(_loss_array(item), dtype=float),
                     }
                 )
@@ -1841,7 +2403,9 @@ def get_lines(expanded_configs: list[dict[str, Any]], style_channels: dict[str, 
             {
                 "group_key": architecture_group_key,
                 "title": title,
-                "filename_suffix": _filename_suffix(group_index, architecture_group_key),
+                "filename_suffix": _filename_suffix(
+                    group_index, architecture_group_key
+                ),
                 "lines": line_items,
             }
         )
@@ -1906,13 +2470,13 @@ def generate_aggregate_plots(
     plotting: dict[str, Any] | None = None,
 ) -> list[Path]:
     session_dir = Path(session_dir)
-    plotting = plotting or {}
-    completed_runs = load_completed_runs(session_dir)
-    if not completed_runs:
+    plotting = plotting or _plotting_config_from_session(session_dir)
+    entries = load_experiment_entries(session_dir)
+    if not entries:
         return []
 
     style_channels = plotting.get("style_channels", {})
-    groups = get_lines(completed_runs, style_channels)
+    groups = get_lines(entries, style_channels)
     if not groups:
         return []
 
@@ -1921,7 +2485,7 @@ def generate_aggregate_plots(
     written_paths: list[Path] = []
 
     for group in groups:
-        suffix = group['filename_suffix']
+        suffix = group["filename_suffix"]
         filename = f"aggregate_loss_{suffix}.pdf" if suffix else "aggregate_loss.pdf"
         output_path = plot_dir / filename
         _plot_aggregate_group(group, output_path)
@@ -1932,28 +2496,57 @@ def generate_aggregate_plots(
 
 def plot_run_diagnostics(
     model: Any,
+    problem: dict[str, Any],
     arrays: dict[str, Any],
     title: str,
     output_path: Path,
+    plotting: dict[str, Any] | None = None,
     n_samples: int = 512,
+    image_eval_context: dict[str, Any] | None = None,
+    deps: dict[str, Any] | None = None,
 ) -> None:
     import matplotlib.pyplot as plt
 
-    deps = import_runtime_dependencies()
+    plotting = plotting or {}
+    deps = deps or import_runtime_dependencies()
+    image_problem = is_image_problem(problem)
+    if image_problem:
+        nrows, ncols = image_grid_shape(plotting)
+        n_samples = nrows * ncols
 
     x = model.sample(n_samples, deps["nnx"].Rngs(0))
     fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(25, 8), layout="constrained")
 
     ax = axs[0]
-    if x.shape[-1] >= 2:
+    if image_problem:
+        if image_eval_context is None:
+            dataset = load_image_dataset(_distribution_name(problem["distribution"]))
+            image_eval_context = {
+                "mean": deps["jnp"].asarray(dataset["mean"]),
+                "std": deps["jnp"].asarray(dataset["std"]),
+                "image_shape": dataset["image_shape"],
+            }
+        images = unnormalize_image_samples(x, image_eval_context, deps)
+        images = images.reshape((nrows, ncols, *image_eval_context["image_shape"]))
+        canvas = images.transpose((0, 2, 1, 3)).reshape(
+            nrows * image_eval_context["image_shape"][0],
+            ncols * image_eval_context["image_shape"][1],
+        )
+        ax.imshow(canvas, cmap="gray", vmin=0.0, vmax=1.0)
+        ax.set_title("Generated samples")
+        ax.axis("off")
+    elif x.shape[-1] >= 2:
         ax.scatter(*x[:, :2].T, label=r"$T_{\text{opt}}(z)$", marker="*", s=5.0)
+        ax.legend()
     else:
         ax.hist(x[:, 0], bins=40, label=r"$T_{\text{opt}}(z)$")
-    ax.legend()
+        ax.legend()
 
     ax = axs[1]
     if "loss" in arrays:
         ax.plot(arrays["loss"], label="Loss")
+    if "eval_iteration" in arrays and "test_nll" in arrays:
+        ax.plot(arrays["eval_iteration"], arrays["test_nll"], label="Test NLL")
     ax.legend()
 
     ax = axs[2]
@@ -1971,7 +2564,8 @@ def plot_run_diagnostics(
     ax.legend()
 
     for ax in axs:
-        ax.grid()
+        if ax is not axs[0] or not image_problem:
+            ax.grid()
     fig.suptitle(title)
     fig.savefig(output_path)
     plt.close(fig)
@@ -1982,58 +2576,54 @@ def generate_per_run_plots(
     plotting: dict[str, Any] | None = None,
 ) -> list[Path]:
     session_dir = Path(session_dir)
-    plotting = plotting or {}
-    completed_runs = load_completed_runs(session_dir)
-    if not completed_runs:
+    plotting = plotting or _plotting_config_from_session(session_dir)
+    entries = load_experiment_entries(session_dir)
+    if not entries:
         return []
 
     plot_dir = session_dir / "plots"
     plot_dir.mkdir(parents=True, exist_ok=True)
     planned_runs_path = session_dir / "planned_runs.json"
     if planned_runs_path.exists():
-        expanded_configs = _load_json_value(planned_runs_path)
+        label_entries = _load_json_value(planned_runs_path)
     else:
-        expanded_configs = [run["expanded_config"] for run in completed_runs]
-    varying_keys = varying_param_keys(expanded_configs)
+        label_entries = entries
+    varying_keys = varying_param_keys(label_entries)
     n_samples = plotting.get("n_samples_plot", plotting.get("n_samples", 512))
     written_paths: list[Path] = []
 
-    for run in completed_runs:
-        expanded_config = run["expanded_config"]
-        model = load_model_checkpoint(session_dir, run["run_id"], key="last")
-        title = format_run_label(expanded_config, varying_keys)
-        output_path = plot_dir / f"{run['run_id']}_plots.pdf"
-        plot_run_diagnostics(model, run["arrays"], title, output_path, n_samples=n_samples)
+    for entry in entries:
+        model = load_entry_model(entry, key="last")
+        title = format_run_label(entry, varying_keys)
+        output_path = plot_dir / f"{entry['run_id']}_plots.pdf"
+        plot_run_diagnostics(
+            model,
+            entry["problem"],
+            entry_arrays(entry),
+            title,
+            output_path,
+            plotting=plotting,
+            n_samples=n_samples,
+        )
         written_paths.append(output_path)
 
     return written_paths
 
 
-def load_model_checkpoint(
-    session_dir: str | Path,
-    run_id: str,
-    key: str = "last",
-) -> Any:
+def load_entry_model(entry: dict[str, Any], key: str = "last") -> Any:
     if key not in {"last", "best"}:
         raise ValueError("checkpoint key must be either 'last' or 'best'")
 
-    session_dir = Path(session_dir)
-    run_dir = session_dir / "runs" / run_id
-    expanded_config_path = run_dir / "expanded_config.json"
-    if not expanded_config_path.exists():
-        raise FileNotFoundError(f"Unknown run_id or missing expanded config: {run_id}")
-
-    checkpoint_dir = (run_dir / "checkpoints" / key).resolve()
+    checkpoint_dir = Path(entry["checkpoints"][key]).resolve()
     if not checkpoint_dir.exists():
         raise FileNotFoundError(f"Missing checkpoint directory: {checkpoint_dir}")
 
-    planned_run = _load_json(expanded_config_path)
     deps = import_runtime_dependencies()
     model = build_model(
-        planned_run["architecture"],
-        planned_run["method_kwargs"],
-        planned_run["resolved_problem"]["dim"],
-        rngs=deps["nnx"].Rngs(planned_run["method_kwargs"].get("master_seed", 0)),
+        entry["architecture"],
+        entry["method_kwargs"],
+        entry["resolved_problem"].get("rhs_dim", entry["resolved_problem"]["dim"]),
+        rngs=deps["nnx"].Rngs(entry["method_kwargs"].get("master_seed", 0)),
         deps=deps,
     )
 
@@ -2043,6 +2633,18 @@ def load_model_checkpoint(
     checkpointer = ocp.StandardCheckpointer()
     state = checkpointer.restore(checkpoint_dir, target=state)
     return deps["nnx"].merge(graphdef, state)
+
+
+def load_model_checkpoint(
+    session_dir: str | Path,
+    run_id: str,
+    key: str = "last",
+) -> Any:
+    entries = load_experiment_entries(session_dir)
+    for entry in entries:
+        if entry.get("run_id") == run_id:
+            return load_entry_model(entry, key=key)
+    raise FileNotFoundError(f"Unknown run_id or missing expanded config: {run_id}")
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -2074,13 +2676,32 @@ def load_config(path: str | Path) -> dict[str, Any]:
         raise ValueError(
             "common_params.N_samples is not supported; use common_params.batch_size"
         )
+    if "plot_every" in common_params:
+        raise ValueError(
+            "common_params.plot_every is not supported; use common_params.eval_every"
+        )
     batch_size = common_params.get("batch_size")
     if not isinstance(batch_size, int) or batch_size < 1:
         raise ValueError("common_params.batch_size must be a positive integer")
+    eval_every = common_params.get("eval_every")
+    if eval_every is not None and (
+        not isinstance(eval_every, int) or eval_every < 1
+    ):
+        raise ValueError("common_params.eval_every must be a positive integer when provided")
     problem = _require_object(config["problem"], "problem")
-    architectures = _require_non_empty_object_list(config["architectures"], "architectures")
+    architectures = _require_non_empty_object_list(
+        config["architectures"], "architectures"
+    )
     methods = _require_non_empty_object_list(config["methods"], "methods")
-    _require_object(config["plotting"], "plotting")
+    plotting = _require_object(config["plotting"], "plotting")
+    if plotting.get("nrows") is not None and (
+        not isinstance(plotting["nrows"], int) or plotting["nrows"] < 1
+    ):
+        raise ValueError("plotting.nrows must be a positive integer when provided")
+    if plotting.get("ncols") is not None and (
+        not isinstance(plotting["ncols"], int) or plotting["ncols"] < 1
+    ):
+        raise ValueError("plotting.ncols must be a positive integer when provided")
 
     master_seed = common_params.setdefault("master_seed", 0)
     if not isinstance(master_seed, int):
@@ -2088,7 +2709,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
     functional = _require_object(problem.get("functional"), "problem.functional")
     if "name" in functional:
-        raise ValueError("problem.functional.name is not supported; use functional.kind")
+        raise ValueError(
+            "problem.functional.name is not supported; use functional.kind"
+        )
     kind = functional.get("kind")
     if kind not in SUPPORTED_FUNCTIONAL_KINDS:
         supported = ", ".join(sorted(SUPPORTED_FUNCTIONAL_KINDS))
@@ -2137,7 +2760,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
                 f"parallel.gpu_ids[{index}] must be an integer or string device id"
             )
 
-    max_parallel = _require_object(parallel.get("max_parallel"), "parallel.max_parallel")
+    max_parallel = _require_object(
+        parallel.get("max_parallel"), "parallel.max_parallel"
+    )
     for method in methods:
         method_name = method["method"]
         method_parallel = max_parallel.get(method_name)
@@ -2151,9 +2776,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
         raise ValueError("config must be a list")
     for index, entry in enumerate(jax_config):
         if not isinstance(entry, (list, tuple)) or len(entry) != 2:
-            raise ValueError(
-                f"config[{index}] must be a [flag, value] pair"
-            )
+            raise ValueError(f"config[{index}] must be a [flag, value] pair")
         flag, value = entry
         if not isinstance(flag, str):
             raise ValueError(

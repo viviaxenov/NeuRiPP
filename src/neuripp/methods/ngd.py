@@ -9,8 +9,9 @@ from neuripp.parametric_pushforward.parametric_pushforward import ParametricPush
 from neuripp.utility.utility import *
 
 
-def _clip_by_max_norm(natural_grad, norm, max_norm: float):
-    return jax.tree.map(lambda _x: max_norm / norm * _x, natural_grad)
+def _clip_gradient(natural_grad, snorm: float, max_snorm: float):
+    factor = jnp.minimum(1.0, max_snorm / snorm)
+    return jax.tree.map(lambda _x: _x * factor, natural_grad)
 
 
 def _compute_natural_grad(
@@ -21,8 +22,6 @@ def _compute_natural_grad(
     linear_solver_regularization: float = 1e-3,
     linear_solver_tolerance: float = 1e-6,
     linear_solver_maxiter: float = 50,
-    *,
-    max_norm_clipping: float = None,
 ):
     matvec_cur = model.get_matvec_fn(rngs)
 
@@ -42,21 +41,7 @@ def _compute_natural_grad(
         maxiter=linear_solver_maxiter,
     )[0]
 
-    natural_grad_norm_sq = model.scalar_product(natural_grad, natural_grad, rngs)
-    norm = jnp.maximum(natural_grad_norm_sq, 0.0) ** 0.5
-
-    # Gradient clipping
-    if max_norm_clipping is not None:
-        natural_grad = jax.lax.cond(
-            norm > max_norm_clipping,
-            _clip_by_max_norm,
-            lambda *args: args[0],
-            natural_grad,
-            norm,
-            max_norm_clipping,
-        )
-
-    return natural_grad, natural_grad_norm_sq
+    return natural_grad
 
 
 def get_ngd(
@@ -91,15 +76,22 @@ def get_ngd(
 
         # compute natural grad
         # natural_grad_norm_alt = tree_dot_product(grad, natural_grad)
-        natural_grad, natural_grad_norm_sq = _compute_natural_grad(
+        natural_grad = _compute_natural_grad(
             model,
             rngs,
             grad,
             prev_grad,
             **kwargs,
-            max_norm_clipping=natural_grad_clipping_threshold,
         )
         grad_norm_sq = tree_dot_product(grad, grad)
+
+        natural_grad_norm_sq = model.scalar_product(natural_grad, natural_grad, rngs)
+        norm = jnp.maximum(natural_grad_norm_sq, 0.0) ** 0.5
+        # Gradient clipping
+        if natural_grad_clipping_threshold is not None:
+            natural_grad = _clip_gradient(
+                natural_grad, norm * step_size, natural_grad_clipping_threshold
+            )
 
         gd, params, rest = nnx.split(model, nnx.Param, ...)
         # update params

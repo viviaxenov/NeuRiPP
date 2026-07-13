@@ -1,11 +1,11 @@
 {
   "output_root": "results/benchmarks",
   "common_params": {
-    "max_iterations": 200,
+    "max_iterations": 50,
     "batch_size": 16,
     "N_monte_carlo": 16,
     "master_seed": 42,
-    "plot_every": 50
+    "eval_every": 25
   },
   "problem": {
     "functional": {
@@ -13,7 +13,7 @@
     },
     "distribution": {
       "name": "checkerboard",
-      "resample_each": 1,
+      "resample_each": 25,
       "seed": 3
     }
   },
@@ -21,20 +21,22 @@
     {
       "rhs": {
         "model": "MLP",
-        "dim_hidden": 8,
-        "n_hidden": [1,2],
-        "activation": "tanh"
+        "dim_hidden": 16,
+        "n_hidden": [1],
+        "activation": "swish"
       },
       "divergence_method": "hutchinson",
-      "ode_nstep_max": 4,
-      "ode_method": "euler"
+      "ode_nstep_max": 6,
+      "ode_method": "rk45",
+      "adaptive": true
     }
   ],
   "methods": [
     {
       "method": "anderson",
       "n_restarts": 6,
-      "history_length": [4, 6],
+      "natural_grad_clipping_threshold": [null, 1.0],
+      "history_length":  6,
       "regularization_method": ["l2", "adaptive"],
       "ensure_descent": [true],
       "step_size": [0.001],
@@ -46,15 +48,10 @@
     {
       "method": "ngd",
       "n_restarts": 6,
-      "step_size": [0.001, 0.002, 0.004],
-      "linear_solver_regularization": [0.0001, 0.001],
+      "natural_grad_clipping_threshold": [null, 1.0],
+      "step_size": [0.01],
+      "linear_solver_regularization": [0.0001],
       "linear_solver_tolerance": 1e-6
-    },
-    {
-      "method": "adamw",
-      "n_restarts": 10,
-      "learning_rate": [0.001, 0.0005, 0.0001],
-      "weight_decay": [0.00001, 0.001]
     }
   ],
   "plotting": {
@@ -65,7 +62,7 @@
     }
   },
   "parallel": {
-    "gpu_ids": [0, 1, 2],
+    "gpu_ids": [6, 7],
     "max_parallel": {
       "anderson": 15,
       "ngd": 96,

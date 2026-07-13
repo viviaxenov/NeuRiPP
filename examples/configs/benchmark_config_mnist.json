@@ -1,0 +1,59 @@
+{
+  "output_root": "results/benchmarks",
+  "common_params": {
+    "max_iterations": 50,
+    "batch_size": 64,
+    "N_monte_carlo": 64,
+    "master_seed": 42,
+    "eval_every": 25
+  },
+  "problem": {
+    "functional": {
+      "kind": "CrossEntropy"
+    },
+    "distribution": {
+      "name": "fashion_mnist",
+      "resample_each": 1,
+      "seed": 3
+    }
+  },
+  "architectures": [
+    {
+      "rhs": {
+        "model": "CFMConv2D",
+        "n_channels": 64,
+        "n_hidden": 2
+      },
+      "divergence_method": "hutchinson",
+      "ode_nstep_max": 12,
+      "ode_method": "rk45",
+      "adaptive": true,
+      "grad_checkpointing": "dots_only"
+    }
+  ],
+  "methods": [
+    {
+      "method": "ngd",
+      "n_restarts": 1,
+      "step_size": [0.001, 0.001],
+      "natural_grad_clipping_threshold": [0.1],
+      "linear_solver_regularization": 0.01,
+      "linear_solver_tolerance": 1e-6
+    }
+  ],
+  "plotting": {
+    "nrows": 3,
+    "ncols": 3,
+    "style_channels": {
+      "colormap": ["Blues"],
+      "linestyle": ["-"],
+      "linewidth": [1.5]
+    }
+  },
+  "parallel": {
+    "gpu_ids": [1],
+    "max_parallel": {
+      "ngd": 2
+    }
+  }
+}
