@@ -10,7 +10,7 @@ from functools import partial
 
 from ..parametric_pushforward.parametric_pushforward import ParametricPushforward
 from ..utility.utility import tree_dot_product
-from .ngd import _compute_natural_grad, _clip_gradient, _clip_gradient
+from .ngd import _compute_natural_grad, _clip_gradient
 
 pairwise_dot_col = jax.vmap(tree_dot_product, in_axes=[0, None])
 pairwise_dot_matrix = jax.vmap(pairwise_dot_col, in_axes=[None, 0], out_axes=1)
@@ -20,10 +20,10 @@ def _update_history(history, residual, delta_x, history_length: int):
     # move vectors to the right to free space
     history = jax.tree.map(lambda _h: jnp.roll(_h, 1, 0), history)
     # write new residual
-    history = jax.tree.map(lambda _h, _r: _h.at[0].set(_r), history, residual)
+    history = jax.tree.map(lambda _h, _r: _h.at[0, ...].set(_r), history, residual)
     # write new delta_x
     history = jax.tree.map(
-        lambda _h, _x: _h.at[history_length].set(_x), history, delta_x
+        lambda _h, _x: _h.at[history_length, ...].set(_x), history, delta_x
     )
 
     return history
@@ -52,7 +52,7 @@ def get_anderson(
         rngs,
     ):
         step_size = args[0]
-        _, par, _ = nnx.split(model, nnx.Param, ...)
+        gd, par, rest = nnx.split(model, nnx.Param, ...)
         zero_vector = jax.tree.map(jnp.zeros_like, par)
         f, grad = vg_fn(model, batch, rngs)
         natural_grad = _compute_natural_grad(
@@ -62,19 +62,22 @@ def get_anderson(
             zero_vector,
             **kwargs,
         )
+        residual = jax.tree.map(lambda _x: -step_size * _x, natural_grad)
         # initialize history with zero vectors
         # history[:m] is residuals
         # history[m:] is Delta x
         # (slice in each leaf of pytree)
-        residual = jax.tree.map(lambda _x: -step_size * _x, natural_grad)
+
+        par = jax.tree.map(lambda _p, _dp: _p + _dp, par, residual)
+        model = nnx.merge(gd, par, rest)
+
         history = jax.tree.map(
             lambda _l: jnp.zeros((2 * history_length, *_l.shape)), residual
         )
-        # history = _update_history(history, residual, residual, history_length)
+        history = _update_history(history, residual, residual, history_length)
         return (model, natural_grad, history, args, kwargs)
 
     def _step(state, batch, rngs):
-        model: ParametricPushforward
         model, previous_grad, history, args, kwargs = state
 
         step_size, relaxation, regularization_factor = args
@@ -87,13 +90,15 @@ def get_anderson(
             previous_grad,
             **kwargs,
         )
-        
+
         grad_norm_sq = tree_dot_product(grad, grad)
         natural_grad_norm_sq = model.scalar_product(natural_grad, natural_grad, rngs)
         norm = jnp.maximum(natural_grad_norm_sq, 0.0) ** 0.5
         # Gradient clipping
         if natural_grad_clipping_threshold is not None:
-            natural_grad = _clip_gradient(natural_grad, norm*step_size, natural_grad_clipping_threshold)
+            natural_grad = _clip_gradient(
+                natural_grad, norm, natural_grad_clipping_threshold
+            )
 
         residual = jax.tree.map(lambda _x: -step_size * _x, natural_grad)
         r_cur_norm_sq = natural_grad_norm_sq * step_size**2
@@ -109,7 +114,7 @@ def get_anderson(
         # <r_i, Gr_j>
         pairwise_mat = pairwise_dot_matrix(history, Ghistory)
         rhs = pairwise_dot_col(
-            jax.tree.map(lambda _l: _l[:history_length, ...], Ghistory), residual
+            jax.tree.map(lambda _h: _h[:history_length, ...], Ghistory), residual
         )
         # assemble small matrices for the subprobplem
         RR = pairwise_mat[:history_length, :history_length]
@@ -118,12 +123,17 @@ def get_anderson(
             delta_x_norm_sq = XX[0, 0]
 
             rf = regularization_factor * r_cur_norm_sq / (delta_x_norm_sq + 1e-8)
-            M_reg = XX
+            # without epsilon*Id, we get nan = 0/0 error at steps < history_length
+            # when delta_r and delta_x are not yet initialized
+            M_reg = XX + jnp.eye(history_length) * 1e-20
         else:
             rf = regularization_factor
             M_reg = jnp.eye(history_length)
 
-        gamma = jnp.linalg.solve(RR + rf * M_reg, rhs)
+        S = RR + rf * M_reg
+        S = 0.5 * (S + S.T)
+
+        gamma = jnp.linalg.solve(S, rhs)
 
         mixing_weights = jnp.concatenate((relaxation * gamma, gamma))
         r_mixed = jax.tree.map(
