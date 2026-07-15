@@ -2079,6 +2079,34 @@ def _unique_values(flattened: list[dict[str, Any]], key: str) -> list[Any]:
     return values
 
 
+def _normalize_style_channel_name(name: str) -> str:
+    return "colormap" if name == "cmap" else name
+
+
+def _combo_identity(flat: dict[str, Any], keys: list[str]) -> str:
+    return json.dumps([flat.get(key) for key in keys], sort_keys=True, default=str)
+
+
+def _resolve_style_channel_keys(
+    varying_keys: list[str], style_channel_map: dict[str, Any]
+) -> dict[str, str]:
+    display_to_keys: dict[str, list[str]] = {}
+    for key in varying_keys:
+        display_to_keys.setdefault(_display_param_key(key), []).append(key)
+
+    resolved: dict[str, str] = {}
+    for requested_key, channel_name in style_channel_map.items():
+        if requested_key in varying_keys:
+            resolved[requested_key] = _normalize_style_channel_name(str(channel_name))
+            continue
+        display_matches = display_to_keys.get(requested_key, [])
+        if len(display_matches) == 1:
+            resolved[display_matches[0]] = _normalize_style_channel_name(
+                str(channel_name)
+            )
+    return resolved
+
+
 def _group_items_by_keys(
     items: list[dict[str, Any]], keys: list[str]
 ) -> list[tuple[tuple[str, ...], list[dict[str, Any]]]]:
@@ -2225,7 +2253,9 @@ def _line_label(representative: dict[str, Any], keys: list[str]) -> str:
 
 
 def _assign_line_styles(
-    representatives: list[dict[str, Any]], style_channels: dict[str, Any]
+    representatives: list[dict[str, Any]],
+    style_channels: dict[str, Any],
+    style_channel_map: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if not representatives:
         return []
@@ -2239,6 +2269,92 @@ def _assign_line_styles(
             flattened.append(flatten_entry(representative))
 
     varying_keys = _varying_keys_from_flattened(flattened)
+    if style_channel_map:
+        import matplotlib.pyplot as plt
+
+        resolved_map = _resolve_style_channel_keys(varying_keys, style_channel_map)
+        if not resolved_map:
+            return _assign_line_styles(representatives, style_channels, None)
+
+        channel_to_keys: dict[str, list[str]] = {}
+        for key in varying_keys:
+            channel_name = resolved_map.get(key)
+            if channel_name is not None:
+                channel_to_keys.setdefault(channel_name, []).append(key)
+
+        ordered_channels = list(channel_to_keys)
+        if ordered_channels:
+            fallback_channel = ordered_channels[-1]
+            for key in varying_keys:
+                if key not in resolved_map:
+                    channel_to_keys.setdefault(fallback_channel, []).append(key)
+
+        colormaps = style_channels.get("colormap", []) if style_channels else []
+        list_channels = {
+            key: value
+            for key, value in (style_channels or {}).items()
+            if key != "colormap" and isinstance(value, list) and value
+        }
+        colormap_keys = channel_to_keys.get("colormap", [])
+        color_keys = channel_to_keys.get("color", [])
+
+        cmap_by_identity: dict[str, str] = {}
+        if colormap_keys and colormaps:
+            combo_order: list[str] = []
+            for flat in flattened:
+                combo_id = _combo_identity(flat, colormap_keys)
+                if combo_id not in cmap_by_identity:
+                    combo_order.append(combo_id)
+                    cmap_by_identity[combo_id] = colormaps[
+                        (len(combo_order) - 1) % len(colormaps)
+                    ]
+
+        styles: list[dict[str, Any]] = []
+        for flat in flattened:
+            style: dict[str, Any] = {}
+
+            colormap_identity = (
+                _combo_identity(flat, colormap_keys) if colormap_keys else "__default__"
+            )
+            cmap_name = cmap_by_identity.get(
+                colormap_identity,
+                colormaps[0] if colormaps else "viridis",
+            )
+
+            if color_keys:
+                shade_identity = _combo_identity(flat, color_keys)
+                shade_values: list[str] = []
+                for other_flat in flattened:
+                    if colormap_keys and (
+                        _combo_identity(other_flat, colormap_keys) != colormap_identity
+                    ):
+                        continue
+                    other_identity = _combo_identity(other_flat, color_keys)
+                    if other_identity not in shade_values:
+                        shade_values.append(other_identity)
+                shade_index = shade_values.index(shade_identity)
+                shade = (shade_index + 1) / (len(shade_values) + 1)
+                style["color"] = plt.get_cmap(cmap_name)(shade)
+            elif colormap_keys and colormaps:
+                style["color"] = plt.get_cmap(cmap_name)(0.6)
+
+            for channel_name, channel_values in list_channels.items():
+                channel_keys = channel_to_keys.get(channel_name, [])
+                if not channel_keys:
+                    continue
+                combo_id = _combo_identity(flat, channel_keys)
+                combo_order: list[str] = []
+                for other_flat in flattened:
+                    other_id = _combo_identity(other_flat, channel_keys)
+                    if other_id not in combo_order:
+                        combo_order.append(other_id)
+                value_index = combo_order.index(combo_id)
+                style[channel_name] = channel_values[value_index % len(channel_values)]
+
+            styles.append(style)
+
+        return styles
+
     colormaps = style_channels.get("colormap", []) if style_channels else []
     list_channels = [
         (key, value)
@@ -2290,7 +2406,9 @@ def _assign_line_styles(
 
 
 def get_lines(
-    entries: list[dict[str, Any]], style_channels: dict[str, Any]
+    entries: list[dict[str, Any]],
+    style_channels: dict[str, Any] | None = None,
+    style_channel_map: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Build aggregate plotting groups and loss series definitions.
 
@@ -2395,7 +2513,11 @@ def get_lines(
                     }
                 )
 
-        styles = _assign_line_styles(representatives, style_channels or {})
+        styles = _assign_line_styles(
+            representatives,
+            style_channels or {},
+            style_channel_map=style_channel_map,
+        )
         for line, style in zip(line_items, styles, strict=True):
             line["style"] = style
 
@@ -2476,7 +2598,8 @@ def generate_aggregate_plots(
         return []
 
     style_channels = plotting.get("style_channels", {})
-    groups = get_lines(entries, style_channels)
+    style_channel_map = plotting.get("style_channel_map")
+    groups = get_lines(entries, style_channels, style_channel_map=style_channel_map)
     if not groups:
         return []
 
@@ -2702,6 +2825,26 @@ def load_config(path: str | Path) -> dict[str, Any]:
         not isinstance(plotting["ncols"], int) or plotting["ncols"] < 1
     ):
         raise ValueError("plotting.ncols must be a positive integer when provided")
+    style_channel_map = plotting.get("style_channel_map")
+    if style_channel_map is not None:
+        if not isinstance(style_channel_map, dict) or not style_channel_map:
+            raise ValueError("plotting.style_channel_map must be a non-empty object when provided")
+        valid_channels = {"cmap", "colormap", "color"}
+        valid_channels.update(
+            key
+            for key, value in plotting.get("style_channels", {}).items()
+            if key != "colormap" and isinstance(value, list) and value
+        )
+        for key, value in style_channel_map.items():
+            if not isinstance(key, str) or not key:
+                raise ValueError(
+                    "plotting.style_channel_map keys must be non-empty strings"
+                )
+            if not isinstance(value, str) or value not in valid_channels:
+                supported = ", ".join(sorted(valid_channels))
+                raise ValueError(
+                    f"plotting.style_channel_map[{key!r}] must be one of: {supported}"
+                )
 
     master_seed = common_params.setdefault("master_seed", 0)
     if not isinstance(master_seed, int):

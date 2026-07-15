@@ -59,6 +59,11 @@
       "colormap": ["Blues", "Oranges"],
       "linestyle": ["-", "--", ":"],
       "linewidth": [1.5, 2.5]
+    },
+    "style_channel_map": {
+      "method": "cmap",
+      "step_size": "color",
+      "relaxation": "linestyle"
     }
   },
   "parallel": {
