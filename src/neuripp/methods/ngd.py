@@ -9,8 +9,8 @@ from neuripp.parametric_pushforward.parametric_pushforward import ParametricPush
 from neuripp.utility.utility import *
 
 
-def _clip_gradient(natural_grad, snorm: float, max_snorm: float):
-    factor = jnp.minimum(1.0, max_snorm / snorm)
+def _clip_gradient(natural_grad, norm: float, max_norm: float):
+    factor = jnp.minimum(1.0, max_norm / norm)
     return jax.tree.map(lambda _x: _x * factor, natural_grad)
 
 
@@ -90,7 +90,7 @@ def get_ngd(
         # Gradient clipping
         if natural_grad_clipping_threshold is not None:
             natural_grad = _clip_gradient(
-                natural_grad, norm * step_size, natural_grad_clipping_threshold
+                natural_grad, norm, natural_grad_clipping_threshold
             )
 
         gd, params, rest = nnx.split(model, nnx.Param, ...)
