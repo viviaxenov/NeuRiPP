@@ -131,7 +131,7 @@ def _is_image_distribution(name: str) -> bool:
 
 def _image_dataset_hf_name(name: str) -> str:
     if name == "mnist":
-        return "mnist"
+        return "ylecun/mnist"
     if name == "fashion_mnist":
         return "zalando-datasets/fashion_mnist"
     raise ValueError(f"Unsupported image dataset {name!r}")
@@ -761,6 +761,7 @@ def import_runtime_dependencies() -> dict[str, Any]:
             "MLP": rhs_architectures.MLP,
             "LinearRHS": rhs_architectures.LinearRHS,
             "CFMConv2D": rhs_architectures.CFMConv2D,
+            "FFJORDConv2D": rhs_architectures.FFJORDConv2D
         },
         "activation_registry": activation_registry,
         "method_registry": {
@@ -1431,7 +1432,7 @@ def execute_run_chunk(
             current_losses = np.asarray(values[0], dtype=float)
             model_ensemble = state[0]
             for lane_index, current_loss in enumerate(current_losses):
-                if current_loss < best_losses[lane_index]:
+                if np.isfinite(current_loss) and current_loss  < best_losses[lane_index]:
                     best_losses[lane_index] = current_loss
                     if not image_problem:
                         lane_model = lane_model_from_ensemble(
@@ -1950,6 +1951,7 @@ def load_experiment_entries(session_dir: str | Path) -> list[dict[str, Any]]:
             import numpy as np
 
             loss_array = np.asarray(loss, dtype=float)
+            loss_array[~np.isfinite(loss_array)] = np.inf
             best_iteration = int(np.argmin(loss_array))
             entry["best_loss"] = float(loss_array[best_iteration])
             entry["best_iteration"] = best_iteration

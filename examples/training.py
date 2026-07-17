@@ -37,7 +37,7 @@ from functools import partial
 
 dim = 2
 n_iter = 6_000
-n_restarts = 5
+n_restarts = 6
 batch_size = 512
 N_mc = batch_size
 method = sys.argv[1] if len(sys.argv) > 1 else "ngd"
@@ -46,7 +46,7 @@ n_iter = int(sys.argv[3]) if len(sys.argv) > 3 else n_iter
 
 rngs = nnx.Rngs(42)
 
-rhs_net = MLP(dim, rngs, dim_hidden=128, n_hidden=2, activation=nnx.swish)
+rhs_net = MLP(dim, rngs, dim_hidden=64, n_hidden=1, activation=nnx.swish)
 
 model_args = (
     rhs_net,
@@ -55,10 +55,10 @@ model_args = (
 )
 
 model_kwargs = dict(
-    ode_nstep_max=12,
+    ode_nstep_max=6,
     divergence_method="hutchinson",
     ode_method="rk45",
-    ode_kwargs=dict(h_max=0.3, N_iter_to_accept=15, adaptive=True),
+    ode_kwargs=dict(h_max=0.3,  adaptive=True),
 )
 
 model = ParametricPushforward(*model_args, **model_kwargs)
@@ -73,13 +73,13 @@ match method:
             linear_solver_regularization=1e-2,
         )
     case "anderson":
-        get_fn = partial(get_anderson, history_length=6)
-        stepsize = 0.001
+        get_fn = partial(get_anderson, history_length=6, natural_grad_clipping_threshold=0.1)
+        stepsize = 0.1
         relaxation = 1.0
-        reg_factor =  1e-3
+        reg_factor =  1e-7
         args = (stepsize, relaxation, reg_factor)
         kwargs = dict(
-            linear_solver_regularization=1e-2,
+            linear_solver_regularization=1e-1,
             linear_solver_maxiter=100,
         )
 

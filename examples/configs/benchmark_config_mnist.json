@@ -1,18 +1,18 @@
 {
-  "output_root": "results/benchmarks",
+  "output_root": "results/mnist_ffjord",
   "common_params": {
-    "max_iterations": 50,
-    "batch_size": 64,
-    "N_monte_carlo": 64,
+    "max_iterations": 23500,
+    "batch_size": 256,
+    "N_monte_carlo": 256,
     "master_seed": 42,
-    "eval_every": 25
+    "eval_every": 470
   },
   "problem": {
     "functional": {
       "kind": "CrossEntropy"
     },
     "distribution": {
-      "name": "fashion_mnist",
+      "name": "mnist",
       "resample_each": 1,
       "seed": 3
     }
@@ -20,14 +20,15 @@
   "architectures": [
     {
       "rhs": {
-        "model": "CFMConv2D",
-        "n_channels": 64,
-        "n_hidden": 2
+        "model": "FFJORDConv2D",
+        "dim_hidden": 64,
+        "n_layers": 3
       },
       "divergence_method": "hutchinson",
-      "ode_nstep_max": 12,
+      "ode_nstep_max": 10,
       "ode_method": "rk45",
       "adaptive": true,
+      "h_max": 0.3,
       "grad_checkpointing": "dots_only"
     }
   ],
@@ -35,10 +36,15 @@
     {
       "method": "ngd",
       "n_restarts": 1,
-      "step_size": [0.001, 0.001],
-      "natural_grad_clipping_threshold": [0.1],
+      "step_size": [0.01, 0.001],
+      "natural_grad_clipping_threshold": [0.5],
       "linear_solver_regularization": 0.01,
-      "linear_solver_tolerance": 1e-6
+      "linear_solver_tolerance": 1e-4,
+      "linear_solver_maxiter": 50
+    },{
+      "method": "adam",
+      "n_restarts": 1,
+      "learning_rate": [1e-3,  1e-5] 
     }
   ],
   "plotting": {
@@ -51,9 +57,10 @@
     }
   },
   "parallel": {
-    "gpu_ids": [1],
+    "gpu_ids": [4, 5, 6, 7],
     "max_parallel": {
-      "ngd": 2
+      "ngd": 1,
+      "adam": 2
     }
   }
 }
