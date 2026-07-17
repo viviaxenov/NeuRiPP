@@ -43,10 +43,11 @@
       "linear_solver_regularization": 0.01,
       "linear_solver_tolerance": 1e-4,
       "linear_solver_maxiter": 50
-    },{
+    },
+    {
       "method": "adam",
       "n_restarts": 1,
-      "learning_rate": [1e-3,  1e-5] 
+      "learning_rate": [1e-3, 1e-5]
     }
   ],
   "plotting": {

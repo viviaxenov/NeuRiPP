@@ -216,3 +216,44 @@ class CFMConv2D(nnx.Module):
         emb = jnp.concat([jnp.sin(emb), jnp.cos(emb)], axis=-1)
 
         return self.time_proj(emb)[None, None, :]
+
+class Encoder(nnx.Module):
+    def __init__(self, din: int, dmid: int, rngs: nnx.Rngs):
+        self.linear = nnx.Linear(din, dmid, rngs=rngs)
+
+    def __call__(self, x: jax.Array) -> jax.Array:
+        return nnx.relu(self.linear(x))
+
+class Decoder(nnx.Module):
+    def __init__(self, dmid: int, dout: int, rngs: nnx.Rngs):
+        self.linear = nnx.Linear(dmid, dout, rngs=rngs)
+
+    def __call__(self, x: jax.Array) -> jax.Array:
+        return nnx.sigmoid(self.linear(x))
+
+class AutoEncoder(nnx.Module):
+    def __init__(self, shape_in: Tuple[int, ...], dmid: int, rngs: nnx.Rngs):
+        self.shape_in = shape_in
+        # Calculate the flattened dimension total (e.g., 28 * 28 * 1 = 784)
+        self.din = int(jnp.prod(jnp.array(shape_in)))
+        
+        self.encoder = Encoder(self.din, dmid, rngs=rngs)
+        self.decoder = Decoder(dmid, self.din, rngs=rngs)
+
+    def __call__(self, x: jax.Array) -> jax.Array:
+        batch_size = x.shape[0]
+        # Flatten dynamically based on the current batch size
+        x_flat = x.reshape(batch_size, -1)
+        latent = self.encoder(x_flat)
+        reconstruction = self.decoder(latent)
+        
+        # Reshape back to initial tensor space, adding back the batch dimension
+        return reconstruction.reshape(batch_size, *self.shape_in)
+
+    def encode(self, x: jax.Array) -> jax.Array:
+        x_flat = x.reshape(x.shape[0], -1)
+        return self.encoder(x_flat)
+
+    def decode(self, z: jax.Array) -> jax.Array:
+        reconstruction = self.decoder(z)
+        return reconstruction.reshape(z.shape[0], *self.shape_in)

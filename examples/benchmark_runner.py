@@ -12,6 +12,7 @@ import copy
 import inspect
 import itertools
 import json
+import math
 import multiprocessing as mp
 import os
 import queue
@@ -38,9 +39,14 @@ OPTIONAL_TOP_LEVEL_KEYS = {"parallel", "config"}
 SUPPORTED_FUNCTIONAL_KINDS = {"KL", "MMD", "CrossEntropy"}
 DATA_DISTRIBUTIONS = {"checkerboard", "two_spirals", "eight_gaussians"}
 IMAGE_DATA_DISTRIBUTIONS = {"mnist", "fashion_mnist"}
+IMAGE_DATA_SHAPES = {
+    "mnist": (28, 28),
+    "fashion_mnist": (28, 28),
+}
 ANALYTIC_KL_DISTRIBUTIONS = {"gaussian", "st"}
 
-_IMAGE_DATASET_CACHE: dict[str, dict[str, Any]] = {}
+_RAW_IMAGE_DATASET_CACHE: dict[str, dict[str, Any]] = {}
+_IMAGE_DATASET_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
 
 # Stage 3 validates method names without importing JAX/Optax at module import time.
 # Later stages will replace these placeholders with the real dispatch callables.
@@ -111,6 +117,19 @@ def _validate_architecture(architecture: dict[str, Any], index: int) -> None:
         )
     if not isinstance(rhs.get("model"), str):
         raise ValueError(f"{name}.rhs.model must be a string")
+    if rhs.get("encoder_dim") is not None and (
+        not isinstance(rhs["encoder_dim"], int) or rhs["encoder_dim"] < 1
+    ):
+        raise ValueError(f"{name}.rhs.encoder_dim must be a positive integer when provided")
+    if rhs.get("encoder_path") is not None and not isinstance(rhs["encoder_path"], str):
+        raise ValueError(f"{name}.rhs.encoder_path must be a string when provided")
+    if rhs.get("encoder_path") is not None and rhs.get("encoder_dim") is None:
+        raise ValueError(f"{name}.rhs.encoder_path requires rhs.encoder_dim")
+    encoder_training = rhs.get("encoder_training")
+    if encoder_training is not None and not isinstance(encoder_training, dict):
+        raise ValueError(f"{name}.rhs.encoder_training must be an object when provided")
+    if encoder_training is not None and rhs.get("encoder_dim") is None:
+        raise ValueError(f"{name}.rhs.encoder_training requires rhs.encoder_dim")
 
     _validate_grid_axes(
         {key: value for key, value in architecture.items() if key != "rhs"}, name
@@ -137,12 +156,27 @@ def _image_dataset_hf_name(name: str) -> str:
     raise ValueError(f"Unsupported image dataset {name!r}")
 
 
-def load_image_dataset(name: str) -> dict[str, Any]:
+def _encoder_config_from_rhs(rhs_config: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not rhs_config:
+        return None
+
+    encoder_dim = rhs_config.get("encoder_dim")
+    if encoder_dim is None:
+        return None
+
+    return {
+        "encoder_dim": encoder_dim,
+        "encoder_path": rhs_config.get("encoder_path", "./encoder"),
+        "encoder_training": copy.deepcopy(rhs_config.get("encoder_training")),
+    }
+
+
+def _raw_image_dataset(name: str) -> dict[str, Any]:
     import numpy as np
     from datasets import load_dataset
 
-    if name in _IMAGE_DATASET_CACHE:
-        return _IMAGE_DATASET_CACHE[name]
+    if name in _RAW_IMAGE_DATASET_CACHE:
+        return _RAW_IMAGE_DATASET_CACHE[name]
 
     dataset = load_dataset(_image_dataset_hf_name(name))
 
@@ -155,29 +189,110 @@ def load_image_dataset(name: str) -> dict[str, Any]:
             / 255.0
         )
 
-    train_images = _stack_images("train")
-    test_images = _stack_images("test")
-    mean = train_images.mean(axis=0)
-    std = train_images.std(axis=0)
-    std = np.where(std > 1e-6, std, 1.0)
-
-    train_flat = ((train_images - mean[None, ...]) / std[None, ...]).reshape(
-        train_images.shape[0], -1
-    )
-    test_flat = ((test_images - mean[None, ...]) / std[None, ...]).reshape(
-        test_images.shape[0], -1
-    )
-    log_det = float(np.log(255.0 * std.reshape(-1)).sum(dtype=np.float64))
-
     payload = {
-        "train": train_flat,
-        "test": test_flat,
-        "mean": mean,
-        "std": std,
-        "image_shape": tuple(mean.shape),
-        "pixel_log_det_per_example": log_det,
+        "train_images": _stack_images("train"),
+        "test_images": _stack_images("test"),
     }
-    _IMAGE_DATASET_CACHE[name] = payload
+    payload["image_shape"] = tuple(payload["train_images"].shape[1:])
+    _RAW_IMAGE_DATASET_CACHE[name] = payload
+    return payload
+
+
+def _image_dataset_cache_key(name: str, rhs_config: dict[str, Any] | None) -> tuple[Any, ...]:
+    encoder_config = _encoder_config_from_rhs(rhs_config)
+    if encoder_config is None:
+        return (name, "pixel")
+    return (
+        name,
+        "latent",
+        int(encoder_config["encoder_dim"]),
+        str(Path(encoder_config["encoder_path"])),
+    )
+
+
+def build_image_eval_context(
+    dataset: dict[str, Any],
+    distribution_name: str,
+    deps: dict[str, Any],
+) -> dict[str, Any]:
+    context = {
+        "distribution_name": distribution_name,
+        "eval_mode": dataset.get("eval_mode", "pixel"),
+        "test": deps["jnp"].asarray(dataset["test"]),
+        "image_shape": tuple(dataset["image_shape"]),
+    }
+    if context["eval_mode"] == "latent":
+        context.update(
+            {
+                "latent_mean": deps["jnp"].asarray(dataset["latent_mean"]),
+                "latent_std": deps["jnp"].asarray(dataset["latent_std"]),
+                "latent_log_det_per_example": dataset["latent_log_det_per_example"],
+                "encoder_dim": dataset["encoder_dim"],
+                "eval_dim": dataset["encoder_dim"],
+                "autoencoder": dataset.get("autoencoder"),
+                "autoencoder_checkpoint_dir": dataset["autoencoder_checkpoint_dir"],
+            }
+        )
+    else:
+        context.update(
+            {
+                "mean": deps["jnp"].asarray(dataset["mean"]),
+                "std": deps["jnp"].asarray(dataset["std"]),
+                "pixel_log_det_per_example": dataset["pixel_log_det_per_example"],
+                "eval_dim": int(math.prod(dataset["image_shape"])),
+            }
+        )
+    return context
+
+
+def load_image_dataset(
+    name: str,
+    rhs_config: dict[str, Any] | None = None,
+    deps: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    import numpy as np
+
+    cache_key = _image_dataset_cache_key(name, rhs_config)
+    if cache_key in _IMAGE_DATASET_CACHE:
+        return _IMAGE_DATASET_CACHE[cache_key]
+
+    raw = _raw_image_dataset(name)
+    encoder_config = _encoder_config_from_rhs(rhs_config)
+    if encoder_config is None:
+        train_images = raw["train_images"]
+        test_images = raw["test_images"]
+        mean = train_images.mean(axis=0)
+        std = train_images.std(axis=0)
+        std = np.where(std > 1e-6, std, 1.0)
+        train_flat = ((train_images - mean[None, ...]) / std[None, ...]).reshape(
+            train_images.shape[0], -1
+        )
+        test_flat = ((test_images - mean[None, ...]) / std[None, ...]).reshape(
+            test_images.shape[0], -1
+        )
+        payload = {
+            "train": train_flat,
+            "test": test_flat,
+            "mean": mean,
+            "std": std,
+            "image_shape": raw["image_shape"],
+            "pixel_log_det_per_example": float(
+                np.log(255.0 * std.reshape(-1)).sum(dtype=np.float64)
+            ),
+            "eval_mode": "pixel",
+        }
+    else:
+        deps = deps or import_runtime_dependencies()
+        payload = deps["prepare_encoded_image_dataset"](
+            name,
+            raw["train_images"],
+            raw["test_images"],
+            int(encoder_config["encoder_dim"]),
+            encoder_path=encoder_config["encoder_path"],
+            training_config=encoder_config["encoder_training"],
+        )
+
+    _IMAGE_DATASET_CACHE[cache_key] = payload
     return payload
 
 
@@ -234,7 +349,9 @@ def _sample_data_distribution(
 
 
 def resolve_problem(
-    problem: dict[str, Any], common_params: dict[str, Any]
+    problem: dict[str, Any],
+    common_params: dict[str, Any],
+    architecture: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Resolve problem metadata that execution can trust later.
 
@@ -252,7 +369,30 @@ def resolve_problem(
     ):
         raise ValueError("problem.dim must be a positive integer when provided")
 
-    if name in DATA_DISTRIBUTIONS | IMAGE_DATA_DISTRIBUTIONS:
+    if _is_image_distribution(name):
+        image_shape = IMAGE_DATA_SHAPES[name]
+        encoder_config = _encoder_config_from_rhs(
+            architecture.get("rhs") if architecture else None
+        )
+        inferred_dim = (
+            int(encoder_config["encoder_dim"])
+            if encoder_config is not None
+            else int(math.prod(image_shape))
+        )
+        if configured_dim is not None and configured_dim != inferred_dim:
+            warnings.warn(
+                f"problem.dim={configured_dim} does not match data-inferred "
+                f"dim={inferred_dim} for distribution {name!r}; using data-inferred dim.",
+                stacklevel=2,
+            )
+        return {
+            "dim": inferred_dim,
+            "dim_source": "data",
+            "distribution_name": name,
+            "rhs_dim": inferred_dim if encoder_config is not None else image_shape,
+        }
+
+    if name in DATA_DISTRIBUTIONS:
         data_batch = _sample_data_distribution(distribution, common_params)
         if len(data_batch.shape) < 2:
             raise ValueError(
@@ -269,7 +409,6 @@ def resolve_problem(
             "dim": inferred_dim,
             "dim_source": "data",
             "distribution_name": name,
-            **({"rhs_dim": load_image_dataset(name)["image_shape"]} if _is_image_distribution(name) else {}),
         }
 
     if kind == "KL" and name in ANALYTIC_KL_DISTRIBUTIONS:
@@ -401,7 +540,11 @@ def plan_runs(config: dict[str, Any]) -> list[dict[str, Any]]:
                 "run_id": f"run_{run_index:04d}",
                 "restart_index": method_config["restart_index"],
                 "problem": copy.deepcopy(problem),
-                "resolved_problem": copy.deepcopy(config["resolved_problem"]),
+                "resolved_problem": resolve_problem(
+                    problem,
+                    common_params,
+                    architecture=architecture,
+                ),
                 "architecture": copy.deepcopy(architecture),
                 "method": method_config["method"],
                 "method_kwargs": method_kwargs,
@@ -725,6 +868,7 @@ def import_runtime_dependencies() -> dict[str, Any]:
     logpdf_targets = import_module("logpdf_targets")
     rhs_architectures = import_module("rhs_architectures")
     data_generators = import_module("data_generators")
+    autoencoder_training = import_module("autoencoder_training")
 
     activation_registry = {
         "tanh": nnx.tanh,
@@ -757,6 +901,8 @@ def import_runtime_dependencies() -> dict[str, Any]:
         "DatasetBatcher": data_generators.DatasetBatcher,
         "LatentBatcherFromModel": data_generators.LatentBatcherFromModel,
         "ZipBatcher": data_generators.ZipBatcher,
+        "prepare_encoded_image_dataset": autoencoder_training.prepare_encoded_image_dataset,
+        "decode_latents_to_images": autoencoder_training.decode_latents_to_images,
         "rhs_registry": {
             "MLP": rhs_architectures.MLP,
             "LinearRHS": rhs_architectures.LinearRHS,
@@ -855,12 +1001,17 @@ def build_model(
 def build_data_batcher(
     distribution: dict[str, Any],
     shape: int | tuple[int, ...],
+    architecture: dict[str, Any] | None = None,
     deps: dict[str, Any] | None = None,
 ) -> Any:
     deps = deps or import_runtime_dependencies()
     name = _distribution_name(distribution)
     if _is_image_distribution(name):
-        dataset = load_image_dataset(name)
+        dataset = load_image_dataset(
+            name,
+            architecture.get("rhs") if architecture else None,
+            deps=deps,
+        )
         return deps["DatasetBatcher"](
             shape,
             distribution.get("resample_each", 1),
@@ -901,6 +1052,7 @@ def build_gaussian_logpdf(
 def build_vectorized_problem(
     problem: dict[str, Any],
     resolved_problem: dict[str, Any],
+    architecture: dict[str, Any],
     method_kwargs: dict[str, Any],
     lane_count: int,
     chunk_rngs: Any,
@@ -914,22 +1066,20 @@ def build_vectorized_problem(
     batch_shape = (lane_count, batch_size)
 
     if kind == "CrossEntropy":
-        data_batcher = build_data_batcher(distribution, batch_shape, deps=deps)
+        data_batcher = build_data_batcher(
+            distribution,
+            batch_shape,
+            architecture=architecture,
+            deps=deps,
+        )
         state = {
             "loss": deps["cross_entropy"],
             "next_batch": lambda rngs: data_batcher(rngs),
         }
         name = _distribution_name(distribution)
         if _is_image_distribution(name):
-            dataset = load_image_dataset(name)
-            state["image_eval_context"] = {
-                "distribution_name": name,
-                "test": deps["jnp"].asarray(dataset["test"]),
-                "mean": deps["jnp"].asarray(dataset["mean"]),
-                "std": deps["jnp"].asarray(dataset["std"]),
-                "image_shape": dataset["image_shape"],
-                "pixel_log_det_per_example": dataset["pixel_log_det_per_example"],
-            }
+            dataset = load_image_dataset(name, architecture.get("rhs"), deps=deps)
+            state["image_eval_context"] = build_image_eval_context(dataset, name, deps)
         return state
 
     if kind == "MMD":
@@ -938,7 +1088,12 @@ def build_vectorized_problem(
             distribution.get("resample_each", 1),
             template_model,
         )
-        data_batcher = build_data_batcher(distribution, batch_shape, deps=deps)
+        data_batcher = build_data_batcher(
+            distribution,
+            batch_shape,
+            architecture=architecture,
+            deps=deps,
+        )
         zipped_batcher = deps["ZipBatcher"](latent_batcher, data_batcher)
         _, bandwidth_batch = zipped_batcher(chunk_rngs)
         bw_multipliers = problem["functional"].get("bw_multipliers")
@@ -1000,6 +1155,9 @@ def is_image_problem(problem: dict[str, Any]) -> bool:
 
 
 def unnormalize_image_samples(samples: Any, image_eval_context: dict[str, Any], deps: dict[str, Any]) -> Any:
+    if image_eval_context.get("eval_mode") == "latent":
+        return deps["decode_latents_to_images"](samples, image_eval_context)
+
     jnp = deps["jnp"]
     mean = image_eval_context["mean"]
     std = image_eval_context["std"]
@@ -1018,7 +1176,11 @@ def evaluate_image_model(
     import numpy as np
 
     test_data = image_eval_context["test"]
-    pixel_log_det = image_eval_context["pixel_log_det_per_example"]
+    eval_mode = image_eval_context.get("eval_mode", "pixel")
+    normalization_log_det = image_eval_context.get(
+        "latent_log_det_per_example" if eval_mode == "latent" else "pixel_log_det_per_example",
+        0.0,
+    )
     total_logp = 0.0
     total_count = 0
     for start in range(0, int(test_data.shape[0]), eval_batch_size):
@@ -1029,11 +1191,11 @@ def evaluate_image_model(
             with_log_density=True,
         )
         logp_normalized = np.asarray(logp_normalized, dtype=float)
-        total_logp += float(logp_normalized.sum()) - pixel_log_det * logp_normalized.shape[0]
+        total_logp += float(logp_normalized.sum()) - normalization_log_det * logp_normalized.shape[0]
         total_count += int(logp_normalized.shape[0])
 
     nll = -total_logp / total_count
-    n_dim = int(np.prod(image_eval_context["image_shape"], dtype=int))
+    n_dim = int(image_eval_context.get("eval_dim", np.prod(image_eval_context["image_shape"], dtype=int)))
     bits_dim = nll / (n_dim * np.log(2.0))
     return {
         "test_nll": float(nll),
@@ -1262,6 +1424,7 @@ def write_run_intermediate_artifacts(
     plot_run_diagnostics(
         model,
         planned_run["problem"],
+        planned_run["architecture"],
         arrays,
         title,
         session_dir / "plots" / f"{planned_run['run_id']}_plots.pdf",
@@ -1347,6 +1510,7 @@ def execute_run_chunk(
         problem_state = build_vectorized_problem(
             reference_run["problem"],
             reference_run["resolved_problem"],
+            reference_run["architecture"],
             reference_run["method_kwargs"],
             len(planned_runs),
             chunk_rngs,
@@ -2622,6 +2786,7 @@ def generate_aggregate_plots(
 def plot_run_diagnostics(
     model: Any,
     problem: dict[str, Any],
+    architecture: dict[str, Any] | None,
     arrays: dict[str, Any],
     title: str,
     output_path: Path,
@@ -2645,12 +2810,16 @@ def plot_run_diagnostics(
     ax = axs[0]
     if image_problem:
         if image_eval_context is None:
-            dataset = load_image_dataset(_distribution_name(problem["distribution"]))
-            image_eval_context = {
-                "mean": deps["jnp"].asarray(dataset["mean"]),
-                "std": deps["jnp"].asarray(dataset["std"]),
-                "image_shape": dataset["image_shape"],
-            }
+            dataset = load_image_dataset(
+                _distribution_name(problem["distribution"]),
+                architecture.get("rhs") if architecture else None,
+                deps=deps,
+            )
+            image_eval_context = build_image_eval_context(
+                dataset,
+                _distribution_name(problem["distribution"]),
+                deps,
+            )
         images = unnormalize_image_samples(x, image_eval_context, deps)
         images = images.reshape((nrows, ncols, *image_eval_context["image_shape"]))
         canvas = images.transpose((0, 2, 1, 3)).reshape(
@@ -2724,6 +2893,7 @@ def generate_per_run_plots(
         plot_run_diagnostics(
             model,
             entry["problem"],
+            entry.get("architecture"),
             entry_arrays(entry),
             title,
             output_path,
@@ -2876,6 +3046,42 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
     for index, architecture in enumerate(architectures):
         _validate_architecture(architecture, index)
+        rhs = architecture["rhs"]
+        encoder_dim = rhs.get("encoder_dim")
+        if encoder_dim is None:
+            continue
+        if not _is_image_distribution(_distribution_name(problem["distribution"])):
+            raise ValueError(
+                f"architectures[{index}].rhs.encoder_dim is only supported for mnist and fashion_mnist"
+            )
+        if rhs.get("model") != "MLP":
+            raise ValueError(
+                f"architectures[{index}].rhs.model must be 'MLP' when encoder_dim is provided"
+            )
+        encoder_training = rhs.get("encoder_training") or {}
+        optimizer = encoder_training.get("optimizer", "adam")
+        if optimizer != "adam":
+            raise ValueError(
+                f"architectures[{index}].rhs.encoder_training.optimizer must be 'adam'"
+            )
+        positive_int_fields = ("epochs", "lr_drop_every", "batch_size", "eval_batch_size", "plot_every")
+        for field in positive_int_fields:
+            value = encoder_training.get(field)
+            if value is not None and (not isinstance(value, int) or value < 1):
+                raise ValueError(
+                    f"architectures[{index}].rhs.encoder_training.{field} must be a positive integer when provided"
+                )
+        positive_number_fields = ("learning_rate", "lr_drop_factor")
+        for field in positive_number_fields:
+            value = encoder_training.get(field)
+            if value is not None and not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"architectures[{index}].rhs.encoder_training.{field} must be a positive number when provided"
+                )
+            if value is not None and value <= 0:
+                raise ValueError(
+                    f"architectures[{index}].rhs.encoder_training.{field} must be greater than 0 when provided"
+                )
 
     for index, method in enumerate(methods):
         _validate_grid_axes(method, f"methods[{index}]")
@@ -2928,7 +3134,11 @@ def load_config(path: str | Path) -> dict[str, Any]:
                 f"config[{index}] flag must be a string, got {type(flag).__name__}"
             )
 
-    config["resolved_problem"] = resolve_problem(problem, config["common_params"])
+    config["resolved_problem"] = resolve_problem(
+        problem,
+        config["common_params"],
+        architecture=architectures[0],
+    )
 
     return config
 
