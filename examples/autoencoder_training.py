@@ -40,7 +40,7 @@ def merged_encoder_training_config(config: dict[str, Any] | None) -> dict[str, A
 def encoder_checkpoint_dir(
     encoder_path: str | Path, dataset_name: str, encoder_dim: int
 ) -> Path:
-    return Path(encoder_path) / dataset_name / f"dim{encoder_dim}"
+    return (Path(encoder_path) / dataset_name / f"dim{encoder_dim}").resolve()
 
 
 def build_autoencoder(
@@ -122,7 +122,7 @@ def train_autoencoder(
     if optimizer_name != "adam":
         raise ValueError(f"Unsupported encoder_training.optimizer {optimizer_name!r}; expected 'adam'")
 
-    checkpoint_dir = Path(checkpoint_dir)
+    checkpoint_dir = Path(checkpoint_dir).resolve()
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     model_dir, metadata_path, history_path, plot_path = _checkpoint_paths(checkpoint_dir)
 

@@ -935,8 +935,11 @@ def build_rhs(
             f"Unsupported RHS model {rhs_model_name!r}; expected one of: {supported}"
         )
 
+    runner_only_rhs_keys = {"model", "encoder_dim", "encoder_path", "encoder_training"}
     rhs_kwargs = {
-        key: copy.deepcopy(value) for key, value in rhs_config.items() if key != "model"
+        key: copy.deepcopy(value)
+        for key, value in rhs_config.items()
+        if key not in runner_only_rhs_keys
     }
     if isinstance(rhs_kwargs.get("activation"), str):
         activation_name = rhs_kwargs["activation"]
