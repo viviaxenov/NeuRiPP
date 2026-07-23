@@ -18,7 +18,7 @@ from neuripp.parametric_pushforward.parametric_pushforward import ParametricPush
 from neuripp.functionals.KL import getKL
 from neuripp.functionals.MMD import getMMD
 from neuripp.functionals.CrossEntropy import cross_entropy
-from neuripp.methods.ngd import get_ngd
+from neuripp.methods.ngd import get_ngd, schedule_exp
 from neuripp.methods.anderson import get_anderson
 from neuripp.methods.optax_optimizer import get_optax, optax_optimizers
 from neuripp.utility.utility import *
@@ -58,7 +58,7 @@ model_kwargs = dict(
     ode_nstep_max=6,
     divergence_method="hutchinson",
     ode_method="rk45",
-    ode_kwargs=dict(h_max=0.3,  adaptive=True),
+    ode_kwargs=dict(h_max=0.3, adaptive=True),
 )
 
 model = ParametricPushforward(*model_args, **model_kwargs)
@@ -66,21 +66,30 @@ model = ParametricPushforward(*model_args, **model_kwargs)
 
 match method:
     case "ngd":
-        get_fn = get_ngd
-        stepsize =  0.001
-        args = (stepsize,)
-        kwargs = dict(
-            linear_solver_regularization=1e-2,
+        get_fn = partial(
+            get_ngd,
+            stepsize_schedule_fn=schedule_exp,
+            natural_grad_clipping_threshold=10.0,
         )
+        stepsize = 0.01
+        args = (stepsize,)
+        kwargs = dict(linear_solver_regularization=1e-2, drop_every=100, drop_by=2.0)
     case "anderson":
-        get_fn = partial(get_anderson, history_length=6, natural_grad_clipping_threshold=0.1)
-        stepsize = 0.1
+        get_fn = partial(
+            get_anderson,
+            stepsize_schedule_fn=schedule_exp,
+            history_length=6,
+            natural_grad_clipping_threshold=10.,
+        )
+        stepsize = 0.01
         relaxation = 1.0
-        reg_factor =  1e-7
+        reg_factor = 1e-3
         args = (stepsize, relaxation, reg_factor)
         kwargs = dict(
-            linear_solver_regularization=1e-1,
+            linear_solver_regularization=1e-3,
             linear_solver_maxiter=100,
+            drop_every=100,
+            drop_by=2.0,
         )
 
     case x if x in optax_optimizers:
@@ -93,7 +102,7 @@ match method:
 
 match problem:
     case "checkerboard":
-        data_gen = CheckerboardBatcher( batch_size, 30)
+        data_gen = CheckerboardBatcher(batch_size, 30)
         loss = cross_entropy
     case "two_spirals":
         data_gen = TwoSpiralsBatcher(batch_size, 30)
@@ -102,12 +111,12 @@ match problem:
         data_gen = EightGaussiansBatcher(batch_size, 30)
         loss = cross_entropy
     case "st":
-        data_gen = LatentBatcherFromModel( batch_size, 1, model)
+        data_gen = LatentBatcherFromModel(batch_size, 1, model)
         logpdf = logpdf_st
         loss = getKL(logpdf)
     case "db":
-        data_gen = LatentBatcherFromModel( batch_size, 1, model)
-        shift=jnp.array([2.0, 0])
+        data_gen = LatentBatcherFromModel(batch_size, 1, model)
+        shift = jnp.array([2.0, 0])
         logpdf = partial(logpdf_double_banana, shift=shift)
         loss = getKL(logpdf)
     case _:
@@ -130,7 +139,7 @@ state = init_fun(
     model,
     args,
     kwargs,
-    batch, 
+    batch,
     rngs,
 )
 
@@ -153,7 +162,7 @@ fs = jnp.where(jnp.isfinite(fs), fs, jnp.inf)
 grads = jnp.array(grads)
 natural_grads = jnp.array(natural_grads)
 
-x = model.sample(500, rngs)
+x = model.sample(4096, rngs)
 
 fig, axs = plt.subplots(1, 3, figsize=(25, 8), layout="constrained")
 ax = axs[0]
@@ -165,12 +174,20 @@ if problem in ("two_spirals", "eight_gaussians", "checkerboard"):
 elif problem in ("st", "db"):
     x = jnp.linspace(-4, 4, 300, endpoint=True)
     y = jnp.linspace(-4, 4, 300, endpoint=True)
-    XX, YY = jnp.meshgrid(x, y, indexing='ij')
+    XX, YY = jnp.meshgrid(x, y, indexing="ij")
     coord = jnp.stack((XX, YY), axis=-1).reshape((-1, 2))
     if problem == "db":
         coord += shift[None, :]
-    ax.contour(XX, YY, logpdf(coord).reshape(XX.shape), levels=10, linewidths=0.7, cmap='berlin', alpha=0.5, zorder=1)
-
+    ax.contour(
+        XX,
+        YY,
+        logpdf(coord).reshape(XX.shape),
+        levels=10,
+        linewidths=0.7,
+        cmap="berlin",
+        alpha=0.5,
+        zorder=1,
+    )
 
 
 ax = axs[1]

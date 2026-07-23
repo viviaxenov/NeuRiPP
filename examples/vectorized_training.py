@@ -21,7 +21,7 @@ from neuripp.parametric_pushforward.parametric_pushforward import ParametricPush
 from neuripp.functionals.KL import getKL
 from neuripp.functionals.MMD import getMMD
 from neuripp.functionals.CrossEntropy import cross_entropy
-from neuripp.methods.ngd import get_ngd
+from neuripp.methods.ngd import get_ngd, schedule_exp
 from neuripp.methods.anderson import get_anderson
 from neuripp.methods.optax_optimizer import get_optax, optax_optimizers
 from neuripp.utility.utility import *
@@ -69,17 +69,21 @@ model = ParametricPushforward(*model_args, **model_kwargs)
 
 match method:
     case "ngd":
-        n_restarts = 40
-        get_fn = partial(get_ngd, natural_grad_clipping_threshold=10.)
+        n_restarts = 10
+        get_fn = partial(get_ngd, natural_grad_clipping_threshold=10., stepsize_schedule_fn=schedule_exp)
         stepsizes = jnp.array([0.01, 0.001, 0.0001])
+        drop_freqs = jnp.array([100, 1000], dtype=int)
+        drop_bys = jnp.array([2., 10.])
         linear_regs = jnp.array([ 1e-3 ])
         run_no = jnp.array(range(n_restarts))
-        _, SSs, LRs = jnp.stack(
-            jnp.meshgrid(run_no, stepsizes, linear_regs), axis=0
-        ).reshape(3, -1)
+        _, SSs, LRs, DFs, DBs = jnp.stack(
+            jnp.meshgrid(run_no, stepsizes, linear_regs, drop_freqs, drop_bys), axis=0
+        ).reshape(5, -1)
         vectorized_args = (SSs,)
         vectorized_kwargs = dict(
             linear_solver_regularization=LRs,
+            drop_every=DFs,
+            drop_by=DBs
         )
     case "anderson":
         # get_fn = partial(get_anderson, history_length=6, natural_grad_clipping_threshold=10.)
@@ -189,10 +193,10 @@ match method:
         jnp.savez(
             f"ensemble_train_results_{method}.npz",
             step_sizes=SSs,
-            linear_solver_regs=LRs,
             grads=grads,
             natural_grads=natural_grads,
             fs=fs,
+            **vectorized_kwargs,
         )
     case x if x in optax_optimizers:
         jnp.savez(

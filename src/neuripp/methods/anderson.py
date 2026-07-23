@@ -36,6 +36,7 @@ def get_anderson(
     ensure_descent: bool = True,
     linear_solver_method: str = "cg",
     natural_grad_clipping_threshold: float = None,
+    stepsize_schedule_fn: Callable = None,
 ):
     if linear_solver_method != "cg":
         raise NotImplementedError(
@@ -52,6 +53,10 @@ def get_anderson(
         rngs,
     ):
         step_size = args[0]
+
+        if stepsize_schedule_fn is not None:
+            step_size = stepsize_schedule_fn(step_size, 0, **kwargs)
+
         gd, par, rest = nnx.split(model, nnx.Param, ...)
         zero_vector = jax.tree.map(jnp.zeros_like, par)
         f, grad = vg_fn(model, batch, rngs)
@@ -75,12 +80,15 @@ def get_anderson(
             lambda _l: jnp.zeros((2 * history_length, *_l.shape)), residual
         )
         history = _update_history(history, residual, residual, history_length)
-        return (model, natural_grad, history, args, kwargs)
+        return (model, natural_grad, history, 0, args, kwargs)
 
     def _step(state, batch, rngs):
-        model, previous_grad, history, args, kwargs = state
+        model, previous_grad, history, i, args, kwargs = state
 
         step_size, relaxation, regularization_factor = args
+
+        if stepsize_schedule_fn is not None:
+            step_size = stepsize_schedule_fn(step_size, i, **kwargs)
 
         f, grad = vg_fn(model, batch, rngs)
         natural_grad = _compute_natural_grad(
@@ -159,7 +167,7 @@ def get_anderson(
         params_new = jax.tree.map(lambda _x, _dx: _x + _dx, params, delta_x)
         model = nnx.merge(gd, params_new, rest)
 
-        return (model, natural_grad, history, args, kwargs), (
+        return (model, natural_grad, history, i + 1, args, kwargs), (
             f,
             grad_norm_sq,
             natural_grad_norm_sq,
