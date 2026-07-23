@@ -37,6 +37,7 @@ def get_anderson(
     linear_solver_method: str = "cg",
     natural_grad_clipping_threshold: float = None,
     stepsize_schedule_fn: Callable = None,
+    semi_flat: bool = False,
 ):
     if linear_solver_method != "cg":
         raise NotImplementedError(
@@ -117,7 +118,11 @@ def get_anderson(
         # precompute Gx for historical vectors
         # TODO: this requires a backward pass, maybe better use scalar product with forward passes only?
         # TODO: use nnx.vmap?
-        Ghistory = jax.vmap(model.get_matvec_fn(rngs))(history)
+        if semi_flat:
+            # for the annoying reviewer who was curious about Euclidean Anderson acceleration of natural gradient
+            Ghistory = history
+        else:
+            Ghistory = jax.vmap(model.get_matvec_fn(rngs))(history)
         # compute dot products in parallel
         # <r_i, Gr_j>
         pairwise_mat = pairwise_dot_matrix(history, Ghistory)
