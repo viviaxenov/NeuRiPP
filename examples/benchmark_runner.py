@@ -63,6 +63,9 @@ str_to_method = {
     "lbfgs": None,
 }
 
+STEP_SIZE_SCHEDULE_METHODS = {"ngd", "anderson"}
+SUPPORTED_STEP_SIZE_SCHEDULES = {"schedule_exp"}
+
 
 def _load_json(path: Path) -> dict[str, Any]:
     try:
@@ -103,6 +106,13 @@ def _validate_grid_axes(template: dict[str, Any], name: str) -> None:
     for key, value in template.items():
         if isinstance(value, list) and not value:
             raise ValueError(f"{name}.{key} must not be an empty list")
+
+
+def _stepsize_schedule_name_from_kwargs(method_kwargs: dict[str, Any]) -> str | None:
+    schedule_name = method_kwargs.get("stepsize_schedule")
+    if schedule_name is None:
+        schedule_name = method_kwargs.get("stepsize_schedule_name")
+    return schedule_name
 
 
 def _validate_architecture(architecture: dict[str, Any], index: int) -> None:
@@ -558,9 +568,13 @@ def _method_factory_group_fields(
     method_name: str, method_kwargs: dict[str, Any], deps: dict[str, Any] | None = None
 ) -> tuple[tuple[str, str], ...]:
     factory_kwargs, _, _ = split_method_kwargs(method_name, method_kwargs, deps=deps)
-    return tuple(
+    fields = tuple(
         (key, _value_identity(factory_kwargs[key])) for key in sorted(factory_kwargs)
     )
+    schedule_name = _stepsize_schedule_name_from_kwargs(method_kwargs)
+    if schedule_name is not None:
+        fields += (("stepsize_schedule", _value_identity(schedule_name)),)
+    return fields
 
 
 def execution_group_key(
@@ -859,7 +873,7 @@ def import_runtime_dependencies() -> dict[str, Any]:
     from neuripp.functionals.KL import getKL
     from neuripp.functionals.MMD import getMMD
     from neuripp.methods.anderson import get_anderson
-    from neuripp.methods.ngd import get_ngd
+    from neuripp.methods.ngd import get_ngd, schedule_exp
     from neuripp.methods.optax_optimizer import get_optax, optax_optimizers
     from neuripp.parametric_pushforward.parametric_pushforward import (
         ParametricPushforward,
@@ -914,6 +928,9 @@ def import_runtime_dependencies() -> dict[str, Any]:
             "ngd": get_ngd,
             "anderson": get_anderson,
             **{name: get_optax for name in optax_optimizers},
+        },
+        "stepsize_schedule_registry": {
+            "schedule_exp": schedule_exp,
         },
         "optax_methods": set(optax_optimizers),
     }
@@ -1234,6 +1251,27 @@ METHOD_EXECUTION_KEYS = {
     "eval_every",
 }
 
+METHOD_SCHEDULE_NAME_KEYS = {"stepsize_schedule", "stepsize_schedule_name"}
+
+
+def _resolve_stepsize_schedule_name(
+    method_name: str, method_kwargs: dict[str, Any], deps: dict[str, Any]
+) -> str | None:
+    schedule_name = _stepsize_schedule_name_from_kwargs(method_kwargs)
+    if schedule_name is None:
+        return None
+    if method_name not in STEP_SIZE_SCHEDULE_METHODS:
+        raise ValueError(
+            f"{method_name} does not support stepsize schedules; remove stepsize_schedule"
+        )
+    schedule_registry = deps["stepsize_schedule_registry"]
+    if schedule_name not in schedule_registry:
+        supported = ", ".join(sorted(schedule_registry))
+        raise ValueError(
+            f"Unsupported stepsize_schedule {schedule_name!r}; expected one of: {supported}"
+        )
+    return schedule_name
+
 
 def method_factory_param_names(
     method_name: str, deps: dict[str, Any] | None = None
@@ -1266,15 +1304,20 @@ def split_method_kwargs(
     method_name: str, method_kwargs: dict[str, Any], deps: dict[str, Any] | None = None
 ) -> tuple[dict[str, Any], tuple[Any, ...], dict[str, Any]]:
     deps = deps or import_runtime_dependencies()
+    schedule_name = _resolve_stepsize_schedule_name(method_name, method_kwargs, deps)
     kwargs = {
         key: copy.deepcopy(value)
         for key, value in method_kwargs.items()
-        if key not in METHOD_EXECUTION_KEYS
+        if key not in METHOD_EXECUTION_KEYS and key not in METHOD_SCHEDULE_NAME_KEYS
     }
     factory_param_names = method_factory_param_names(method_name, deps=deps)
     factory_kwargs = {
         key: kwargs.pop(key) for key in list(kwargs) if key in factory_param_names
     }
+    if schedule_name is not None:
+        factory_kwargs["stepsize_schedule_fn"] = deps["stepsize_schedule_registry"][
+            schedule_name
+        ]
 
     if method_name == "anderson":
         step_size = kwargs.pop("step_size", None)
@@ -2303,7 +2346,12 @@ def method_group_fields(entry: dict[str, Any]) -> dict[str, Any]:
     for key, value in split_method_kwargs(entry["method"], entry["method_kwargs"])[
         0
     ].items():
+        if key == "stepsize_schedule_fn":
+            continue
         fields[f"method_kwargs.{key}"] = value
+    schedule_name = _stepsize_schedule_name_from_kwargs(entry["method_kwargs"])
+    if schedule_name is not None:
+        fields["method_kwargs.stepsize_schedule"] = schedule_name
     return fields
 
 
@@ -2341,6 +2389,9 @@ def method_group_columns(frame: Any) -> list[str]:
             column = f"method_kwargs.{key}"
             if column in frame.columns and column not in columns:
                 columns.append(column)
+        schedule_column = "method_kwargs.stepsize_schedule"
+        if schedule_column in frame.columns and schedule_column not in columns:
+            columns.append(schedule_column)
     return columns
 
 
@@ -3097,6 +3148,22 @@ def load_config(path: str | Path) -> dict[str, Any]:
                 f"methods[{index}].method {method_name!r} is not supported; "
                 f"expected one of: {supported}"
             )
+        schedule_name = _stepsize_schedule_name_from_kwargs(method)
+        if schedule_name is not None:
+            if not isinstance(schedule_name, str) or not schedule_name:
+                raise ValueError(
+                    f"methods[{index}].stepsize_schedule must be a non-empty string when provided"
+                )
+            if method_name not in STEP_SIZE_SCHEDULE_METHODS:
+                supported = ", ".join(sorted(STEP_SIZE_SCHEDULE_METHODS))
+                raise ValueError(
+                    f"methods[{index}].stepsize_schedule is only supported for: {supported}"
+                )
+            if schedule_name not in SUPPORTED_STEP_SIZE_SCHEDULES:
+                supported = ", ".join(sorted(SUPPORTED_STEP_SIZE_SCHEDULES))
+                raise ValueError(
+                    f"methods[{index}].stepsize_schedule {schedule_name!r} is not supported; expected one of: {supported}"
+                )
         n_restarts = method.get("n_restarts")
         if not isinstance(n_restarts, int) or n_restarts < 1:
             raise ValueError(
