@@ -39,7 +39,10 @@
       "history_length":  6,
       "regularization_method": ["l2", "adaptive"],
       "ensure_descent": [true],
+      "stepsize_schedule": "schedule_exp",
       "step_size": [0.001],
+      "drop_every": [100, 1000],
+      "drop_by": [2.0, 10.0],
       "relaxation": 1.0,
       "regularization_factor": [1e-4, 0.001, 0.01],
       "linear_solver_regularization": 0.001,
@@ -49,7 +52,10 @@
       "method": "ngd",
       "n_restarts": 6,
       "natural_grad_clipping_threshold": [null, 1.0],
+      "stepsize_schedule": "schedule_exp",
       "step_size": [0.01],
+      "drop_every": [100, 1000],
+      "drop_by": [2.0, 10.0],
       "linear_solver_regularization": [0.0001],
       "linear_solver_tolerance": 1e-6
     }

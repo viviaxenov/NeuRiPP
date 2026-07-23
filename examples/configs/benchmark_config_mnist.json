@@ -38,7 +38,10 @@
     {
       "method": "ngd",
       "n_restarts": 1,
+      "stepsize_schedule": "schedule_exp",
       "step_size": [0.01, 0.001],
+      "drop_every": [100, 150],
+      "drop_by": [2.0],
       "natural_grad_clipping_threshold": [0.5],
       "linear_solver_regularization": 0.01,
       "linear_solver_tolerance": 1e-4,
