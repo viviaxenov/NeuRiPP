@@ -18,7 +18,7 @@ from neuripp.parametric_pushforward.parametric_pushforward import ParametricPush
 from neuripp.functionals.KL import getKL
 from neuripp.functionals.MMD import getMMD
 from neuripp.functionals.CrossEntropy import cross_entropy
-from neuripp.methods.ngd import get_ngd
+from neuripp.methods.ngd import get_ngd, schedule_exp
 from neuripp.methods.anderson import get_anderson
 from neuripp.methods.optax_optimizer import get_optax, optax_optimizers
 from neuripp.utility.utility import *
@@ -66,11 +66,13 @@ model = ParametricPushforward(*model_args, **model_kwargs)
 
 match method:
     case "ngd":
-        get_fn = get_ngd
-        stepsize =  0.001
+        get_fn = partial(get_ngd, stepsize_schedule_fn=schedule_exp, natural_grad_clipping_threshold=10.)
+        stepsize =  0.01
         args = (stepsize,)
         kwargs = dict(
             linear_solver_regularization=1e-2,
+            drop_every=100,
+            drop_by=2.
         )
     case "anderson":
         get_fn = partial(get_anderson, history_length=6, natural_grad_clipping_threshold=0.1)
