@@ -115,6 +115,14 @@ def _stepsize_schedule_name_from_kwargs(method_kwargs: dict[str, Any]) -> str | 
     return schedule_name
 
 
+def _is_bool_or_bool_list(value: Any) -> bool:
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, list) and value and all(isinstance(item, bool) for item in value):
+        return True
+    return False
+
+
 def _validate_architecture(architecture: dict[str, Any], index: int) -> None:
     name = f"architectures[{index}]"
     if "dim" in architecture:
@@ -3163,6 +3171,16 @@ def load_config(path: str | Path) -> dict[str, Any]:
                 supported = ", ".join(sorted(SUPPORTED_STEP_SIZE_SCHEDULES))
                 raise ValueError(
                     f"methods[{index}].stepsize_schedule {schedule_name!r} is not supported; expected one of: {supported}"
+                )
+        semi_flat = method.get("semi_flat")
+        if semi_flat is not None:
+            if method_name != "anderson":
+                raise ValueError(
+                    f"methods[{index}].semi_flat is only supported for method 'anderson'"
+                )
+            if not _is_bool_or_bool_list(semi_flat):
+                raise ValueError(
+                    f"methods[{index}].semi_flat must be a boolean or non-empty list of booleans when provided"
                 )
         n_restarts = method.get("n_restarts")
         if not isinstance(n_restarts, int) or n_restarts < 1:
