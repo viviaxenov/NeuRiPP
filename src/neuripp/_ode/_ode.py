@@ -1,10 +1,9 @@
 import abc
-from typing import Callable, Tuple, Literal, Union
+from typing import Callable, Tuple, Literal
 import jax
 import jax.numpy as jnp
 import jax.ad_checkpoint
 from flax import nnx
-from functools import partial
 
 
 class ODEStep(abc.ABC):

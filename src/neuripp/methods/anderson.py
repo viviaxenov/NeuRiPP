@@ -2,11 +2,8 @@ from typing import Callable, Literal
 
 import jax
 import jax.numpy as jnp
-import jax.scipy as jsp
 
 from flax import nnx
-
-from functools import partial
 
 from ..parametric_pushforward.parametric_pushforward import ParametricPushforward
 from ..utility.utility import tree_dot_product

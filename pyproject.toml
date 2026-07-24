@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -10,12 +10,30 @@ authors = [
 ]
 readme = 'README.md'
 version = "0.0.1"
-dynamic = ["dependencies"]
-
-[tool.setuptools.dynamic]
-dependencies = { file = ["requirements.txt"] }
+requires-python = ">=3.12"
+dependencies = [
+  "flax==0.12.8",
+  "jax==0.11.0",
+  "jaxtyping>=0.3.2",
+  "optax>=0.2.6",
+]
 
 [project.optional-dependencies]
+cuda12 = [
+  "jax[cuda12]==0.11.0",
+]
+cuda13 = [
+  "jax[cuda13]==0.11.0",
+]
+examples = [
+  "numpy",
+  "matplotlib>=3.10.6",
+  "tqdm>=4.67.1",
+  "datasets[vision]>=5.0.0",
+  "orbax-checkpoint>=0.11.31",
+  "pandas>=2.2",
+  "bip-surrogates-paper @ git+https://github.com/viviaxenov/Bayesian-inference-with-surrogates.git",
+]
 docs = [
   "sphinx",
   "sphinx_rtd_theme",

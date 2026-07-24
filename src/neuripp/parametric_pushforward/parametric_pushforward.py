@@ -25,9 +25,9 @@ from jaxtyping import PyTree
 from flax import nnx
 
 from neuripp._ode._ode import solve_ode_batched
-from neuripp.utility.utility import *
+from neuripp.utility.utility import tree_dot_product
 
-from typing import Literal, Callable
+from typing import Literal
 
 ZERO_TOL = 1e-20
 

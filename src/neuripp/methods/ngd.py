@@ -1,12 +1,11 @@
+import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
 
 from typing import Callable
 
 from flax import nnx
-from neuripp._ode._ode import *
-from neuripp.parametric_pushforward.parametric_pushforward import ParametricPushforward
-from neuripp.utility.utility import *
+from neuripp.utility.utility import tree_dot_product
 
 
 def _clip_gradient(natural_grad, norm: float, max_norm: float):
