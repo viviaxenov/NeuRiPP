@@ -1,5 +1,5 @@
 {
-  "output_root": "results/mmd_8gaussians",
+  "output_root": "results/mmd_8gaussians_semiflat",
   "common_params": {
     "max_iterations": 5500,
     "batch_size": 4096,
@@ -35,6 +35,7 @@
   "methods": [
     {
       "method": "anderson",
+      "semi_flat": true,
       "n_restarts": 6,
       "natural_grad_clipping_threshold": [null, 0.5],
       "history_length":  8,

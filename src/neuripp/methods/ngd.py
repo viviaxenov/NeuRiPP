@@ -15,7 +15,9 @@ def _clip_gradient(natural_grad, norm: float, max_norm: float):
 
 def schedule_exp(step_size: float, iter_count: int, drop_every: int = 100, drop_by: float = 1.1, **kwargs):
     predicate = ((iter_count + 1) % drop_every == 0)
-    return jax.lax.cond(predicate, lambda _x: _x / drop_by, lambda _x: _x, step_size)
+    new_step = jax.lax.cond(predicate, lambda _x: _x / drop_by, lambda _x: _x, step_size)
+
+    return new_step
 
 
 
@@ -108,6 +110,7 @@ def get_ngd(
         # update params
         params_new = jax.tree.map(lambda x, y: x - y * step_size, params, natural_grad)
         model = nnx.merge(gd, params_new, rest)
+        args = (step_size, *args[1:])
 
         return (model, natural_grad, i+ 1, args, kwargs), (
             f,

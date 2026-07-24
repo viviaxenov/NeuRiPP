@@ -80,6 +80,7 @@ def get_anderson(
             lambda _l: jnp.zeros((2 * history_length, *_l.shape)), residual
         )
         history = _update_history(history, residual, residual, history_length)
+        args = (step_size, *args[1:])
         return (model, natural_grad, history, 0, args, kwargs)
 
     def _step(state, batch, rngs):
@@ -166,6 +167,8 @@ def get_anderson(
         # update params
         params_new = jax.tree.map(lambda _x, _dx: _x + _dx, params, delta_x)
         model = nnx.merge(gd, params_new, rest)
+
+        args = (step_size, *args[1:])
 
         return (model, natural_grad, history, i + 1, args, kwargs), (
             f,
