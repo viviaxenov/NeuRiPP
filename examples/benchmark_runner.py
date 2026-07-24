@@ -42,10 +42,11 @@ IMAGE_DATA_SHAPES = {
     "mnist": (28, 28),
     "fashion_mnist": (28, 28),
 }
-ANALYTIC_KL_DISTRIBUTIONS = {"gaussian", "st"}
+ANALYTIC_KL_DISTRIBUTIONS = {"gaussian", "st", "elliptic"}
 
 _RAW_IMAGE_DATASET_CACHE: dict[str, dict[str, Any]] = {}
 _IMAGE_DATASET_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
+_ELLIPTIC_LOGPDF_CACHE: dict[tuple[int, int, int, float], Any] = {}
 
 # Stage 3 validates method names without importing JAX/Optax at module import time.
 # Later stages will replace these placeholders with the real dispatch callables.
@@ -129,6 +130,27 @@ def _stepsize_schedule_name_from_kwargs(method_kwargs: dict[str, Any]) -> str | 
     if schedule_name is None:
         schedule_name = method_kwargs.get("stepsize_schedule_name")
     return schedule_name
+
+
+def _build_elliptic_target_key(distribution: dict[str, Any], dim: int) -> tuple[int, int, int, float]:
+    return (
+        int(distribution["seed"]),
+        int(dim),
+        int(distribution["n_grid"]),
+        float(distribution["noise_std"]),
+    )
+
+
+def _validate_elliptic_distribution(distribution: dict[str, Any], name: str) -> None:
+    seed = distribution.get("seed")
+    if not isinstance(seed, int):
+        raise ValueError(f"{name}.seed must be an integer")
+    n_grid = distribution.get("n_grid")
+    if not isinstance(n_grid, int) or n_grid < 1:
+        raise ValueError(f"{name}.n_grid must be a positive integer")
+    noise_std = distribution.get("noise_std")
+    if not isinstance(noise_std, (int, float)) or noise_std <= 0:
+        raise ValueError(f"{name}.noise_std must be a positive number")
 
 
 def _validate_worker_env(worker_env: dict[str, Any]) -> dict[str, str]:
@@ -949,6 +971,7 @@ def import_runtime_dependencies() -> dict[str, Any]:
         "ParametricPushforward": ParametricPushforward,
         "cross_entropy": cross_entropy,
         "getKL": getKL,
+        "get_logpdf_elliptic_inverse_problem": logpdf_targets.get_logpdf_elliptic_inverse_problem,
         "logpdf_st": logpdf_targets.logpdf_st,
         "getMMD": getMMD,
         "data_batchers": {
@@ -1113,6 +1136,29 @@ def build_gaussian_logpdf(
     return logpdf
 
 
+def build_elliptic_logpdf(
+    dim: int, distribution: dict[str, Any], deps: dict[str, Any]
+) -> Any:
+    cache_key = _build_elliptic_target_key(distribution, dim)
+    if cache_key in _ELLIPTIC_LOGPDF_CACHE:
+        return _ELLIPTIC_LOGPDF_CACHE[cache_key]
+    try:
+        logpdf = deps["get_logpdf_elliptic_inverse_problem"](
+            seed=cache_key[0],
+            dim=cache_key[1],
+            n_grid=cache_key[2],
+            noise_std=cache_key[3],
+        )
+    except ModuleNotFoundError as exc:
+        if exc.name and exc.name.startswith("uncprop"):
+            raise ModuleNotFoundError(
+                "KL distribution 'elliptic' requires the optional 'uncprop' dependency"
+            ) from exc
+        raise
+    _ELLIPTIC_LOGPDF_CACHE[cache_key] = logpdf
+    return logpdf
+
+
 def build_vectorized_problem(
     problem: dict[str, Any],
     resolved_problem: dict[str, Any],
@@ -1180,6 +1226,10 @@ def build_vectorized_problem(
             logpdf = deps["logpdf_st"]
         elif name == "gaussian":
             logpdf = build_gaussian_logpdf(resolved_problem["dim"], distribution, deps)
+        elif name == "elliptic":
+            logpdf = build_elliptic_logpdf(
+                resolved_problem["dim"], distribution, deps
+            )
         else:
             raise ValueError(f"Unsupported KL distribution {name!r}")
         latent_batcher = deps["LatentBatcherFromModel"](
@@ -3130,6 +3180,10 @@ def load_config(path: str | Path) -> dict[str, Any]:
     elif "n_samples" in distribution:
         raise ValueError(
             "problem.distribution.n_samples is not supported; use common_params.batch_size"
+        )
+    if _distribution_name(problem["distribution"]) == "elliptic":
+        _validate_elliptic_distribution(
+            problem["distribution"], "problem.distribution"
         )
 
     for index, architecture in enumerate(architectures):
