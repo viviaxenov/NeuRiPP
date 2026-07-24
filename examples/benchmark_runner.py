@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import inspect
 import itertools
 import json
 import math
@@ -35,7 +34,7 @@ REQUIRED_TOP_LEVEL_KEYS = {
     "methods",
     "plotting",
 }
-OPTIONAL_TOP_LEVEL_KEYS = {"parallel", "config"}
+OPTIONAL_TOP_LEVEL_KEYS = {"parallel", "config", "worker_env"}
 SUPPORTED_FUNCTIONAL_KINDS = {"KL", "MMD", "CrossEntropy"}
 DATA_DISTRIBUTIONS = {"checkerboard", "two_spirals", "eight_gaussians"}
 IMAGE_DATA_DISTRIBUTIONS = {"mnist", "fashion_mnist"}
@@ -65,6 +64,23 @@ str_to_method = {
 
 STEP_SIZE_SCHEDULE_METHODS = {"ngd", "anderson"}
 SUPPORTED_STEP_SIZE_SCHEDULES = {"schedule_exp"}
+METHOD_FACTORY_GROUP_KEYS = {
+    "ngd": {
+        "linear_solver_method",
+        "natural_grad_clipping_threshold",
+    },
+    "anderson": {
+        "history_length",
+        "regularization_method",
+        "ensure_descent",
+        "linear_solver_method",
+        "natural_grad_clipping_threshold",
+    },
+}
+METHOD_FACTORY_PARAM_NAMES = {
+    **METHOD_FACTORY_GROUP_KEYS,
+    **{name: set() for name in str_to_method if name not in METHOD_FACTORY_GROUP_KEYS},
+}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -113,6 +129,19 @@ def _stepsize_schedule_name_from_kwargs(method_kwargs: dict[str, Any]) -> str | 
     if schedule_name is None:
         schedule_name = method_kwargs.get("stepsize_schedule_name")
     return schedule_name
+
+
+def _validate_worker_env(worker_env: dict[str, Any]) -> dict[str, str]:
+    validated: dict[str, str] = {}
+    for name, value in worker_env.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError("worker_env keys must be non-empty strings")
+        if name == "CUDA_VISIBLE_DEVICES":
+            raise ValueError("worker_env.CUDA_VISIBLE_DEVICES is not supported; use parallel.gpu_ids")
+        if not isinstance(value, str):
+            raise ValueError(f"worker_env.{name} must be a string")
+        validated[name] = value
+    return validated
 
 
 def _validate_architecture(architecture: dict[str, Any], index: int) -> None:
@@ -565,11 +594,13 @@ def plan_runs(config: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _method_factory_group_fields(
-    method_name: str, method_kwargs: dict[str, Any], deps: dict[str, Any] | None = None
+    method_name: str,
+    method_kwargs: dict[str, Any],
 ) -> tuple[tuple[str, str], ...]:
-    factory_kwargs, _, _ = split_method_kwargs(method_name, method_kwargs, deps=deps)
     fields = tuple(
-        (key, _value_identity(factory_kwargs[key])) for key in sorted(factory_kwargs)
+        (key, _value_identity(method_kwargs[key]))
+        for key in sorted(METHOD_FACTORY_GROUP_KEYS.get(method_name, ()))
+        if key in method_kwargs
     )
     schedule_name = _stepsize_schedule_name_from_kwargs(method_kwargs)
     if schedule_name is not None:
@@ -816,16 +847,29 @@ def assigned_gpu_id(
 
 
 def setup_worker_environment(
-    parallel_config: dict[str, Any], worker_id: int
+    parallel_config: dict[str, Any],
+    worker_id: int,
+    worker_env: dict[str, str] | None = None,
 ) -> int | str | None:
     """Set worker environment before JAX is imported."""
 
+    for name, value in (worker_env or {}).items():
+        os.environ[name] = value
     requested_gpu_id = assigned_gpu_id(parallel_config, worker_id)
-    # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-    os.environ["XLA_PYTHON_CLIENT_MEME_FRACTION"] = ".90"
     if requested_gpu_id is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(requested_gpu_id)
     return requested_gpu_id
+
+
+def setup_parent_plot_environment(
+    parallel_config: dict[str, Any],
+) -> int | str | None:
+    plot_gpu_id = parallel_config.get("plot_gpu_id")
+    if plot_gpu_id in {None, "cpu"}:
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        return plot_gpu_id
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(plot_gpu_id)
+    return plot_gpu_id
 
 
 def apply_jax_config_updates(jax: Any, jax_config: list[list[Any]]) -> None:
@@ -1276,28 +1320,12 @@ def _resolve_stepsize_schedule_name(
 def method_factory_param_names(
     method_name: str, deps: dict[str, Any] | None = None
 ) -> set[str]:
-    deps = deps or import_runtime_dependencies()
-    method_registry = deps["method_registry"]
-    if method_name not in method_registry:
-        supported = ", ".join(sorted(method_registry))
+    if method_name not in METHOD_FACTORY_PARAM_NAMES:
+        supported = ", ".join(sorted(METHOD_FACTORY_PARAM_NAMES))
         raise ValueError(
             f"Unsupported method {method_name!r}; expected one of: {supported}"
         )
-
-    signature = inspect.signature(method_registry[method_name])
-    excluded = {"loss"}
-    if method_name in deps["optax_methods"]:
-        excluded.add("method")
-    return {
-        name
-        for name, parameter in signature.parameters.items()
-        if name not in excluded
-        and parameter.kind
-        in {
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            inspect.Parameter.KEYWORD_ONLY,
-        }
-    }
+    return set(METHOD_FACTORY_PARAM_NAMES[method_name])
 
 
 def split_method_kwargs(
@@ -1885,7 +1913,9 @@ def run_sequential(
     config: dict[str, Any],
 ) -> dict[str, int]:
     worker_id = 0
-    requested_gpu_id = setup_worker_environment(config["parallel"], worker_id)
+    requested_gpu_id = setup_worker_environment(
+        config["parallel"], worker_id, config.get("worker_env")
+    )
     device_info = get_worker_device_info(requested_gpu_id, config.get("config"))
     deps = import_runtime_dependencies()
     chunks = chunk_planned_runs(selected_runs, config["parallel"])
@@ -1927,7 +1957,9 @@ def worker_loop(
         "jax_platforms": [],
     }
     try:
-        requested_gpu_id = setup_worker_environment(config["parallel"], worker_id)
+        requested_gpu_id = setup_worker_environment(
+            config["parallel"], worker_id, config.get("worker_env")
+        )
         device_info = get_worker_device_info(requested_gpu_id, config.get("config"))
         message_queue.put(
             {
@@ -2343,11 +2375,10 @@ def architecture_group_fields(entry: dict[str, Any]) -> dict[str, Any]:
 
 def method_group_fields(entry: dict[str, Any]) -> dict[str, Any]:
     fields = {"method": entry.get("method")}
-    for key, value in split_method_kwargs(entry["method"], entry["method_kwargs"])[
-        0
-    ].items():
-        if key == "stepsize_schedule_fn":
+    for key in sorted(METHOD_FACTORY_GROUP_KEYS.get(entry["method"], ())):
+        if key not in entry["method_kwargs"]:
             continue
+        value = entry["method_kwargs"][key]
         fields[f"method_kwargs.{key}"] = value
     schedule_name = _stepsize_schedule_name_from_kwargs(entry["method_kwargs"])
     if schedule_name is not None:
@@ -2385,7 +2416,7 @@ def method_group_columns(frame: Any) -> list[str]:
         [] if method_series is None else method_series.dropna().unique().tolist()
     )
     for method_name in method_names:
-        for key in sorted(method_factory_param_names(method_name)):
+        for key in sorted(METHOD_FACTORY_GROUP_KEYS.get(method_name, ())):
             column = f"method_kwargs.{key}"
             if column in frame.columns and column not in columns:
                 columns.append(column)
@@ -3020,6 +3051,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
     if not isinstance(config["output_root"], str):
         raise ValueError("output_root must be a string path")
+    worker_env = config.setdefault("worker_env", {})
+    worker_env = _require_object(worker_env, "worker_env")
+    config["worker_env"] = _validate_worker_env(worker_env)
     common_params = _require_object(config["common_params"], "common_params")
     if "N_samples" in common_params:
         raise ValueError(
@@ -3180,6 +3214,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
             raise ValueError(
                 f"parallel.gpu_ids[{index}] must be an integer or string device id"
             )
+    plot_gpu_id = parallel.setdefault("plot_gpu_id", gpu_ids[0])
+    if plot_gpu_id != "cpu" and not isinstance(plot_gpu_id, (int, str)):
+        raise ValueError("parallel.plot_gpu_id must be an integer, string device id, or 'cpu'")
 
     max_parallel = _require_object(
         parallel.get("max_parallel"), "parallel.max_parallel"
@@ -3275,7 +3312,14 @@ def main(argv: list[str] | None = None) -> int:
             initialize_session(session_dir, config_path, config, planned_runs)
             if len(config["parallel"]["gpu_ids"]) > 1 and len(selected_runs) > 1:
                 summary = run_parallel(selected_runs, session_dir, config)
+                setup_parent_plot_environment(config["parallel"])
             else:
+                sequential_gpu_id = assigned_gpu_id(config["parallel"], 0)
+                plot_gpu_id = config["parallel"].get("plot_gpu_id")
+                if plot_gpu_id not in {None, sequential_gpu_id}:
+                    raise ValueError(
+                        "parallel.plot_gpu_id must match parallel.gpu_ids[0] when benchmark execution is sequential"
+                    )
                 summary = run_sequential(selected_runs, session_dir, config)
             generate_per_run_plots(session_dir, config.get("plotting", {}))
             generate_aggregate_plots(session_dir, config.get("plotting", {}))
@@ -3283,6 +3327,7 @@ def main(argv: list[str] | None = None) -> int:
             summary = None
             planned_runs = []
             selected_runs = []
+            setup_parent_plot_environment(config["parallel"])
             generate_per_run_plots(session_dir)
             generate_aggregate_plots(session_dir)
     except Exception as exc:

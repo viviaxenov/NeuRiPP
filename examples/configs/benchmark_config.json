@@ -74,10 +74,14 @@
   },
   "parallel": {
     "gpu_ids": [6, 7],
+    "plot_gpu_id": 6,
     "max_parallel": {
       "anderson": 15,
       "ngd": 96,
       "adamw": 120
     }
+  },
+  "worker_env": {
+    "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.80"
   }
 }
