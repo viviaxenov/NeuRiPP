@@ -49,12 +49,13 @@ def build_autoencoder(
     return AutoEncoder(image_shape, encoder_dim, rngs=nnx.Rngs(rng_seed))
 
 
-def _checkpoint_paths(checkpoint_dir: Path) -> tuple[Path, Path, Path, Path]:
+def _checkpoint_paths(checkpoint_dir: Path) -> tuple[Path, Path, Path, Path, Path]:
     return (
         checkpoint_dir / "model",
         checkpoint_dir / "metadata.json",
         checkpoint_dir / "loss_history.npz",
         checkpoint_dir / "training_losses.pdf",
+        checkpoint_dir / "reconstruction_examples.pdf",
     )
 
 
@@ -86,6 +87,32 @@ def _plot_loss_history(
     plt.close(fig)
 
 
+def _plot_reconstruction_examples(
+    output_path: Path,
+    originals: np.ndarray | jax.Array,
+    reconstructions: np.ndarray | jax.Array,
+) -> None:
+    originals = np.asarray(originals)
+    reconstructions = np.asarray(reconstructions)
+    fig = plt.figure(figsize=(12, 6), layout="constrained")
+    subfigures = fig.subfigures(1, 2, wspace=0.02)
+
+    for subfigure, images, title in zip(
+        subfigures,
+        (reconstructions, originals),
+        ("Reconstructions", "Test images"),
+        strict=True,
+    ):
+        axes = subfigure.subplots(6, 6)
+        subfigure.suptitle(title)
+        for ax, image in zip(axes.flat, images, strict=True):
+            ax.imshow(np.squeeze(image), cmap="gray", vmin=0.0, vmax=1.0)
+            ax.axis("off")
+
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
 def _batched_apply(fn, data: jax.Array, batch_size: int) -> jax.Array:
     outputs = []
     for start in range(0, int(data.shape[0]), batch_size):
@@ -99,7 +126,7 @@ def load_autoencoder_checkpoint(
     encoder_dim: int,
     rng_seed: int = 0,
 ) -> tuple[AutoEncoder, dict[str, Any]]:
-    model_dir, metadata_path, _, _ = _checkpoint_paths(Path(checkpoint_dir))
+    model_dir, metadata_path, _, _, _ = _checkpoint_paths(Path(checkpoint_dir))
     autoencoder = build_autoencoder(image_shape, encoder_dim, rng_seed=rng_seed)
     graphdef, state = nnx.split(autoencoder)
     checkpointer = ocp.StandardCheckpointer()
@@ -124,7 +151,9 @@ def train_autoencoder(
 
     checkpoint_dir = Path(checkpoint_dir).resolve()
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    model_dir, metadata_path, history_path, plot_path = _checkpoint_paths(checkpoint_dir)
+    model_dir, metadata_path, history_path, plot_path, reconstruction_plot_path = (
+        _checkpoint_paths(checkpoint_dir)
+    )
 
     autoencoder = build_autoencoder(image_shape, encoder_dim, rng_seed=rng_seed)
     train_data = jnp.asarray(train_images, dtype=jnp.float32)
@@ -168,6 +197,11 @@ def train_autoencoder(
     test_losses: list[float] = []
     best_train = float("inf")
     rng = np.random.default_rng(rng_seed)
+    plot_rng = np.random.default_rng(rng_seed)
+    plot_indices = plot_rng.choice(
+        int(test_data.shape[0]), size=36, replace=int(test_data.shape[0]) < 36
+    )
+    plot_images = test_data[plot_indices]
     pbar = trange(epochs, desc=f"AE {dataset_name} dim{encoder_dim}")
 
     for epoch in pbar:
@@ -196,6 +230,10 @@ def train_autoencoder(
             train_losses.append(epoch_train_loss)
             test_losses.append(float(np.mean(test_batch_losses)))
             _plot_loss_history(plot_path, eval_epochs, train_losses, test_losses)
+            reconstructions = autoencoder.decode(autoencoder.encode(plot_images))
+            _plot_reconstruction_examples(
+                reconstruction_plot_path, plot_images, reconstructions
+            )
 
     graphdef, state = nnx.split(autoencoder)
     checkpointer = ocp.StandardCheckpointer()
@@ -237,7 +275,7 @@ def load_or_train_autoencoder(
     rng_seed: int = 0,
 ) -> tuple[AutoEncoder, dict[str, Any], Path]:
     checkpoint_dir = encoder_checkpoint_dir(encoder_path, dataset_name, encoder_dim)
-    model_dir, metadata_path, _, _ = _checkpoint_paths(checkpoint_dir)
+    model_dir, metadata_path, _, _, _ = _checkpoint_paths(checkpoint_dir)
     if model_dir.exists() and metadata_path.exists():
         autoencoder, metadata = load_autoencoder_checkpoint(
             checkpoint_dir,

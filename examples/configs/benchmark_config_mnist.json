@@ -24,7 +24,17 @@
         "n_hidden": 3,
         "dim_hidden": 256,
         "encoder_dim": 64,
-        "encoder_path": "./encoder"
+        "encoder_path": "./encoder",
+        "encoder_training": {
+          "optimizer": "adam",
+          "epochs": 600,
+          "learning_rate": 0.001,
+          "lr_drop_every": 150,
+          "lr_drop_factor": 0.1,
+          "batch_size": 1024,
+          "eval_batch_size": 2048,
+          "plot_every": 20
+        }
       },
       "divergence_method": "hutchinson",
       "ode_nstep_max": 10,
