@@ -41,7 +41,7 @@
       "natural_grad_clipping_threshold": [10.0],
       "linear_solver_regularization": [ 0.01, 1e-5],
       "stepsize_schedule": "schedule_exp",
-      "drop_every": [100, 10000],
+      "drop_every": [1000, 2000],
       "drop_by": [2.0, 10.0],
       "linear_solver_tolerance": 1e-4,
       "linear_solver_maxiter": 50

@@ -1,6 +1,5 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "7"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["JAX_TRACEBACK_FILTERING"] = "off"
 
@@ -44,36 +43,57 @@ method = sys.argv[1] if len(sys.argv) > 1 else "ngd"
 problem = sys.argv[2] if len(sys.argv) > 2 else "checkerboard"
 n_iter = int(sys.argv[3]) if len(sys.argv) > 3 else n_iter
 
+match problem:
+    case "checkerboard":
+        data_gen = CheckerboardBatcher(batch_size, 30)
+        loss = cross_entropy
+    case "two_spirals":
+        data_gen = TwoSpiralsBatcher(batch_size, 30)
+        loss = cross_entropy
+    case "eight_gaussians":
+        data_gen = EightGaussiansBatcher(batch_size, 30)
+        loss = cross_entropy
+    case "elliptic":
+        dim = 20
+        logpdf = get_logpdf_elliptic_inverse_problem(1, dim=dim, n_grid=2000, noise_std=1e-3)
+    case "st":
+        logpdf = logpdf_st
+    case "db":
+        shift = jnp.array([2.0, 0])
+        logpdf = partial(logpdf_double_banana, shift=shift)
+    case _:
+        raise ValueError(f"{problem = } not yet implemented")
+
+
 rngs = nnx.Rngs(42)
-
-rhs_net = MLP(dim, rngs, dim_hidden=64, n_hidden=1, activation=nnx.swish)
-
+rhs_net = MLP(dim, rngs, dim_hidden=63, n_hidden=1, activation=nnx.swish)
 model_args = (
     rhs_net,
     rngs,
     N_mc,
 )
-
 model_kwargs = dict(
     ode_nstep_max=6,
     divergence_method="hutchinson",
     ode_method="rk45",
     ode_kwargs=dict(h_max=0.3, adaptive=True),
 )
-
 model = ParametricPushforward(*model_args, **model_kwargs)
 
+if problem in ["db", "st", "elliptic" ]:
+    data_gen = LatentBatcherFromModel(batch_size, 1, model)
+    loss = getKL(logpdf)
 
 match method:
     case "ngd":
         get_fn = partial(
             get_ngd,
             stepsize_schedule_fn=schedule_exp,
-            natural_grad_clipping_threshold=10.0,
+            natural_grad_clipping_threshold=20.0,
         )
-        stepsize = 0.01
+        stepsize = 0.001
         args = (stepsize,)
-        kwargs = dict(linear_solver_regularization=1e-2, drop_every=100, drop_by=2.0)
+        kwargs = dict(linear_solver_regularization=1e-5, drop_every=100, drop_by=1.0)
     case "anderson":
         get_fn = partial(
             get_anderson,
@@ -94,33 +114,13 @@ match method:
 
     case x if x in optax_optimizers:
         get_fn = partial(get_optax, method=method)
-        lr = 1e-4
+        lr = 1e-3
         args = (lr,)
-        kwargs = {"weight_decay": 0.001}
+        # kwargs = {"weight_decay": 0.001}
+        kwargs = dict()
     case _:
         raise ValueError(f"Method {x} not supported")
 
-match problem:
-    case "checkerboard":
-        data_gen = CheckerboardBatcher(batch_size, 30)
-        loss = cross_entropy
-    case "two_spirals":
-        data_gen = TwoSpiralsBatcher(batch_size, 30)
-        loss = cross_entropy
-    case "eight_gaussians":
-        data_gen = EightGaussiansBatcher(batch_size, 30)
-        loss = cross_entropy
-    case "st":
-        data_gen = LatentBatcherFromModel(batch_size, 1, model)
-        logpdf = logpdf_st
-        loss = getKL(logpdf)
-    case "db":
-        data_gen = LatentBatcherFromModel(batch_size, 1, model)
-        shift = jnp.array([2.0, 0])
-        logpdf = partial(logpdf_double_banana, shift=shift)
-        loss = getKL(logpdf)
-    case _:
-        raise ValueError(f"{problem = } not yet implemented")
 
 init_fun, step_fun = get_fn(loss)
 step_fun = nnx.jit(step_fun)
