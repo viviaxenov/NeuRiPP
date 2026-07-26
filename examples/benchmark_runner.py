@@ -324,7 +324,7 @@ def load_image_dataset(
         test_images = raw["test_images"]
         mean = train_images.mean(axis=0)
         std = train_images.std(axis=0)
-        std = np.where(std > 1e-6, std, 1.0)
+        std = np.where(std > 1e-20, std, 1e-20)
         train_flat = ((train_images - mean[None, ...]) / std[None, ...]).reshape(
             train_images.shape[0], -1
         )
@@ -2975,7 +2975,8 @@ def plot_run_diagnostics(
     if "loss" in arrays:
         ax.plot(arrays["loss"], label="Loss")
     if "eval_iteration" in arrays and "test_nll" in arrays:
-        ax.plot(arrays["eval_iteration"], arrays["test_nll"], label="Test NLL")
+        ax1 = ax.twinx()
+        ax1.plot(arrays["eval_iteration"], arrays["test_nll"], label="Test NLL", color='red')
     ax.legend()
 
     ax = axs[2]

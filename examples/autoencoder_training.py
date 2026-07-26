@@ -310,7 +310,7 @@ def normalize_latents(
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     latent_mean = jnp.mean(train_latents, axis=0)
     latent_std = jnp.std(train_latents, axis=0)
-    latent_std = jnp.where(latent_std > 1e-6, latent_std, 1.0)
+    latent_std = jnp.maximum(latent_std, 1e-20)
     train_norm = (train_latents - latent_mean[None, :]) / latent_std[None, :]
     test_norm = (test_latents - latent_mean[None, :]) / latent_std[None, :]
     return train_norm, test_norm, latent_mean, latent_std
