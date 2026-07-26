@@ -12,9 +12,9 @@ def _clip_gradient(natural_grad, norm: float, max_norm: float):
     factor = jnp.minimum(1.0, max_norm / norm)
     return jax.tree.map(lambda _x: _x * factor, natural_grad)
 
-def schedule_exp(step_size: float, iter_count: int, drop_every: int = 100, drop_by: float = 1.1, **kwargs):
+def schedule_exp(step_size: float, iter_count: int, drop_every: int = 100, drop_by: float = 1.1, min_step: float = 0., max_step: 1.0, **kwargs):
     predicate = ((iter_count + 1) % drop_every == 0)
-    new_step = jax.lax.cond(predicate, lambda _x: _x / drop_by, lambda _x: _x, step_size)
+    new_step = jax.lax.cond(predicate, lambda _x: jnp.clip(_x / drop_by, min_step, max_step), lambda _x: _x, step_size)
 
     return new_step
 
