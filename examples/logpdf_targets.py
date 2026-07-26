@@ -1,5 +1,7 @@
+import jax
 import jax.numpy as jnp
 from jax.scipy.special import logsumexp
+
 
 def logpdf_st(x: jnp.ndarray) -> jnp.ndarray:
     """
@@ -19,3 +21,39 @@ def logpdf_double_banana(x: jnp.ndarray, shift: jnp.ndarray) -> jnp.ndarray:
         axis=-1,
     )
     return log_density
+
+
+def get_logpdf_elliptic_inverse_problem(
+    seed: int, dim: int = 6, n_grid: int = 100, noise_std=1e-2, return_all=False
+):
+    from uncprop.models.elliptic_pde.inverse_problem import (
+        generate_pde_inv_prob_rep,
+        PDESettings,
+    )
+
+    key = jax.random.PRNGKey(seed)
+    key_inv_prob, key_surrogate, key_rff = jax.random.split(key, 3)
+
+    # default settings
+    n_kl_modes = dim
+    # in the original paper these are indicies
+    # need to transform them so that the sensor location is the same
+    # for every discretization
+    obs_x = jnp.array([10, 30, 60, 75]) / 100.0
+    obs_idx = jnp.astype(jnp.ceil(obs_x * n_grid), jnp.int32)
+
+    settings = {
+        "noise_cov": noise_std**2 * jnp.identity(len(obs_idx)),
+        "n_kl_modes": n_kl_modes,
+        "obs_locations": obs_idx,
+        "settings": PDESettings(n_grid=n_grid),
+    }
+
+    # exact posterior
+    inv_prob_info = generate_pde_inv_prob_rep(key=key_inv_prob, **settings)
+    if return_all:
+        return inv_prob_info
+
+    posterior = inv_prob_info[0]
+
+    return posterior.log_density

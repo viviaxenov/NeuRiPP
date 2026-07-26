@@ -1,6 +1,5 @@
-from typing import Callable, Tuple
+from typing import Tuple
 
-import jax
 import jax.numpy as jnp
 
 from ..parametric_pushforward.parametric_pushforward import ParametricPushforward

@@ -1,0 +1,76 @@
+{
+  "output_root": "results/kl_elliptic",
+  "common_params": {
+    "max_iterations": 400,
+    "batch_size": 512,
+    "N_monte_carlo": 512,
+    "master_seed": 42,
+    "eval_every": 501
+  },
+  "problem": {
+    "dim": 20,
+    "functional": {
+      "kind": "KL"
+    },
+    "distribution": {
+      "name": "elliptic",
+      "seed": 1,
+      "n_grid": 2000,
+      "noise_std": 0.001,
+      "resample_each": 1
+    }
+  },
+  "architectures": [
+    {
+      "rhs": {
+        "model": "MLP",
+        "dim_hidden": 64,
+        "n_hidden": 1,
+        "activation": "swish"
+      },
+      "divergence_method": "hutchinson",
+      "ode_nstep_max": 6,
+      "ode_method": "rk45",
+      "adaptive": true,
+      "h_max": 0.3
+    }
+  ],
+  "methods": [
+    {
+      "method": "ngd",
+      "n_restarts": 1,
+      "step_size": [0.01],
+      "natural_grad_clipping_threshold": [10.0, 20.0],
+      "linear_solver_regularization": [1e-1, 1e-2, 1e-3]
+    },
+    {
+      "method": "adam",
+      "n_restarts": 1,
+      "learning_rate": [0.01]
+    },
+    {
+      "method": "sgd",
+      "n_restarts": 1,
+      "learning_rate": [1e-2, 1e-3, 1e-4, 1e-5, 1e-6]
+    }
+  ],
+  "plotting": {
+    "style_channels": {
+      "colormap": ["Blues", "Reds"],
+      "linestyle": ["-"],
+      "linewidth": [1.5]
+    }
+  },
+  "parallel": {
+    "gpu_ids": [2, 4, 5, 6, 7],
+    "plot_gpu_id": 0,
+    "max_parallel": {
+      "ngd": 1,
+      "adam": 2,
+      "sgd": 2
+    }
+  },
+  "worker_env": {
+    "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.95"
+  }
+}

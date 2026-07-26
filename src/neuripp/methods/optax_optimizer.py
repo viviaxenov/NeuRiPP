@@ -1,6 +1,5 @@
 from flax import nnx
 import optax
-from ..parametric_pushforward.parametric_pushforward import ParametricPushforward
 from ..utility.utility import tree_dot_product
 from typing import Callable
 

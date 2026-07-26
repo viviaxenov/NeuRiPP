@@ -1,21 +1,22 @@
+import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
 
 from typing import Callable
 
 from flax import nnx
-from neuripp._ode._ode import *
-from neuripp.parametric_pushforward.parametric_pushforward import ParametricPushforward
-from neuripp.utility.utility import *
+from neuripp.utility.utility import tree_dot_product
 
 
 def _clip_gradient(natural_grad, norm: float, max_norm: float):
     factor = jnp.minimum(1.0, max_norm / norm)
     return jax.tree.map(lambda _x: _x * factor, natural_grad)
 
-def schedule_exp(step_size: float, iter_count: int, drop_every: int = 100, drop_by: float = 1.1, **kwargs):
+def schedule_exp(step_size: float, iter_count: int, drop_every: int = 100, drop_by: float = 1.1, min_step: float = 0., max_step: 1.0, **kwargs):
     predicate = ((iter_count + 1) % drop_every == 0)
-    return jax.lax.cond(predicate, lambda _x: _x / drop_by, lambda _x: _x, step_size)
+    new_step = jax.lax.cond(predicate, lambda _x: jnp.clip(_x / drop_by, min_step, max_step), lambda _x: _x, step_size)
+
+    return new_step
 
 
 
@@ -108,6 +109,7 @@ def get_ngd(
         # update params
         params_new = jax.tree.map(lambda x, y: x - y * step_size, params, natural_grad)
         model = nnx.merge(gd, params_new, rest)
+        args = (step_size, *args[1:])
 
         return (model, natural_grad, i+ 1, args, kwargs), (
             f,

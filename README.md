@@ -2,31 +2,52 @@
 **Ri**emannian methods for **Neu**ral **P**ushforward distributions with **P**ullback Wasserstein metric
 
 ## Installation
-[Optional] Install dependencies with `conda`
-```
-    conda install --file requirements_conda.txt
-```
-Install the package
-```
-    pip install NeuRiPP@git+https://github.com/viviaxenov/NeuRiPP
-```
-Editable (developer) installation
-```
-    git clone git@github.com:viviaxenov/NeuRiPP.git
-    cd NeuRiPP
-    conda install --file requirements_conda.txt
-    pip install -e .
+NeuRiPP requires Python 3.12 or newer. The default installation uses the CPU
+backend; CUDA 12 and CUDA 13 support are available as optional targets.
+
+Install the core package directly from GitHub:
+
+```bash
+python -m pip install "NeuRiPP @ git+https://github.com/viviaxenov/NeuRiPP.git"
 ```
 
-### Requirements
- - `flax>=0.10.2`
- - `jax>=0.6.2`
- - `jaxtyping>=0.3.2`
- - `matplotlib>=3.10.6`
- - `numpy`
- - `optax>=0.2.6`
- - `tqdm>=4.67.1`
- - `typing_extensions>=4.15.0`
+Select a CUDA target or install the dependencies used by the examples with pip
+extras:
+
+```bash
+python -m pip install "NeuRiPP[cuda12] @ git+https://github.com/viviaxenov/NeuRiPP.git"
+python -m pip install "NeuRiPP[cuda13] @ git+https://github.com/viviaxenov/NeuRiPP.git"
+python -m pip install "NeuRiPP[cuda12,examples] @ git+https://github.com/viviaxenov/NeuRiPP.git"
+```
+
+The CUDA extras install the CUDA runtime libraries distributed through pip. Do
+not install the `cuda12` and `cuda13` extras together.
+
+### Editable installation
+
+Clone the repository and select the required target. For a complete CUDA 12
+development installation with all example dependencies:
+
+```bash
+git clone git@github.com:viviaxenov/NeuRiPP.git
+cd NeuRiPP
+python -m pip install -e ".[cuda12,examples]"
+```
+
+Other supported combinations are:
+
+```bash
+python -m pip install -e .                         # CPU, core only
+python -m pip install -e ".[examples]"             # CPU with examples
+python -m pip install -e ".[cuda12]"               # CUDA 12, core only
+python -m pip install -e ".[cuda13]"               # CUDA 13, core only
+python -m pip install -e ".[cuda13,examples]"      # CUDA 13 with examples
+python -m pip install -e ".[cuda12,examples,docs]" # CUDA 12, examples and docs
+```
+
+The supported stack pins JAX 0.11.0 and Flax 0.12.8. The `examples` extra also
+installs `uncprop` from the configured GitHub fork. A fresh virtual environment
+is recommended when switching CPU or CUDA targets.
 
 ### Building docs
 [See](./docs/README.md)
