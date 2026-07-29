@@ -171,6 +171,18 @@ def _validate_architecture(architecture: dict[str, Any], index: int) -> None:
     if "dim" in architecture:
         raise ValueError(f"{name}.dim is not supported; dim is inferred from problem")
 
+    scale_factor = architecture.get("scale_factor", 1.0)
+    scale_factors = scale_factor if isinstance(scale_factor, list) else [scale_factor]
+    for value in scale_factors:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
+            raise ValueError(
+                f"{name}.scale_factor must be a finite number or list of finite numbers"
+            )
+
     rhs = _require_object(architecture.get("rhs"), f"{name}.rhs")
     if "dim" in rhs:
         raise ValueError(
@@ -1044,6 +1056,7 @@ def split_architecture_kwargs(
     rhs_config = architecture["rhs"]
     direct_keys = {
         "rhs",
+        "scale_factor",
         "N_monte_carlo",
         "seed",
         "ode_nstep_max",
@@ -1074,7 +1087,7 @@ def build_model(
     )
     if not isinstance(n_monte_carlo, int) or n_monte_carlo < 1:
         raise ValueError("N_monte_carlo must be a positive integer")
-    return deps["ParametricPushforward"](
+    model = deps["ParametricPushforward"](
         rhs,
         rngs,
         n_monte_carlo,
@@ -1083,6 +1096,17 @@ def build_model(
         divergence_method=architecture["divergence_method"],
         ode_kwargs=ode_kwargs,
     )
+
+    scale_factor = architecture.get("scale_factor", 1.0)
+    if scale_factor != 1.0:
+        graphdef, params, rest = deps["nnx"].split(model, deps["nnx"].Param, ...)
+        params = deps["jax"].tree.map(
+            lambda value: value * scale_factor,
+            params,
+        )
+        model = deps["nnx"].merge(graphdef, params, rest)
+
+    return model
 
 
 def build_data_batcher(
