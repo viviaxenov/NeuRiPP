@@ -3,6 +3,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from typing import Tuple, Callable
+from jax.nn.initializers import xavier_uniform, normal, xavier_normal
 
 
 class Count(nnx.Variable):
@@ -62,7 +63,11 @@ class MLP(nnx.Module):
 
         list_of_modules = (
             [
-                nnx.Linear(dim + 1, dim_hidden, rngs=rngs),
+                nnx.Linear(dim + 1, dim_hidden, rngs=rngs,
+                    kernel_init=xavier_uniform(),
+                    bias_init=normal(stddev=1e-3),
+
+                           ),
                 activation,
             ]
             + [
@@ -71,7 +76,10 @@ class MLP(nnx.Module):
             ]
             * (n_hidden - 1)
             + [
-                nnx.Linear(dim_hidden, dim, rngs=rngs),
+                nnx.Linear(dim_hidden, dim, rngs=rngs,
+                    kernel_init=xavier_uniform(),
+                    bias_init=normal(stddev=1e-3),
+                           ),
             ]
         )
 
