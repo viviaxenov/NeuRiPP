@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import math
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,18 @@ from flax import nnx
 from tqdm import trange
 
 from rhs_architectures import AutoEncoder
+
+
+@dataclass
+class LoadedAutoencoder:
+    """Autoencoder and training-latent statistics loaded from one checkpoint."""
+
+    autoencoder: AutoEncoder
+    latent_mean: jax.Array
+    latent_std: jax.Array
+    latent_covariance: jax.Array
+    metadata: dict[str, Any]
+    checkpoint_dir: Path
 
 
 def default_encoder_training_config() -> dict[str, Any]:
@@ -59,6 +73,10 @@ def _checkpoint_paths(checkpoint_dir: Path) -> tuple[Path, Path, Path, Path, Pat
     )
 
 
+def _latent_statistics_path(checkpoint_dir: Path) -> Path:
+    return checkpoint_dir / "latent_statistics.npz"
+
+
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
@@ -85,6 +103,46 @@ def _plot_loss_history(
     ax.legend()
     fig.savefig(output_path)
     plt.close(fig)
+
+
+def plot_image_grid(
+    images: np.ndarray | jax.Array,
+    nrows: int,
+    ncols: int,
+    *,
+    title: str | None = None,
+    cmap: str = "gray",
+    figsize: tuple[float, float] | None = None,
+) -> tuple[Any, Any]:
+    """Plot the first ``nrows * ncols`` images and return the figure and axes."""
+
+    if isinstance(nrows, bool) or not isinstance(nrows, int) or nrows < 1:
+        raise ValueError("nrows must be a positive integer")
+    if isinstance(ncols, bool) or not isinstance(ncols, int) or ncols < 1:
+        raise ValueError("ncols must be a positive integer")
+
+    images = np.asarray(images)
+    image_count = nrows * ncols
+    if images.ndim < 3 or images.shape[0] < image_count:
+        raise ValueError(
+            f"Expected at least {image_count} images, got shape {images.shape}"
+        )
+
+    if figsize is None:
+        figsize = (1.8 * ncols, 1.8 * nrows)
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=figsize,
+        squeeze=False,
+        layout="constrained",
+    )
+    for ax, image in zip(axes.flat, images[:image_count], strict=True):
+        ax.imshow(np.squeeze(image), cmap=cmap, vmin=0.0, vmax=1.0)
+        ax.set_axis_off()
+    if title is not None:
+        fig.suptitle(title)
+    return fig, axes
 
 
 def _plot_reconstruction_examples(
@@ -120,6 +178,102 @@ def _batched_apply(fn, data: jax.Array, batch_size: int) -> jax.Array:
     return jnp.concatenate(outputs, axis=0)
 
 
+def _compute_latent_statistics(
+    train_latents: np.ndarray | jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    train_latents = jnp.asarray(train_latents, dtype=jnp.float32)
+    if train_latents.ndim != 2 or train_latents.shape[0] < 1:
+        raise ValueError("Training latents must be a non-empty rank-2 array")
+    latent_mean = jnp.mean(train_latents, axis=0)
+    latent_std = jnp.maximum(jnp.std(train_latents, axis=0), 1e-20)
+    centered = train_latents - latent_mean[None, :]
+    latent_covariance = centered.T @ centered / train_latents.shape[0]
+    return latent_mean, latent_std, latent_covariance
+
+
+def _write_latent_statistics(
+    checkpoint_dir: Path,
+    latent_mean: np.ndarray | jax.Array,
+    latent_std: np.ndarray | jax.Array,
+    latent_covariance: np.ndarray | jax.Array,
+) -> None:
+    output_path = _latent_statistics_path(checkpoint_dir)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=output_path.parent,
+            prefix=f".{output_path.stem}.",
+            suffix=".npz",
+            delete=False,
+        ) as f:
+            temporary_path = Path(f.name)
+            np.savez(
+                f,
+                mean=np.asarray(latent_mean, dtype=np.float32),
+                std=np.asarray(latent_std, dtype=np.float32),
+                covariance=np.asarray(latent_covariance, dtype=np.float32),
+            )
+        temporary_path.replace(output_path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def _load_latent_statistics(
+    checkpoint_dir: Path, encoder_dim: int
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    path = _latent_statistics_path(checkpoint_dir)
+    with np.load(path) as statistics:
+        latent_mean = np.asarray(statistics["mean"], dtype=np.float32)
+        latent_std = np.asarray(statistics["std"], dtype=np.float32)
+        latent_covariance = np.asarray(statistics["covariance"], dtype=np.float32)
+
+    expected_vector_shape = (encoder_dim,)
+    expected_covariance_shape = (encoder_dim, encoder_dim)
+    if latent_mean.shape != expected_vector_shape:
+        raise ValueError(
+            f"Invalid latent mean shape in {path}: expected {expected_vector_shape}, "
+            f"got {latent_mean.shape}"
+        )
+    if latent_std.shape != expected_vector_shape:
+        raise ValueError(
+            f"Invalid latent std shape in {path}: expected {expected_vector_shape}, "
+            f"got {latent_std.shape}"
+        )
+    if latent_covariance.shape != expected_covariance_shape:
+        raise ValueError(
+            f"Invalid latent covariance shape in {path}: expected "
+            f"{expected_covariance_shape}, got {latent_covariance.shape}"
+        )
+    return (
+        jnp.asarray(latent_mean),
+        jnp.asarray(latent_std),
+        jnp.asarray(latent_covariance),
+    )
+
+
+def _load_training_images(dataset_name: str) -> np.ndarray:
+    from datasets import load_dataset
+
+    dataset_ids = {
+        "mnist": "ylecun/mnist",
+        "fashion_mnist": "zalando-datasets/fashion_mnist",
+    }
+    try:
+        dataset_id = dataset_ids[dataset_name]
+    except KeyError as exc:
+        supported = ", ".join(sorted(dataset_ids))
+        raise ValueError(
+            f"Cannot migrate autoencoder statistics for dataset {dataset_name!r}; "
+            f"provide train_images or use one of: {supported}"
+        ) from exc
+    dataset = load_dataset(dataset_id, split="train")
+    return np.stack(
+        [np.asarray(image, dtype=np.float32) for image in dataset["image"]], axis=0
+    ) / 255.0
+
+
 def load_autoencoder_checkpoint(
     checkpoint_dir: str | Path,
     image_shape: tuple[int, ...],
@@ -132,6 +286,64 @@ def load_autoencoder_checkpoint(
     checkpointer = ocp.StandardCheckpointer()
     state = checkpointer.restore(model_dir, target=state)
     return nnx.merge(graphdef, state), _load_json(metadata_path)
+
+
+def load_autoencoder(
+    checkpoint_dir: str | Path,
+    *,
+    train_images: np.ndarray | jax.Array | None = None,
+    batch_size: int = 2048,
+    rng_seed: int = 0,
+) -> LoadedAutoencoder:
+    """Load an autoencoder bundle, migrating legacy checkpoints when needed."""
+
+    checkpoint_dir = Path(checkpoint_dir).resolve()
+    metadata_path = checkpoint_dir / "metadata.json"
+    metadata = _load_json(metadata_path)
+    try:
+        image_shape = tuple(int(size) for size in metadata["image_shape"])
+        encoder_dim = int(metadata["encoder_dim"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid autoencoder metadata in {metadata_path}: image_shape and "
+            "encoder_dim are required"
+        ) from exc
+
+    autoencoder, metadata = load_autoencoder_checkpoint(
+        checkpoint_dir,
+        image_shape,
+        encoder_dim,
+        rng_seed=rng_seed,
+    )
+    statistics_path = _latent_statistics_path(checkpoint_dir)
+    if not statistics_path.exists():
+        if train_images is None:
+            dataset_name = metadata.get("dataset_name")
+            if not isinstance(dataset_name, str):
+                raise ValueError(
+                    f"Cannot migrate {checkpoint_dir}: metadata.json has no dataset_name; "
+                    "provide train_images"
+                )
+            train_images = _load_training_images(dataset_name)
+        train_latents = encode_dataset(autoencoder, train_images, batch_size=batch_size)
+        latent_mean, latent_std, latent_covariance = _compute_latent_statistics(
+            train_latents
+        )
+        _write_latent_statistics(
+            checkpoint_dir, latent_mean, latent_std, latent_covariance
+        )
+
+    latent_mean, latent_std, latent_covariance = _load_latent_statistics(
+        checkpoint_dir, encoder_dim
+    )
+    return LoadedAutoencoder(
+        autoencoder=autoencoder,
+        latent_mean=latent_mean,
+        latent_std=latent_std,
+        latent_covariance=latent_covariance,
+        metadata=metadata,
+        checkpoint_dir=checkpoint_dir,
+    )
 
 
 def train_autoencoder(
@@ -243,6 +455,17 @@ def train_autoencoder(
         shutil.rmtree(model_dir)
     checkpointer.save(model_dir, state)
     checkpointer.wait_until_finished()
+    autoencoder = nnx.merge(graphdef, state)
+
+    train_latents = encode_dataset(
+        autoencoder, train_data, batch_size=eval_batch_size
+    )
+    latent_mean, latent_std, latent_covariance = _compute_latent_statistics(
+        train_latents
+    )
+    _write_latent_statistics(
+        checkpoint_dir, latent_mean, latent_std, latent_covariance
+    )
 
     metadata = {
         "dataset_name": dataset_name,
@@ -261,7 +484,7 @@ def train_autoencoder(
         train_loss=np.asarray(train_losses, dtype=float),
         test_loss=np.asarray(test_losses, dtype=float),
     )
-    return nnx.merge(graphdef, state), metadata
+    return autoencoder, metadata
 
 
 def load_or_train_autoencoder(
@@ -309,8 +532,7 @@ def normalize_latents(
     train_latents: jax.Array, test_latents: jax.Array
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     latent_mean = jnp.mean(train_latents, axis=0)
-    latent_std = jnp.std(train_latents, axis=0)
-    latent_std = jnp.maximum(latent_std, 1e-20)
+    latent_std = jnp.maximum(jnp.std(train_latents, axis=0), 1e-20)
     train_norm = (train_latents - latent_mean[None, :]) / latent_std[None, :]
     test_norm = (test_latents - latent_mean[None, :]) / latent_std[None, :]
     return train_norm, test_norm, latent_mean, latent_std
@@ -338,15 +560,27 @@ def prepare_encoded_image_dataset(
     )
     train_latents = encode_dataset(autoencoder, train_images)
     test_latents = encode_dataset(autoencoder, test_images)
-    train_norm, test_norm, latent_mean, latent_std = normalize_latents(
-        train_latents, test_latents
-    )
+    statistics_path = _latent_statistics_path(checkpoint_dir)
+    if statistics_path.exists():
+        latent_mean, latent_std, latent_covariance = _load_latent_statistics(
+            checkpoint_dir, encoder_dim
+        )
+    else:
+        latent_mean, latent_std, latent_covariance = _compute_latent_statistics(
+            train_latents
+        )
+        _write_latent_statistics(
+            checkpoint_dir, latent_mean, latent_std, latent_covariance
+        )
+    train_norm = (train_latents - latent_mean[None, :]) / latent_std[None, :]
+    test_norm = (test_latents - latent_mean[None, :]) / latent_std[None, :]
     latent_log_det = float(jnp.log(latent_std).sum())
     return {
         "train": np.asarray(train_norm, dtype=np.float32),
         "test": np.asarray(test_norm, dtype=np.float32),
         "latent_mean": np.asarray(latent_mean, dtype=np.float32),
         "latent_std": np.asarray(latent_std, dtype=np.float32),
+        "latent_covariance": np.asarray(latent_covariance, dtype=np.float32),
         "image_shape": image_shape,
         "eval_mode": "latent",
         "latent_log_det_per_example": latent_log_det,
@@ -357,7 +591,12 @@ def prepare_encoded_image_dataset(
     }
 
 
-def decode_latents_to_images(latents_normalized: jax.Array, context: dict[str, Any]) -> jax.Array:
+def _autoencoder_and_statistics(
+    context: LoadedAutoencoder | dict[str, Any],
+) -> tuple[AutoEncoder, jax.Array, jax.Array]:
+    if isinstance(context, LoadedAutoencoder):
+        return context.autoencoder, context.latent_mean, context.latent_std
+
     autoencoder = context.get("autoencoder")
     if autoencoder is None:
         autoencoder, _ = load_autoencoder_checkpoint(
@@ -365,7 +604,39 @@ def decode_latents_to_images(latents_normalized: jax.Array, context: dict[str, A
             tuple(context["image_shape"]),
             int(context["encoder_dim"]),
         )
-    latent_mean = jnp.asarray(context["latent_mean"])
-    latent_std = jnp.asarray(context["latent_std"])
-    latents = jnp.asarray(latents_normalized) * latent_std[None, :] + latent_mean[None, :]
+    return (
+        autoencoder,
+        jnp.asarray(context["latent_mean"]),
+        jnp.asarray(context["latent_std"]),
+    )
+
+
+def encode_images_to_latents(
+    images: np.ndarray | jax.Array,
+    context: LoadedAutoencoder | dict[str, Any],
+    *,
+    normalized: bool = True,
+    batch_size: int = 2048,
+) -> jax.Array:
+    """Encode images, returning training-normalized latents by default."""
+
+    autoencoder, latent_mean, latent_std = _autoencoder_and_statistics(context)
+    latents = encode_dataset(autoencoder, images, batch_size=batch_size)
+    if normalized:
+        latents = (latents - latent_mean[None, :]) / latent_std[None, :]
+    return latents
+
+
+def decode_latents_to_images(
+    latents: np.ndarray | jax.Array,
+    context: LoadedAutoencoder | dict[str, Any],
+    *,
+    normalized: bool = True,
+) -> jax.Array:
+    """Decode latents, reversing training normalization by default."""
+
+    autoencoder, latent_mean, latent_std = _autoencoder_and_statistics(context)
+    latents = jnp.asarray(latents, dtype=jnp.float32)
+    if normalized:
+        latents = latents * latent_std[None, :] + latent_mean[None, :]
     return jnp.clip(autoencoder.decode(latents), 0.0, 1.0)
