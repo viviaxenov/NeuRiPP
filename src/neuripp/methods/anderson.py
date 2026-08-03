@@ -64,12 +64,21 @@ def get_anderson(
             zero_vector,
             **kwargs,
         )
+        natural_grad_norm_sq = model.scalar_product(natural_grad, natural_grad, rngs)
+        norm = jnp.maximum(natural_grad_norm_sq, 0.0) ** 0.5
+        # Gradient clipping
+        if natural_grad_clipping_threshold is not None:
+            natural_grad = _clip_gradient(
+                natural_grad, norm, natural_grad_clipping_threshold
+            )
+
         residual = jax.tree.map(lambda _x: -step_size * _x, natural_grad)
         # initialize history with zero vectors
         # history[:m] is residuals
         # history[m:] is Delta x
         # (slice in each leaf of pytree)
 
+        # Do one Picard step
         par = jax.tree.map(lambda _p, _dp: _p + _dp, par, residual)
         model = nnx.merge(gd, par, rest)
 
@@ -78,10 +87,12 @@ def get_anderson(
         )
         history = _update_history(history, residual, residual, history_length)
         args = (step_size, *args[1:])
+        kwargs = {'i_warmstart': 0} | kwargs
         return (model, natural_grad, history, 0, args, kwargs)
 
     def _step(state, batch, rngs):
         model, previous_grad, history, i, args, kwargs = state
+        i_warmstart = kwargs['i_warmstart']
 
         step_size, relaxation, regularization_factor = args
 
@@ -98,13 +109,15 @@ def get_anderson(
         )
 
         grad_norm_sq = tree_dot_product(grad, grad)
+        # Gradient clipping
         natural_grad_norm_sq = model.scalar_product(natural_grad, natural_grad, rngs)
         norm = jnp.maximum(natural_grad_norm_sq, 0.0) ** 0.5
-        # Gradient clipping
         if natural_grad_clipping_threshold is not None:
             natural_grad = _clip_gradient(
                 natural_grad, norm, natural_grad_clipping_threshold
             )
+        natural_grad_norm_sq = model.scalar_product(natural_grad, natural_grad, rngs)
+        norm = jnp.maximum(natural_grad_norm_sq, 0.0) ** 0.5
 
         residual = jax.tree.map(lambda _x: -step_size * _x, natural_grad)
         r_cur_norm_sq = natural_grad_norm_sq * step_size**2
@@ -115,7 +128,7 @@ def get_anderson(
         # precompute Gx for historical vectors
         # TODO: this requires a backward pass, maybe better use scalar product with forward passes only?
         # TODO: use nnx.vmap?
-        Ghistory = jax.vmap(model.get_matvec_fn(rngs))(history)
+        Ghistory = nnx.vmap(model.get_matvec_fn(rngs))(history)
         # compute dot products in parallel
         # <r_i, Gr_j>
         pairwise_mat = pairwise_dot_matrix(history, Ghistory)
@@ -154,11 +167,20 @@ def get_anderson(
             r_mixed = jax.tree.map(
                 lambda _dr: jnp.where(descending, _dr, _dr * 0.0), r_mixed
             )
+
+        # if warmstart, ignore anderson correction
+        r_mixed = jax.tree.map(
+            lambda _dr: jnp.where(i > i_warmstart, _dr, _dr * 0.0), r_mixed
+        )
+
         delta_x = jax.tree.map(lambda _r, _dr: relaxation * _r - _dr, residual, r_mixed)
 
         history = _update_history(
             history, residual, delta_x, history_length=history_length
         )
+        # don't write history if in warmup stage
+        history = jax.tree.map(lambda _h : jnp.where(i > i_warmstart, _h, _h.at[1:history_length, ...].set(0.)), history)
+        history = jax.tree.map(lambda _h : jnp.where(i > i_warmstart, _h, _h.at[history_length + 1:, ...].set(0.)), history)
 
         gd, params, rest = nnx.split(model, nnx.Param, ...)
         # update params

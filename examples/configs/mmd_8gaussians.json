@@ -1,7 +1,7 @@
 {
-  "output_root": "results/mmd_8gaussians_semiflat",
+  "output_root": "results/mmd_8gaussians_rebuttal",
   "common_params": {
-    "max_iterations": 5500,
+    "max_iterations": 2500,
     "batch_size": 4096,
     "N_monte_carlo": 4096,
     "master_seed": 42,
@@ -26,6 +26,7 @@
         "n_hidden": [3],
         "activation": "swish"
       },
+      "scale_factor": 0.1,
       "divergence_method": "hutchinson",
       "ode_nstep_max": 10,
       "ode_method": "euler",
@@ -37,11 +38,12 @@
       "method": "anderson",
       "semi_flat": true,
       "n_restarts": 6,
-      "natural_grad_clipping_threshold": [null, 0.5],
+      "natural_grad_clipping_threshold": [null],
       "history_length":  8,
+      "semi_flat": [true, false],
       "regularization_method": ["adaptive", "l2"],
       "ensure_descent": [true],
-      "relaxation": [1.0],
+      "relaxation": [0.8, 1.0, 1.25, 3.0],
       "regularization_factor": [ 1e-7, 1e-5,  1e-3, 1e-1],
       "step_size": [5e-3],
       "linear_solver_regularization": [1e-1],
@@ -49,21 +51,21 @@
     },
     {
       "method": "ngd",
-      "n_restarts": 6,
-      "natural_grad_clipping_threshold": [null, 0.5 ],
+      "n_restarts": 8,
+      "natural_grad_clipping_threshold": [null],
       "step_size": [ 5e-3],
       "linear_solver_regularization": [1e-1],
       "linear_solver_tolerance": 1e-6
     },
     {
         "method": "sgd",
-        "max_iterations": 55000,
+        "max_iterations": 50000,
         "n_restarts": 6,
         "learning_rate": [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]
     },
     {
         "method": "adam",
-        "max_iterations": 55000,
+        "max_iterations": 50000,
         "n_restarts": 6,
         "learning_rate": [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]
     }
@@ -76,7 +78,7 @@
     }
   },
   "parallel": {
-    "gpu_ids": [6, 4, 5],
+    "gpu_ids": [0, 1, 2, 3, 4, 5, 6, 7],
     "max_parallel": {
       "anderson": 6,
       "ngd": 96,

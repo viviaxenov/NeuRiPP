@@ -1,21 +1,21 @@
 {
-  "output_root": "results/kl_elliptic",
+  "output_root": "results/kl_elliptic_d10_many_history",
   "common_params": {
-    "max_iterations": 400,
+    "max_iterations": 150,
     "batch_size": 512,
     "N_monte_carlo": 512,
     "master_seed": 42,
     "eval_every": 501
   },
   "problem": {
-    "dim": 20,
+    "dim": 10,
     "functional": {
       "kind": "KL"
     },
     "distribution": {
       "name": "elliptic",
       "seed": 1,
-      "n_grid": 2000,
+      "n_grid": 1250,
       "noise_std": 0.001,
       "resample_each": 1
     }
@@ -24,50 +24,63 @@
     {
       "rhs": {
         "model": "MLP",
-        "dim_hidden": 64,
+        "dim_hidden": 32,
         "n_hidden": 1,
         "activation": "swish"
       },
+      "scale_factor": 0.1,
       "divergence_method": "hutchinson",
-      "ode_nstep_max": 6,
-      "ode_method": "rk45",
-      "adaptive": true,
-      "h_max": 0.3
+      "ode_nstep_max": 20,
+      "ode_method": "heun",
+      "adaptive": false
     }
   ],
   "methods": [
     {
       "method": "ngd",
       "n_restarts": 1,
-      "step_size": [0.01],
-      "natural_grad_clipping_threshold": [10.0, 20.0],
-      "linear_solver_regularization": [1e-1, 1e-2, 1e-3]
+      "natural_grad_clipping_threshold": [10.0],
+      "step_size": [  0.01],
+      "linear_solver_regularization": [ 1e-1 ]
+    },
+    {
+      "method": "anderson",
+      "n_restarts": 1,
+      "step_size": [  0.01],
+      "linear_solver_regularization": [ 1e-1 ],
+      "natural_grad_clipping_threshold": [10.0],
+      "history_length":  [1, 2, 4, 6, 8, 10],
+      "regularization_method": ["adaptive", "l2"],
+      "ensure_descent": [true],
+      "relaxation": [1.0],
+      "regularization_factor": [ 1e-3, 1e-1, 1.0, 10.0 ]
     },
     {
       "method": "adam",
       "n_restarts": 1,
-      "learning_rate": [0.01]
+      "learning_rate": [0.1]
     },
     {
       "method": "sgd",
       "n_restarts": 1,
-      "learning_rate": [1e-2, 1e-3, 1e-4, 1e-5, 1e-6]
+      "learning_rate": [0.1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6]
     }
   ],
   "plotting": {
     "style_channels": {
-      "colormap": ["Blues", "Reds"],
+      "colormap": ["Blues", "Reds", "Greens", "Purples"],
       "linestyle": ["-"],
       "linewidth": [1.5]
     }
   },
   "parallel": {
-    "gpu_ids": [2, 4, 5, 6, 7],
+    "gpu_ids": [0, 1, 2, 3, 5, 6, 7],
     "plot_gpu_id": 0,
     "max_parallel": {
       "ngd": 1,
-      "adam": 2,
-      "sgd": 2
+      "adam": 1,
+      "anderson": 1,
+      "sgd": 1
     }
   },
   "worker_env": {

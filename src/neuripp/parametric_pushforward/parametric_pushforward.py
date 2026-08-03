@@ -164,7 +164,7 @@ class ParametricPushforward(nnx.Module):
 
     def _latent_log_density(self, z: jnp.ndarray):
         """Returns the log density of the latent distribution"""
-        return -0.5 * ((z.reshape(z.shape[0], -1)) ** 2).sum(axis=-1)
+        return -0.5 * ((z.reshape(z.shape[0], -1)) ** 2).sum(axis=-1) # - 0.5*z.shape[-1]*jnp.log(2.*jnp.pi)
 
     def sample(self, N_samples: int, rngs: nnx.Rngs, with_log_density=False):
         """Returns a sample `x` of shape `(N_samples, dim)` from the current distribution :math:`\\rho_\\theta`"""
@@ -220,20 +220,5 @@ class ParametricPushforward(nnx.Module):
         return _matvec_fn
 
     def norm(self, tangent: PyTree, rngs):
-        norm_sq = self.scalar_product(tangent, N_monte_carlo, param, rngs)
+        norm_sq = self.scalar_product(tangent, tangent,  rngs)
         return jnp.sqrt(jnp.maximum(norm_sq, ZERO_TOL))
-
-    def riemannian_exp(
-        self,
-        tangent: PyTree,
-    ):
-        if param is None:
-            param = nnx.split(
-                self,
-            )
-
-        new_param = jax.tree.map(lambda _x, _v: _x + _v, param, tangent)
-        nnx.update(self, new_param)
-
-    def vector_transport(self, tangent: PyTree, param_new: PyTree):
-        return tangent
