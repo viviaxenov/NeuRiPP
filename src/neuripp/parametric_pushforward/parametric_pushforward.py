@@ -175,7 +175,8 @@ class ParametricPushforward(nnx.Module):
         self,
         tangent1: PyTree,
         tangent2: PyTree,
-        rngs: nnx.Rngs
+        rngs: nnx.Rngs,
+        data_batch: jnp.ndarray | None = None,
     ):
         """Computes the scalar product of tangent vectors in the pullback Wasserstein metric
 
@@ -201,6 +202,7 @@ class ParametricPushforward(nnx.Module):
     def get_matvec_fn(
         self,
         rngs: nnx.Rngs,
+        data_batch: jnp.ndarray | None = None,
     ):
         """For fixed set of parameters, generates latent samples and gives a function that computes :maht:`G(\\theta)\\mathrm{d}\\theta`"""
         z = self._sample_latent(self._N_mc, rngs)

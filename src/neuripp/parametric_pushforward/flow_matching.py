@@ -1,16 +1,12 @@
 """Defines a model with the geometry induced by flow matching"""
 
+from flax import nnx
 import jax
 import jax.numpy as jnp
 from jaxtyping import PyTree
 
-from flax import nnx
-
-from neuripp._ode._ode import solve_ode_batched
 from neuripp.parametric_pushforward.parametric_pushforward import ParametricPushforward
 from neuripp.utility.utility import tree_dot_product
-
-from typing import Literal
 
 ZERO_TOL = 1e-20
 
@@ -23,8 +19,8 @@ class FlowMatching(ParametricPushforward):
         n_samples = data_batch.shape[0]
         x1 = data_batch
         x0 = self._sample_latent(n_samples, rngs)
-        ts = rngs.uniform()
-        xts = x0 * (1.0 - ts)[:, ...] + x1 * ts[:, ...]
+        ts = rngs.uniform((n_samples,))
+        xts = x0 * (1.0 - ts[:, None]) + x1 * ts[:, None]
 
         if return_x0:
             return ts, xts, x0
@@ -33,10 +29,10 @@ class FlowMatching(ParametricPushforward):
 
     def scalar_product(
         self,
-        data_batch: jnp.array,
         tangent1: PyTree,
         tangent2: PyTree,
         rngs: nnx.Rngs,
+        data_batch: jnp.ndarray | None = None,
         interpolant=None,
     ):
         """Computes the scalar product of tangent vectors in the pullback Wasserstein metric
@@ -47,6 +43,8 @@ class FlowMatching(ParametricPushforward):
 
         """
         if interpolant is None:
+            if data_batch is None:
+                raise ValueError("data_batch is required for the flow-matching metric")
             interpolant = self.sample_interpolant(data_batch, rngs)
 
         ts, xts = interpolant
@@ -55,7 +53,7 @@ class FlowMatching(ParametricPushforward):
 
         def _T(_par):
             _model = nnx.merge(gd, _par, rest)
-            return _model.rhs(ts, xts)
+            return nnx.vmap(_model.rhs)(ts, xts)
 
         _, dT_dtheta = jax.linearize(_T, params)
 
@@ -67,17 +65,21 @@ class FlowMatching(ParametricPushforward):
     def get_matvec_fn(
         self,
         rngs: nnx.Rngs,
+        data_batch: jnp.ndarray | None = None,
         interpolant=None,
     ):
         """For fixed set of parameters, generates latent samples and gives a function that computes :maht:`G(\\theta)\\mathrm{d}\\theta`"""
         if interpolant is None:
+            if data_batch is None:
+                raise ValueError("data_batch is required for the flow-matching metric")
             interpolant = self.sample_interpolant(data_batch, rngs)
 
+        ts, xts = interpolant
         gd, params, rest = nnx.split(self, nnx.Param, ...)
 
         def _T(_par):
             _model = nnx.merge(gd, _par, rest)
-            return _model.rhs(*interpolant) / jnp.sqrt(interpolant[0].shape[0])
+            return nnx.vmap(_model.rhs)(ts, xts) / jnp.sqrt(ts.shape[0])
 
         _, dT_dtheta = jax.linearize(_T, params)
         dT_transpose_dtheta = jax.linear_transpose(dT_dtheta, params)
@@ -95,4 +97,4 @@ def flow_matching_loss(model: FlowMatching, data_batch: jnp.ndarray, rngs: nnx.R
     vs = nnx.vmap(model.rhs)(ts, xts)
     v_empirical = x1 - x0
 
-    return jnp.mean(((vs - v_empirical).sum(axis=-1)) ** 2)
+    return jnp.mean(jnp.sum((vs - v_empirical) ** 2, axis=-1))

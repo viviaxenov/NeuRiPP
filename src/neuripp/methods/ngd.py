@@ -25,12 +25,13 @@ def _compute_natural_grad(
     rngs,
     grad,
     init_vector,
+    data_batch=None,
     linear_solver_regularization: float = 1e-3,
     linear_solver_tolerance: float = 1e-6,
     linear_solver_maxiter: float = 50,
     **kwargs,
 ):
-    matvec_cur = model.get_matvec_fn(rngs)
+    matvec_cur = model.get_matvec_fn(rngs, data_batch=data_batch)
 
     def oper_cg(tang):
         Gtang = matvec_cur(tang)
@@ -93,11 +94,14 @@ def get_ngd(
             rngs,
             grad,
             prev_grad,
+            data_batch=batch,
             **kwargs,
         )
         grad_norm_sq = tree_dot_product(grad, grad)
 
-        natural_grad_norm_sq = model.scalar_product(natural_grad, natural_grad, rngs)
+        natural_grad_norm_sq = model.scalar_product(
+            natural_grad, natural_grad, rngs, data_batch=batch
+        )
         norm = jnp.maximum(natural_grad_norm_sq, 0.0) ** 0.5
         # Gradient clipping
         if natural_grad_clipping_threshold is not None:

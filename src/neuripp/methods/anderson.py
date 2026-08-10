@@ -62,6 +62,7 @@ def get_anderson(
             rngs,
             grad,
             zero_vector,
+            data_batch=batch,
             **kwargs,
         )
         residual = jax.tree.map(lambda _x: -step_size * _x, natural_grad)
@@ -94,11 +95,14 @@ def get_anderson(
             rngs,
             grad,
             previous_grad,
+            data_batch=batch,
             **kwargs,
         )
 
         grad_norm_sq = tree_dot_product(grad, grad)
-        natural_grad_norm_sq = model.scalar_product(natural_grad, natural_grad, rngs)
+        natural_grad_norm_sq = model.scalar_product(
+            natural_grad, natural_grad, rngs, data_batch=batch
+        )
         norm = jnp.maximum(natural_grad_norm_sq, 0.0) ** 0.5
         # Gradient clipping
         if natural_grad_clipping_threshold is not None:
@@ -115,7 +119,7 @@ def get_anderson(
         # precompute Gx for historical vectors
         # TODO: this requires a backward pass, maybe better use scalar product with forward passes only?
         # TODO: use nnx.vmap?
-        Ghistory = jax.vmap(model.get_matvec_fn(rngs))(history)
+        Ghistory = jax.vmap(model.get_matvec_fn(rngs, data_batch=batch))(history)
         # compute dot products in parallel
         # <r_i, Gr_j>
         pairwise_mat = pairwise_dot_matrix(history, Ghistory)
@@ -148,7 +152,7 @@ def get_anderson(
 
         if ensure_descent:
             descending = (
-                model.scalar_product(residual, r_mixed, rngs)
+                model.scalar_product(residual, r_mixed, rngs, data_batch=batch)
                 <= relaxation * r_cur_norm_sq
             )
             r_mixed = jax.tree.map(
