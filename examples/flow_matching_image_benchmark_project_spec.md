@@ -971,6 +971,10 @@ Concurrent runs use independent spawned processes rather than optimizer-lane
 `vmap`. Run seeds and named RNG streams are derived from the resolved run
 identity, not worker assignment or scheduling order.
 
+The initial distributed implementation is single-host: one worker process may
+span several locally visible accelerators. Multi-host JAX meshes must fail
+explicitly rather than silently launching independent replicas.
+
 ### 10.6 Checkpoint and resume contract
 
 Each checkpoint must contain enough state to resume training, including model
