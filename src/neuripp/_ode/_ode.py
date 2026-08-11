@@ -370,7 +370,10 @@ def solve_ode_batched(
                 carry,
             )
 
-            x_new = jnp.where(needs_step[:, jnp.newaxis], x_new, x_batch)
+            batch_mask = needs_step.reshape(
+                (needs_step.shape[0],) + (1,) * (x_batch.ndim - 1)
+            )
+            x_new = jnp.where(batch_mask, x_new, x_batch)
 
             return t_new, x_new, h_new
 
