@@ -1015,6 +1015,8 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.plot_only and args.run_id is not None:
+        raise ValueError("--plot-only and --run-id are mutually exclusive")
     config = load_config(args.config)
     runs = plan_runs(config)
     if args.run_id is not None:

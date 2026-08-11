@@ -114,8 +114,32 @@ def test_worker_sets_environment_before_dispatch():
             os.environ["NEURIPP_TEST_WORKER"] = original_test
 
 
+def test_plot_only_rejects_run_selection():
+    runner = load_runner()
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "config.json"
+        path.write_text(json.dumps(smoke_config(directory)), encoding="utf-8")
+        try:
+            runner.main(
+                [
+                    "--config",
+                    str(path),
+                    "--plot-only",
+                    "--run-id",
+                    "0",
+                    "--output-dir",
+                    str(Path(directory) / "session"),
+                ]
+            )
+        except ValueError as error:
+            assert "mutually exclusive" in str(error)
+        else:
+            raise AssertionError("Expected plot/run selection conflict")
+
+
 if __name__ == "__main__":
     test_runner_import_and_validation_do_not_import_jax()
     test_plot_only_does_not_prepare_dataset()
     test_worker_sets_environment_before_dispatch()
+    test_plot_only_rejects_run_selection()
     print("Image runner tests passed.")
