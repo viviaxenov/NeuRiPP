@@ -175,7 +175,7 @@ def test_sampling_is_independent_of_evaluation_batch_size():
 
 
 def test_local_fid_matches_function_loaded_from_reference_source():
-    source = '''import numpy as np\nimport scipy\ndef calculate_fid(stats: dict[str, np.ndarray], ref_stats: dict[str, np.ndarray]) -> float:\n    m = np.square(stats["mu"] - ref_stats["mu"]).sum()\n    s, _ = scipy.linalg.sqrtm(np.dot(stats["sigma"], ref_stats["sigma"]), disp=False)\n    return float(np.real(m + np.trace(stats["sigma"] + ref_stats["sigma"] - s * 2)))\n'''
+    source = '''def calculate_fid(stats: dict[str, np.ndarray], ref_stats: dict[str, np.ndarray]) -> float:\n    m = np.square(stats["mu"] - ref_stats["mu"]).sum()\n    s, _ = scipy.linalg.sqrtm(np.dot(stats["sigma"], ref_stats["sigma"]), disp=False)\n    return float(np.real(m + np.trace(stats["sigma"] + ref_stats["sigma"] - s * 2)))\n'''
     with tempfile.TemporaryDirectory() as directory:
         source_dir = Path(directory)
         (source_dir / "eval").mkdir()
