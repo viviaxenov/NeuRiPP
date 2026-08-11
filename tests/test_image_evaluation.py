@@ -1,5 +1,6 @@
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import jax.numpy as jnp
 import numpy as np
@@ -9,6 +10,7 @@ from flax import nnx
 from neuripp.image_benchmarks.encoders.identity import IdentityEncoder
 from neuripp.image_benchmarks.evaluation.fid import (
     FIDCacheKey,
+    _sqrtm_with_error_estimate,
     calculate_fid,
     load_fid_stats,
     load_diffuse_fid_function,
@@ -187,7 +189,16 @@ def test_local_fid_matches_function_loaded_from_reference_source():
         left = statistics_from_feature_batches([rng.normal(size=(8, 4))])
         right = statistics_from_feature_batches([rng.normal(size=(9, 4))])
         local = calculate_fid(left, right)
-        namespace = {"np": np, "scipy": __import__("scipy")}
+        namespace = {
+            "np": np,
+            "scipy": SimpleNamespace(
+                linalg=SimpleNamespace(
+                    sqrtm=lambda matrix, disp=False: _sqrtm_with_error_estimate(
+                        matrix
+                    )
+                )
+            ),
+        }
         exec(source, namespace)
         reference = namespace["calculate_fid"](
             left.as_diffuse_dict(), right.as_diffuse_dict()
