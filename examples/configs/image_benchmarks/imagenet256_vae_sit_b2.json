@@ -1,0 +1,5 @@
+{
+  "extends": "imagenet256_vae_sit_s2.json",
+  "experiment": {"name": "imagenet256_vae_sit_b2"},
+  "rhs": {"variant": "B"}
+}

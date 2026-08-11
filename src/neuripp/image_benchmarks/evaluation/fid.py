@@ -27,6 +27,8 @@ class FIDCacheKey:
     dataset_resize: str = "pillow_lanczos"
     inception_resize: str = "jax_bilinear_299"
     feature_extractor: str = "diffuse_nnx_inception_v3_fid_023afd2"
+    split_indices_sha256: str = ""
+    dataset_manifest_digest: str = ""
 
     @property
     def digest(self) -> str:

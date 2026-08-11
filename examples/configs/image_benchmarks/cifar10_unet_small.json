@@ -1,0 +1,4 @@
+{
+  "extends": "_base_pixel.json",
+  "experiment": {"name": "cifar10_unet_small"}
+}

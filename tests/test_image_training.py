@@ -182,6 +182,29 @@ def test_trainer_checkpoint_payload_restores_anderson_exactly():
     assert restored.accounting()["effective_epoch"] == original.accounting()["effective_epoch"]
 
 
+def test_anderson_initial_update_advances_schedule_index():
+    data = np.asarray(
+        [[-1.0, -1.0], [-1.0, 1.0], [1.0, -1.0], [1.0, 1.0]],
+        dtype=np.float32,
+    )
+    config = {
+        **METHOD_CONFIGS["anderson"],
+        "kwargs": {
+            **METHOD_CONFIGS["anderson"]["kwargs"],
+            "stepsize_schedule": "schedule_exp",
+            "drop_every": 2,
+            "drop_by": 2.0,
+        },
+    }
+    trainer = ImageTrainer(
+        make_model(50), config, flow_matching_loss, data, nnx.Rngs(51)
+    )
+    assert int(trainer.state[3]) == 1
+    trainer.step(data)
+    assert int(trainer.state[3]) == 2
+    np.testing.assert_allclose(trainer.state[4][0], 5e-4)
+
+
 if __name__ == "__main__":
     if "--parity-worker" in sys.argv:
         index = sys.argv.index("--parity-worker")
@@ -191,4 +214,5 @@ if __name__ == "__main__":
         test_data_parallel_rejects_indivisible_global_batch()
         test_one_and_two_device_updates_match()
         test_trainer_checkpoint_payload_restores_anderson_exactly()
+        test_anderson_initial_update_advances_schedule_index()
         print("Image training tests passed.")

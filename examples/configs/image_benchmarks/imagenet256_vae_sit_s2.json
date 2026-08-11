@@ -1,0 +1,7 @@
+{
+  "extends": "_base_vae.json",
+  "experiment": {"name": "imagenet256_vae_sit_s2"},
+  "problem": {"dataset": {"name": "imagenet256", "resolution": 256}},
+  "rhs": {"type": "sit", "implementation": "diffuse_nnx", "variant": "S", "patch_size": 2, "class_conditioning": false, "source_dir": "../../../artifacts/external/diffuse_nnx"},
+  "evaluation": {"split": "validation", "kid": {"enabled": false}}
+}

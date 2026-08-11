@@ -1,0 +1,110 @@
+{
+  "experiment": {
+    "name": "cifar10_unet_optimizer_comparison",
+    "seed": 42,
+    "output_root": "../../../results/image_benchmarks"
+  },
+  "problem": {
+    "dataset": {
+      "name": "cifar10",
+      "resolution": 32,
+      "cache_dir": "../../../data/huggingface",
+      "split_seed": 20260811,
+      "validation_size": 5000,
+      "crop": "center_square",
+      "horizontal_flip": true,
+      "offline": false
+    },
+    "encoder": {
+      "type": "none"
+    }
+  },
+  "rhs": {
+    "type": "unet",
+    "variant": "cifar_reference",
+    "base_channels": 128,
+    "channel_mult": [1, 2, 2, 2],
+    "num_res_blocks": 2,
+    "num_heads": 4,
+    "num_head_channels": 64,
+    "attention_resolutions": [16],
+    "dropout": 0.1,
+    "time_embedding_dim": 512,
+    "compute_dtype": "float32"
+  },
+  "training": {
+    "max_steps": 100000,
+    "batch_size": 256,
+    "log_every": 100,
+    "validation_every": 1000,
+    "checkpoint_every": 5000,
+    "keep_checkpoints": 3
+  },
+  "methods": [
+    {
+      "name": "adamw",
+      "n_restarts": 3,
+      "kwargs": {
+        "learning_rate": 0.0001,
+        "beta1": 0.9,
+        "beta2": 0.999,
+        "eps": 1e-8,
+        "weight_decay": 0.0
+      }
+    },
+    {
+      "name": "ngd",
+      "n_restarts": 3,
+      "kwargs": {
+        "step_size": 0.001,
+        "linear_solver_regularization": 0.001,
+        "linear_solver_tolerance": 1e-6,
+        "linear_solver_maxiter": 50,
+        "natural_grad_clipping_threshold": 20.0
+      }
+    }
+  ],
+  "evaluation": {
+    "split": "test",
+    "seed": 1042,
+    "val_fm_loss": {
+      "enabled": true,
+      "num_samples": 5000,
+      "batch_size": 256
+    },
+    "sampling": {
+      "method": "heun",
+      "steps": 50,
+      "batch_size": 256,
+      "kwargs": {}
+    },
+    "fid": {
+      "enabled": true,
+      "num_samples_final": 50000,
+      "batch_size": 64,
+      "cache_dir": "../../../artifacts/fid",
+      "source_dir": "../../../artifacts/external/diffuse_nnx"
+    },
+    "kid": {
+      "enabled": false,
+      "subsets": 100,
+      "subset_size": 1000
+    }
+  },
+  "resources": {
+    "gpu_ids": [0, 1, 2, 3, 4, 5, 6],
+    "gpus_per_run": 1,
+    "max_concurrent_runs": 7,
+    "data_parallel": true,
+    "worker_env": {
+      "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9"
+    }
+  },
+  "plotting": {
+    "sample_grid": {
+      "enabled": true,
+      "rows": 8,
+      "columns": 8
+    }
+  }
+}

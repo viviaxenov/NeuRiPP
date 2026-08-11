@@ -33,6 +33,8 @@ class LatentCacheKey:
     crop: str
     encoder_checkpoint_sha256: str
     latent_scale: float
+    split_indices_sha256: str = ""
+    dataset_manifest_digest: str = ""
 
     @property
     def digest(self) -> str:

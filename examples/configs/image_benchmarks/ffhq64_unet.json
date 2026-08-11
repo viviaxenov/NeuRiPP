@@ -1,0 +1,7 @@
+{
+  "extends": "_base_pixel.json",
+  "experiment": {"name": "ffhq64_unet_reference"},
+  "problem": {"dataset": {"name": "ffhq64", "resolution": 64}},
+  "rhs": {"variant": "cifar_reference"},
+  "evaluation": {"kid": {"enabled": true}}
+}

@@ -1,0 +1,6 @@
+{
+  "extends": "_base_pixel.json",
+  "experiment": {"name": "imagenet64_unet"},
+  "problem": {"dataset": {"name": "imagenet64", "resolution": 64}},
+  "evaluation": {"split": "validation"}
+}

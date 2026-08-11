@@ -1,0 +1,4 @@
+{
+  "extends": "_base_vae.json",
+  "experiment": {"name": "flowers256_vae_unet"}
+}

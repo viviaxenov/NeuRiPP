@@ -1,0 +1,5 @@
+{
+  "extends": "_base_ae.json",
+  "experiment": {"name": "mnist_ae64_mlp"},
+  "problem": {"encoder": {"latent_dim": 64, "checkpoint": "../../../artifacts/ae/mnist_latent64"}}
+}

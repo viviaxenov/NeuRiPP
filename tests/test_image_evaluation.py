@@ -95,6 +95,14 @@ def test_fid_statistics_and_cache_round_trip():
     np.testing.assert_allclose(stats.sigma, np.cov(features, rowvar=False))
     assert abs(calculate_fid(stats, stats)) < 1e-8
     key = FIDCacheKey("revision", "test", 32, "center_square", "rgb")
+    assert key.digest != FIDCacheKey(
+        "revision",
+        "test",
+        32,
+        "center_square",
+        "rgb",
+        split_indices_sha256="different",
+    ).digest
     with tempfile.TemporaryDirectory() as directory:
         write_fid_stats(directory, key, stats)
         loaded = load_fid_stats(directory, key)

@@ -1,0 +1,19 @@
+{
+  "experiment": {"name": "pixel_base", "seed": 42, "output_root": "../../../results/image_benchmarks"},
+  "problem": {
+    "dataset": {"name": "cifar10", "resolution": 32, "cache_dir": "../../../data/huggingface", "horizontal_flip": true},
+    "encoder": {"type": "none"}
+  },
+  "rhs": {"type": "unet", "variant": "small", "compute_dtype": "float32"},
+  "training": {"max_steps": 100000, "batch_size": 128, "log_every": 100, "validation_every": 1000, "checkpoint_every": 5000, "keep_checkpoints": 3},
+  "methods": [{"name": "adamw", "n_restarts": 1, "kwargs": {"learning_rate": 0.0001, "weight_decay": 0.0}}],
+  "evaluation": {
+    "split": "test",
+    "val_fm_loss": {"enabled": true, "num_samples": 5000, "batch_size": 128},
+    "sampling": {"method": "heun", "steps": 50, "batch_size": 128},
+    "fid": {"enabled": true, "num_samples_final": 50000, "batch_size": 64, "cache_dir": "../../../artifacts/fid", "source_dir": "../../../artifacts/external/diffuse_nnx"},
+    "kid": {"enabled": false}
+  },
+  "resources": {"gpu_ids": [0, 1, 2, 3, 4, 5, 6], "gpus_per_run": 1, "max_concurrent_runs": 7, "data_parallel": true, "worker_env": {"XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9"}},
+  "plotting": {"sample_grid": {"enabled": true, "rows": 8, "columns": 8}}
+}

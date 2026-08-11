@@ -1,0 +1,5 @@
+{
+  "extends": "lsun256_vae_unet.json",
+  "experiment": {"name": "lsun256_vae_sit_s2"},
+  "rhs": {"type": "sit", "implementation": "diffuse_nnx", "variant": "S", "patch_size": 2, "class_conditioning": false, "source_dir": "../../../artifacts/external/diffuse_nnx"}
+}

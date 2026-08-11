@@ -14,7 +14,8 @@ ZERO_TOL = 1e-20
 def _dropout_keys(rhs, rngs: nnx.Rngs | None, count: int):
     if rngs is None or not getattr(rhs, "uses_explicit_dropout_rng", False):
         return None
-    return jax.random.split(rngs(), count)
+    stream = rngs.model_dropout if "model_dropout" in rngs else rngs.default
+    return jax.random.split(stream(), count)
 
 
 def _batched_rhs(rhs, times, states, dropout_keys=None):
@@ -45,7 +46,8 @@ class FlowMatching(ParametricPushforward):
         state shape.
         """
 
-        return rngs.normal((N_samples, *self.dim))
+        stream = rngs.fm_noise if "fm_noise" in rngs else rngs.default
+        return jax.random.normal(stream(), (N_samples, *self.dim))
 
     def sample_interpolant(
         self,
@@ -85,7 +87,10 @@ class FlowMatching(ParametricPushforward):
         if times is None:
             if rngs is None:
                 raise ValueError("rngs is required when times are not provided")
-            ts = rngs.uniform((n_samples,), dtype=data_batch.dtype)
+            stream = rngs.fm_time if "fm_time" in rngs else rngs.default
+            ts = jax.random.uniform(
+                stream(), (n_samples,), dtype=data_batch.dtype
+            )
         else:
             ts = jnp.asarray(times, dtype=data_batch.dtype)
             if ts.shape != (n_samples,):

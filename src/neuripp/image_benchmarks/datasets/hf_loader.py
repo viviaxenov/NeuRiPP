@@ -377,6 +377,7 @@ class ImageSplitIterator:
         batch_size: int,
         seed: int,
         *,
+        augmentation_seed: int | None,
         shuffle: bool,
         horizontal_flip: bool,
         drop_last: bool,
@@ -389,6 +390,7 @@ class ImageSplitIterator:
         self.split = split
         self.batch_size = batch_size
         self.seed = seed
+        self.augmentation_seed = seed if augmentation_seed is None else augmentation_seed
         self.shuffle = shuffle
         self.horizontal_flip = horizontal_flip
         self.drop_last = drop_last
@@ -400,16 +402,24 @@ class ImageSplitIterator:
         return math.ceil(len(self.indices) / self.batch_size)
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
-        epoch_seed = self.seed + self.epoch
+        epoch = self.epoch
+        self.epoch += 1
+        return self.iter_epoch(epoch)
+
+    def iter_epoch(
+        self, epoch: int, *, start_batch: int = 0
+    ) -> Iterator[dict[str, Any]]:
+        """Iterate a specific epoch, enabling exact checkpoint resume."""
+
+        epoch_seed = self.seed + epoch
         order_rng = np.random.default_rng(epoch_seed)
         order = np.arange(len(self.indices))
         if self.shuffle:
             order_rng.shuffle(order)
-        self.epoch += 1
         stop = len(order)
         if self.drop_last:
             stop = stop - stop % self.batch_size
-        for start in range(0, stop, self.batch_size):
+        for start in range(start_batch * self.batch_size, stop, self.batch_size):
             positions = order[start : start + self.batch_size]
             if self.drop_last and len(positions) != self.batch_size:
                 continue
@@ -420,7 +430,9 @@ class ImageSplitIterator:
             for position, source_index in enumerate(sample_indices):
                 record = self.source[int(source_index)]
                 augmentation_rng = np.random.default_rng(
-                    np.random.SeedSequence([epoch_seed, int(source_index), position])
+                    np.random.SeedSequence(
+                        [self.augmentation_seed + epoch, int(source_index), position]
+                    )
                 )
                 images.append(
                     transform_image(
@@ -457,6 +469,7 @@ def load_split(
     seed: int,
     *,
     shuffle: bool | None = None,
+    augmentation_seed: int | None = None,
     horizontal_flip: bool = False,
     drop_last: bool = False,
     offline: bool = False,
@@ -514,6 +527,7 @@ def load_split(
         split,
         batch_size,
         seed,
+        augmentation_seed=augmentation_seed,
         shuffle=split == "train" if shuffle is None else shuffle,
         horizontal_flip=horizontal_flip,
         drop_last=drop_last,

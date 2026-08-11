@@ -1,0 +1,82 @@
+{
+  "experiment": {
+    "name": "mnist_mlp_smoke",
+    "seed": 3,
+    "output_root": "../../../results/image_benchmarks"
+  },
+  "problem": {
+    "dataset": {
+      "name": "mnist",
+      "resolution": 28,
+      "cache_dir": "../../../data/huggingface",
+      "validation_size": 32,
+      "horizontal_flip": false
+    },
+    "encoder": {
+      "type": "none"
+    }
+  },
+  "rhs": {
+    "type": "mlp",
+    "flatten": true,
+    "hidden_dims": [16],
+    "activation": "silu",
+    "time_embedding": {
+      "type": "sinusoidal",
+      "dim": 8
+    }
+  },
+  "training": {
+    "max_steps": 2,
+    "batch_size": 4,
+    "log_every": 1,
+    "validation_every": 1,
+    "checkpoint_every": 1,
+    "keep_checkpoints": 2
+  },
+  "methods": [
+    {
+      "name": "adamw",
+      "n_restarts": 1,
+      "kwargs": {
+        "learning_rate": 0.001,
+        "weight_decay": 0.0
+      }
+    }
+  ],
+  "evaluation": {
+    "split": "test",
+    "seed": 13,
+    "val_fm_loss": {
+      "enabled": true,
+      "num_samples": 4,
+      "batch_size": 2
+    },
+    "sampling": {
+      "method": "euler",
+      "steps": 1,
+      "batch_size": 4
+    },
+    "fid": {
+      "enabled": false
+    },
+    "kid": {
+      "enabled": false
+    }
+  },
+  "resources": {
+    "gpu_ids": [],
+    "gpus_per_run": 1,
+    "max_concurrent_runs": 1,
+    "worker_env": {
+      "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
+    }
+  },
+  "plotting": {
+    "sample_grid": {
+      "enabled": true,
+      "rows": 2,
+      "columns": 2
+    }
+  }
+}

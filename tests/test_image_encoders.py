@@ -140,6 +140,16 @@ def test_latent_cache_key_invalidation_and_round_trip():
     base = LatentCacheKey("revision-a", "train", 256, "center_square", "abc", 0.18215)
     changed = LatentCacheKey("revision-a", "train", 64, "center_square", "abc", 0.18215)
     assert base.digest != changed.digest
+    changed_split = LatentCacheKey(
+        "revision-a",
+        "train",
+        256,
+        "center_square",
+        "abc",
+        0.18215,
+        split_indices_sha256="different",
+    )
+    assert base.digest != changed_split.digest
     mean = np.zeros((3, 2, 2, 4), dtype=np.float32)
     std = np.ones_like(mean)
     with tempfile.TemporaryDirectory() as directory:

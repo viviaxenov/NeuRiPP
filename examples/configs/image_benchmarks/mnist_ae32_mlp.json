@@ -1,0 +1,4 @@
+{
+  "extends": "_base_ae.json",
+  "experiment": {"name": "mnist_ae32_mlp"}
+}

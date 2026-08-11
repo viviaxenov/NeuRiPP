@@ -1,0 +1,11 @@
+{
+  "extends": "_base_pixel.json",
+  "experiment": {"name": "mnist_ae_base"},
+  "problem": {
+    "dataset": {"name": "mnist", "resolution": 28, "horizontal_flip": false},
+    "encoder": {"type": "ae", "latent_dim": 32, "checkpoint": "../../../artifacts/ae/mnist_latent32", "train_if_missing": true, "frozen_during_flow_training": true, "cache_latents": true, "latent_cache_dir": "../../../artifacts/latents"}
+  },
+  "rhs": {"type": "mlp", "hidden_dims": [512, 512, 512], "activation": "silu", "time_embedding": {"type": "sinusoidal", "dim": 128}},
+  "training": {"batch_size": 256},
+  "evaluation": {"kid": {"enabled": true}}
+}
