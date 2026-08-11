@@ -168,6 +168,35 @@ def test_all_required_presets_resolve_and_plan():
             os.environ["HF_TOKEN"] = previous
 
 
+def test_runtime_defaults_are_persisted_for_run_planning():
+    with tempfile.TemporaryDirectory() as directory:
+        payload = base_config(directory)
+        payload["experiment"].pop("seed")
+        payload["resources"].pop("gpu_ids")
+        payload["resources"].pop("gpus_per_run")
+        config = load_config(write_config(directory, payload))
+        assert config["experiment"]["seed"] == 0
+        assert config["resources"]["gpu_ids"] == []
+        assert config["resources"]["gpus_per_run"] == 1
+        assert plan_runs(config)
+        assert gpu_groups(config["resources"]) == [[]]
+
+
+def test_fid_requires_at_least_two_fake_samples():
+    with tempfile.TemporaryDirectory() as directory:
+        payload = base_config(directory)
+        payload["evaluation"]["fid"] = {
+            "enabled": True,
+            "num_samples_final": 1,
+        }
+        try:
+            load_config(write_config(directory, payload))
+        except ValueError as error:
+            assert "at least 2" in str(error)
+        else:
+            raise AssertionError("Expected one-sample FID preflight failure")
+
+
 if __name__ == "__main__":
     test_lists_are_literal_and_only_methods_restarts_expand()
     test_resource_groups_reserve_disjoint_devices()
@@ -175,4 +204,6 @@ if __name__ == "__main__":
     test_config_inheritance_deep_merges_objects_and_replaces_arrays()
     test_runtime_choices_fail_during_jax_free_preflight()
     test_all_required_presets_resolve_and_plan()
+    test_runtime_defaults_are_persisted_for_run_planning()
+    test_fid_requires_at_least_two_fake_samples()
     print("Image config tests passed.")

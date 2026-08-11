@@ -119,25 +119,38 @@ def prepare_assets(config: dict[str, Any]) -> dict[str, Any]:
 
     prepared: dict[str, Any] = {}
     encoder = config["problem"]["encoder"]
-    source_dirs = []
+    source_policies: dict[str, bool] = {}
+
+    def require_source(path, auto_download):
+        path = str(path)
+        source_policies[path] = source_policies.get(path, True) and bool(auto_download)
+
     if encoder["type"] == "vae":
-        source_dirs.append(encoder["source_dir"])
+        require_source(
+            encoder["source_dir"], encoder.get("source_auto_download", True)
+        )
         prepared["vae_checkpoint"] = prepare_vae_checkpoint(
             encoder["checkpoint"],
             auto_download=bool(encoder.get("auto_download", True)),
             expected_sha256=encoder.get("expected_sha256"),
         )
     if config["rhs"]["type"] == "sit":
-        source_dirs.append(config["rhs"]["source_dir"])
+        require_source(
+            config["rhs"]["source_dir"],
+            config["rhs"].get("source_auto_download", True),
+        )
     if config["evaluation"]["fid"]["enabled"]:
-        source_dirs.append(config["evaluation"]["fid"]["source_dir"])
+        require_source(
+            config["evaluation"]["fid"]["source_dir"],
+            config["evaluation"]["fid"].get("source_auto_download", True),
+        )
     prepared["diffuse_nnx_sources"] = [
         str(
             prepare_diffuse_nnx_source(
-                source, auto_download=True
+                source, auto_download=source_policies[source]
             )
         )
-        for source in sorted(set(source_dirs))
+        for source in sorted(source_policies)
     ]
     return prepared
 
@@ -301,8 +314,6 @@ def _ensure_latent_cache(config, manifest, encoder, split, seed):
                 images = batch["image"]
                 if hasattr(encoder, "encode_stats"):
                     mean, std = encoder.encode_stats(images)
-                    if not encoder_config.get("sample_posterior", True):
-                        std = np.zeros_like(np.asarray(std))
                 else:
                     mean = encoder.encode(images)
                     std = np.zeros_like(np.asarray(mean))
@@ -617,11 +628,12 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         if metrics_path.is_file()
         else []
     )
-    if restored_checkpoint is not None:
+    if resume:
         retained_records = [
             record
             for record in previous_records
-            if int(record.get("optimizer_step", record.get("step", -1)))
+            if restored_checkpoint is not None
+            and int(record.get("optimizer_step", record.get("step", -1)))
             <= trainer.step_count
         ]
         if retained_records != previous_records:
@@ -896,12 +908,24 @@ def execute_runs(config, runs, manifest, session_dir, resume):
     reported = {result["run_id"] for result in results}
     for run in runs:
         if run["run_id"] not in reported:
+            run_dir = Path(session_dir) / "runs" / run["run_id"]
+            status_path = run_dir / "status.json"
+            if status_path.is_file() and (run_dir / "final_summary.json").is_file():
+                durable_status = json.loads(status_path.read_text(encoding="utf-8"))
+                if durable_status.get("status") == "completed":
+                    results.append(
+                        {
+                            "run_id": run["run_id"],
+                            "status": "completed",
+                            "recovered_after_worker_exit": True,
+                        }
+                    )
+                    continue
             result = {
                 "run_id": run["run_id"],
                 "status": "failed",
                 "error": "worker exited before reporting the run",
             }
-            run_dir = Path(session_dir) / "runs" / run["run_id"]
             run_dir.mkdir(parents=True, exist_ok=True)
             _write_json(
                 run_dir / "status.json",
@@ -1018,6 +1042,10 @@ def main(argv=None):
         print(json.dumps(prepare_assets(config), indent=2, sort_keys=True))
     manifest = prepare_dataset(config)
     print(json.dumps(manifest.summary(), indent=2, sort_keys=True))
+    if manifest.splits["train"].count < config["training"]["batch_size"]:
+        raise ValueError(
+            "training.batch_size exceeds the prepared training split size"
+        )
     if args.prepare_data:
         verify_manifest_batches(config, manifest)
         return 0

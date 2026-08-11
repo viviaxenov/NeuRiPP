@@ -62,6 +62,12 @@ def _positive_integer(value: Any, name: str) -> int:
     return value
 
 
+def _integer_at_least(value: Any, minimum: int, name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+        raise ValueError(f"{name} must be an integer at least {minimum}")
+    return value
+
+
 def _boolean(value: Any, name: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{name} must be a boolean")
@@ -138,6 +144,10 @@ def _validate_encoder(
     if encoder_type != "vae":
         raise ValueError("problem.encoder.type must be one of: none, ae, vae")
     _boolean(config.get("sample_posterior", True), "problem.encoder.sample_posterior")
+    _boolean(
+        config.get("source_auto_download", True),
+        "problem.encoder.source_auto_download",
+    )
     if image_shape[-1] != 3 or image_shape[0] % 8 or image_shape[1] % 8:
         raise ValueError("VAE requires RGB image dimensions divisible by eight")
     checkpoint = _resolve_path(
@@ -204,6 +214,7 @@ def _validate_rhs(config: dict[str, Any], state_shape: tuple[int, ...], base: Pa
                 f"rhs.variant must be one of: {', '.join(sorted(UNET_VARIANTS))}"
             )
     if rhs_type == "sit":
+        _boolean(config.get("source_auto_download", True), "rhs.source_auto_download")
         if config.get("implementation", "diffuse_nnx") != "diffuse_nnx":
             raise ValueError("Only rhs.implementation='diffuse_nnx' is supported for SiT")
         variant = str(config.get("variant", "S")).upper()
@@ -241,6 +252,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
     master_seed = experiment.get("seed", 0)
     if not isinstance(master_seed, int) or isinstance(master_seed, bool):
         raise ValueError("experiment.seed must be an integer")
+    experiment["seed"] = master_seed
     experiment["output_root"] = _resolve_path(
         experiment.get("output_root", "runs/image_benchmarks"),
         base,
@@ -334,8 +346,14 @@ def load_config(path: str | Path) -> dict[str, Any]:
     fid.setdefault("enabled", False)
     _boolean(fid["enabled"], "evaluation.fid.enabled")
     if fid["enabled"]:
-        fid["num_samples_final"] = _positive_integer(
-            fid.get("num_samples_final", 50000), "evaluation.fid.num_samples_final"
+        _boolean(
+            fid.get("source_auto_download", True),
+            "evaluation.fid.source_auto_download",
+        )
+        fid["num_samples_final"] = _integer_at_least(
+            fid.get("num_samples_final", 50000),
+            2,
+            "evaluation.fid.num_samples_final",
         )
         fid["cache_dir"] = _resolve_path(
             fid.get("cache_dir", "artifacts/fid"), base, "evaluation.fid.cache_dir"
@@ -381,11 +399,13 @@ def load_config(path: str | Path) -> dict[str, Any]:
         for value in gpu_ids
     ):
         raise ValueError("resources.gpu_ids must be an array of non-negative integers")
+    resources["gpu_ids"] = gpu_ids
     if len(set(gpu_ids)) != len(gpu_ids):
         raise ValueError("resources.gpu_ids must not contain duplicates")
     gpus_per_run = _positive_integer(
         resources.get("gpus_per_run", 1), "resources.gpus_per_run"
     )
+    resources["gpus_per_run"] = gpus_per_run
     resources["max_concurrent_runs"] = _positive_integer(
         resources.get("max_concurrent_runs", 1), "resources.max_concurrent_runs"
     )
