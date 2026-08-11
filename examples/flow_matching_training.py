@@ -23,6 +23,8 @@ from neuripp.parametric_pushforward.flow_matching import FlowMatching, flow_matc
 from data_generators import CheckerboardBatcher, EightGaussiansBatcher, TwoSpiralsBatcher
 from rhs_architectures import MLP
 
+gaussian_mmd = nnx.jit(gaussian_mmd)
+
 
 DEFAULT_TARGET = "checkerboard"
 DEFAULT_METHODS = "ngd,anderson,adam,sgd"
@@ -36,8 +38,8 @@ DIM = 2
 RESAMPLE_EACH = 1
 N_VALIDATION_SAMPLES = 512
 N_PLOT_SAMPLES = 512
-MLP_HIDDEN_DIM = 63
-MLP_N_HIDDEN = 1
+MLP_HIDDEN_DIM = 128
+MLP_N_HIDDEN = 3
 
 EVAL_ODE_METHOD = "rk45"
 EVAL_ODE_STEPS = 12
@@ -51,20 +53,21 @@ INFERENCE_ODE_CONFIGS = (
 NGD_STEP_SIZE = 1e-3
 NGD_CLIP_NORM = 20.0
 NGD_SOLVER_KWARGS = {
-    "linear_solver_regularization": 1e-5,
-    "drop_every": 100,
-    "drop_by": 1.0,
+    "linear_solver_regularization": 1e-3,
+    "drop_every": 5000,
+    "drop_by": 10.0,
+    "min_step": 1e-6
 }
-ANDERSON_STEP_SIZE = 1e-2
+ANDERSON_STEP_SIZE = 1e-3
 ANDERSON_RELAXATION = 1.0
 ANDERSON_REGULARIZATION_FACTOR = 1e-3
 ANDERSON_HISTORY_LENGTH = 6
-ANDERSON_CLIP_NORM = 10.0
+ANDERSON_CLIP_NORM = 20.0
 ANDERSON_SOLVER_KWARGS = {
     "linear_solver_regularization": 1e-3,
     "linear_solver_maxiter": 100,
-    "drop_every": 100,
-    "drop_by": 2.0,
+    "drop_every": 5000,
+    "drop_by": 10.0,
 }
 ADAM_LEARNING_RATE = 1e-3
 SGD_LEARNING_RATE = 1e-3
@@ -253,7 +256,7 @@ def evaluate_and_save(
         samples[:N_PLOT_SAMPLES],
         validation_data[:N_PLOT_SAMPLES],
         metrics,
-        method_dir / "plots" / f"iteration_{iteration:06d}.pdf",
+        method_dir / "plots" / f"last.pdf",
     )
 
 
