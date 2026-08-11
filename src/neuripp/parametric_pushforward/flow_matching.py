@@ -11,6 +11,28 @@ from neuripp.utility.utility import tree_dot_product
 ZERO_TOL = 1e-20
 
 
+def _dropout_keys(rhs, rngs: nnx.Rngs | None, count: int):
+    if rngs is None or not getattr(rhs, "uses_explicit_dropout_rng", False):
+        return None
+    return jax.random.split(rngs(), count)
+
+
+def _batched_rhs(rhs, times, states, dropout_keys=None):
+    """Vectorize an RHS with explicit, differentiation-safe dropout keys."""
+
+    @nnx.vmap(in_axes=(None, 0, 0), out_axes=0)
+    def deterministic_predict(current_rhs, current_time, current_state):
+        return current_rhs(current_time, current_state)
+
+    @nnx.vmap(in_axes=(None, 0, 0, 0), out_axes=0)
+    def stochastic_predict(current_rhs, current_time, current_state, dropout_key):
+        return current_rhs(current_time, current_state, dropout_key)
+
+    if dropout_keys is None:
+        return deterministic_predict(rhs, times, states)
+    return stochastic_predict(rhs, times, states, dropout_keys)
+
+
 class FlowMatching(ParametricPushforward):
 
     def _sample_latent(self, N_samples: int, rngs: nnx.Rngs):
@@ -101,12 +123,13 @@ class FlowMatching(ParametricPushforward):
             interpolant = self.sample_interpolant(data_batch, rngs)
 
         ts, xts = interpolant
+        dropout_keys = _dropout_keys(self.rhs, rngs, ts.shape[0])
 
         gd, params, rest = nnx.split(self, nnx.Param, ...)
 
         def _T(_par):
             _model = nnx.merge(gd, _par, rest)
-            return nnx.vmap(_model.rhs)(ts, xts)
+            return _batched_rhs(_model.rhs, ts, xts, dropout_keys)
 
         _, dT_dtheta = jax.linearize(_T, params)
 
@@ -128,11 +151,14 @@ class FlowMatching(ParametricPushforward):
             interpolant = self.sample_interpolant(data_batch, rngs)
 
         ts, xts = interpolant
+        dropout_keys = _dropout_keys(self.rhs, rngs, ts.shape[0])
         gd, params, rest = nnx.split(self, nnx.Param, ...)
 
         def _T(_par):
             _model = nnx.merge(gd, _par, rest)
-            return nnx.vmap(_model.rhs)(ts, xts) / jnp.sqrt(ts.shape[0])
+            return _batched_rhs(
+                _model.rhs, ts, xts, dropout_keys
+            ) / jnp.sqrt(ts.shape[0])
 
         _, dT_dtheta = jax.linearize(_T, params)
         dT_transpose_dtheta = jax.linear_transpose(dT_dtheta, params)
@@ -166,7 +192,9 @@ def flow_matching_loss(
         data_batch, rngs, return_x0=True, **interpolant_kwargs
     )
     x1 = data_batch
-    vs = nnx.vmap(model.rhs)(ts, xts)
+    vs = _batched_rhs(
+        model.rhs, ts, xts, _dropout_keys(model.rhs, rngs, ts.shape[0])
+    )
     v_empirical = x1 - x0
     state_axes = tuple(range(1, vs.ndim))
     return jnp.mean(jnp.sum((vs - v_empirical) ** 2, axis=state_axes))
