@@ -32,6 +32,7 @@ examples = [
   "datasets[vision]>=5.0.0",
   "orbax-checkpoint>=0.11.31",
   "pandas>=2.2",
+  "h5py>=3.11",
   "bip-surrogates-paper @ git+https://github.com/viviaxenov/Bayesian-inference-with-surrogates.git",
 ]
 docs = [
