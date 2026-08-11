@@ -3,6 +3,7 @@ from pathlib import Path
 
 import jax.numpy as jnp
 import numpy as np
+import scipy.linalg
 from flax import nnx
 
 from neuripp.image_benchmarks.encoders.identity import IdentityEncoder
@@ -194,6 +195,23 @@ def test_local_fid_matches_function_loaded_from_reference_source():
         np.testing.assert_allclose(local, reference)
 
 
+def test_fid_supports_scipy_sqrtm_without_disp_argument():
+    rng = np.random.default_rng(20)
+    left = statistics_from_feature_batches([rng.normal(size=(8, 4))])
+    right = statistics_from_feature_batches([rng.normal(size=(9, 4))])
+    original = scipy.linalg.sqrtm
+
+    def modern_sqrtm(matrix):
+        result = original(matrix, disp=False)
+        return result[0] if isinstance(result, tuple) else result
+
+    scipy.linalg.sqrtm = modern_sqrtm
+    try:
+        assert np.isfinite(calculate_fid(left, right))
+    finally:
+        scipy.linalg.sqrtm = original
+
+
 def test_end_to_end_checkpoint_evaluation_with_feature_caches():
     rngs = nnx.Rngs(23)
     model = FlowMatching(
@@ -256,5 +274,6 @@ if __name__ == "__main__":
     test_latent_sampling_uses_decoder_and_uint8_adapter()
     test_sampling_is_independent_of_evaluation_batch_size()
     test_local_fid_matches_function_loaded_from_reference_source()
+    test_fid_supports_scipy_sqrtm_without_disp_argument()
     test_end_to_end_checkpoint_evaluation_with_feature_caches()
     print("Image evaluation tests passed.")

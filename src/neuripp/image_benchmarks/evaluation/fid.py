@@ -9,12 +9,25 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 from typing import Iterable
 
 import numpy as np
 import scipy.linalg
 
 from neuripp.image_benchmarks.assets.diffuse_nnx import prepare_diffuse_nnx_source
+
+
+def _sqrtm_with_error_estimate(matrix: np.ndarray):
+    """Normalize SciPy's pre/post-1.18 ``sqrtm`` return conventions."""
+
+    try:
+        result = scipy.linalg.sqrtm(matrix, disp=False)
+    except TypeError:
+        result = scipy.linalg.sqrtm(matrix)
+    if isinstance(result, tuple):
+        return result
+    return result, None
 
 
 @dataclass(frozen=True)
@@ -102,7 +115,12 @@ def load_diffuse_fid_function(source_dir: str | Path):
     if function is None:
         raise ImportError(f"Pinned DiffuseNNX calculate_fid not found in {path}")
     module = ast.Module(body=[function], type_ignores=[])
-    namespace = {"np": np, "scipy": __import__("scipy")}
+    scipy_compat = SimpleNamespace(
+        linalg=SimpleNamespace(
+            sqrtm=lambda matrix, disp=False: _sqrtm_with_error_estimate(matrix)
+        )
+    )
+    namespace = {"np": np, "scipy": scipy_compat}
     exec(compile(module, str(path), "exec"), namespace)
     return namespace["calculate_fid"]
 
@@ -121,7 +139,7 @@ def calculate_fid(
         reference = load_diffuse_fid_function(diffuse_source_dir)
         return reference(fake.as_diffuse_dict(), real.as_diffuse_dict())
     mean_term = np.square(fake.mu - real.mu).sum()
-    covariance_root, _ = scipy.linalg.sqrtm(fake.sigma @ real.sigma, disp=False)
+    covariance_root, _ = _sqrtm_with_error_estimate(fake.sigma @ real.sigma)
     score = mean_term + np.trace(fake.sigma + real.sigma - 2.0 * covariance_root)
     return float(np.real(score))
 
