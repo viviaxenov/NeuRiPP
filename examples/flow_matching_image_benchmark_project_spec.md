@@ -385,6 +385,13 @@ utils.download_blob(
 )
 ```
 
+At the pinned revision the object is not publicly readable without Google Cloud
+credentials, and upstream issue #3 states that public checkpoint release is
+still pending. Therefore asset preparation may require application-default GCP
+credentials. A VAE run must also provide a trusted SHA-256 obtained independently
+from the download; the pickle checkpoint must never be loaded using only a
+trust-on-first-use checksum produced by the same download operation.
+
 The project must provide an explicit asset-preparation function/command that instantiates or calls the same download helper so the checkpoint can be prepared **before** a training job starts.
 
 Required behavior:
@@ -395,6 +402,7 @@ Required behavior:
 - log file size and checksum after successful download;
 - allow `auto_download: false` for fully offline runs;
 - never train this VAE as part of the benchmark.
+- require `expected_sha256` before deserializing the pickle checkpoint.
 
 Example config:
 
@@ -403,6 +411,7 @@ encoder:
   type: vae
   implementation: diffuse_nnx
   checkpoint: artifacts/encoders/vae_trial1.pkl
+  expected_sha256: <trusted 64-character checksum>
   auto_download: true
   sample_posterior: true
   cache_latents: true
