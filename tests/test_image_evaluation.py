@@ -213,7 +213,10 @@ def test_fid_supports_scipy_sqrtm_without_disp_argument():
     original = scipy.linalg.sqrtm
 
     def modern_sqrtm(matrix):
-        result = original(matrix, disp=False)
+        try:
+            result = original(matrix, disp=False)
+        except TypeError:
+            result = original(matrix)
         return result[0] if isinstance(result, tuple) else result
 
     scipy.linalg.sqrtm = modern_sqrtm
