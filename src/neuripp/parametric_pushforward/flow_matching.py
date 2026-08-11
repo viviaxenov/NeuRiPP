@@ -176,6 +176,7 @@ def flow_matching_loss(
     rngs: nnx.Rngs | None,
     times: jnp.ndarray | None = None,
     noise: jnp.ndarray | None = None,
+    dropout_keys: jnp.ndarray | None = None,
 ):
     """Return the mean per-example squared Flow Matching error.
 
@@ -192,9 +193,9 @@ def flow_matching_loss(
         data_batch, rngs, return_x0=True, **interpolant_kwargs
     )
     x1 = data_batch
-    vs = _batched_rhs(
-        model.rhs, ts, xts, _dropout_keys(model.rhs, rngs, ts.shape[0])
-    )
+    if dropout_keys is None:
+        dropout_keys = _dropout_keys(model.rhs, rngs, ts.shape[0])
+    vs = _batched_rhs(model.rhs, ts, xts, dropout_keys)
     v_empirical = x1 - x0
     state_axes = tuple(range(1, vs.ndim))
     return jnp.mean(jnp.sum((vs - v_empirical) ** 2, axis=state_axes))
