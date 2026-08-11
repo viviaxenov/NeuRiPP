@@ -31,6 +31,7 @@ DEFAULT_METHODS = "ngd,anderson,adam,sgd"
 DEFAULT_N_STEPS = "6000"
 DEFAULT_BATCH_SIZE = 512
 DEFAULT_EVAL_EVERY = 100
+DEFAULT_LOSS_SMOOTHING_ALPHA = 0.05
 DEFAULT_SEED = 42
 DEFAULT_OUTPUT_ROOT = Path(__file__).parent / "flow_matching_results"
 
@@ -91,6 +92,12 @@ def parse_args(argv=None):
     parser.add_argument("--n-steps", "--n_steps", default=DEFAULT_N_STEPS)
     parser.add_argument("--batch-size", "--batch_size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--eval-every", "--eval_every", type=int, default=DEFAULT_EVAL_EVERY)
+    parser.add_argument(
+        "--loss-smoothing-alpha",
+        "--loss_smoothing_alpha",
+        type=float,
+        default=DEFAULT_LOSS_SMOOTHING_ALPHA,
+    )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--output-dir", "--output_dir", type=Path, default=DEFAULT_OUTPUT_ROOT)
     return parser.parse_args(argv)
@@ -120,6 +127,8 @@ def validate_args(args):
         raise ValueError("--batch-size must be at least 2")
     if args.eval_every < 1:
         raise ValueError("--eval-every must be positive")
+    if not 0.0 < args.loss_smoothing_alpha <= 1.0:
+        raise ValueError("--loss-smoothing-alpha must be in (0, 1]")
     return methods, dict(zip(methods, n_steps, strict=True))
 
 
@@ -185,6 +194,21 @@ def save_arrays(method_dir, metrics):
     np.savez(method_dir / "arrays.npz", **arrays)
 
 
+def plot_loss(metrics_by_method, output_path, smoothed=False):
+    fig, ax = plt.subplots(figsize=(8, 6), layout="constrained")
+    key = "loss_smoothed" if smoothed else "loss"
+    for method, metrics in metrics_by_method.items():
+        if metrics[key]:
+            ax.plot(np.arange(1, len(metrics[key]) + 1), metrics[key], label=method.upper())
+    ax.set_yscale("log")
+    ax.set_xlabel("Iteration")
+    ax.set_ylabel("Flow-matching loss")
+    ax.set_title("Exponentially smoothed loss" if smoothed else "Training loss")
+    ax.legend()
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
 def plot_method(method, iteration, samples, validation_data, metrics, output_path):
     fig, axes = plt.subplots(1, 3, figsize=(18, 5), layout="constrained")
 
@@ -233,6 +257,8 @@ def evaluate_and_save(
     metrics,
     method_dir,
     seed,
+    all_metrics,
+    output_dir,
 ):
     samples = sample_with_solver(
         model,
@@ -250,17 +276,27 @@ def evaluate_and_save(
     metrics["eval_iteration"].append(iteration)
     metrics["validation_mmd"].append(float(mmd))
     save_arrays(method_dir, metrics)
+    plot_loss({method: metrics}, method_dir / "plots" / "current_loss.pdf")
+    plot_loss(
+        {method: metrics},
+        method_dir / "plots" / "current_loss_smoothed.pdf",
+        smoothed=True,
+    )
     plot_method(
         method,
         iteration,
         samples[:N_PLOT_SAMPLES],
         validation_data[:N_PLOT_SAMPLES],
         metrics,
-        method_dir / "plots" / f"last.pdf",
+        method_dir / "plots" / "current_diagnostics.pdf",
     )
+    plot_loss(all_metrics, output_dir / "joint_loss.pdf")
+    plot_loss(all_metrics, output_dir / "joint_loss_smoothed.pdf", smoothed=True)
 
 
-def train_method(method, n_steps, args, validation_data, bandwidth, output_dir):
+def train_method(
+    method, n_steps, args, validation_data, bandwidth, output_dir, all_metrics
+):
     method_dir = output_dir / method
     (method_dir / "plots").mkdir(parents=True)
     model = make_model(args.seed, args.batch_size)
@@ -272,17 +308,24 @@ def train_method(method, n_steps, args, validation_data, bandwidth, output_dir):
     step_fn = nnx.jit(step_fn)
     metrics = {
         "loss": [],
+        "loss_smoothed": [],
         "grad_norm": [],
         "natural_grad_norm": [],
         "eval_iteration": [],
         "validation_mmd": [],
     }
+    all_metrics[method] = metrics
 
     for iteration in tqdm.trange(1, n_steps + 1, desc=method.upper()):
         batch = batcher(train_rngs)
         state, values = step_fn(state, batch, train_rngs)
         loss, grad_norm_sq, *natural_norm_sq = values
         metrics["loss"].append(float(loss))
+        previous = metrics["loss_smoothed"][-1] if metrics["loss_smoothed"] else float(loss)
+        metrics["loss_smoothed"].append(
+            args.loss_smoothing_alpha * float(loss)
+            + (1.0 - args.loss_smoothing_alpha) * previous
+        )
         metrics["grad_norm"].append(float(jnp.sqrt(jnp.maximum(grad_norm_sq, 0.0))))
         if natural_norm_sq:
             metrics["natural_grad_norm"].append(
@@ -299,22 +342,11 @@ def train_method(method, n_steps, args, validation_data, bandwidth, output_dir):
                 metrics,
                 method_dir,
                 args.seed + 10_000 * (SUPPORTED_METHODS.index(method) + 1),
+                all_metrics,
+                output_dir,
             )
 
     return state[0], metrics
-
-
-def plot_joint_loss(all_metrics, output_path):
-    fig, ax = plt.subplots(figsize=(8, 6), layout="constrained")
-    for method, metrics in all_metrics.items():
-        ax.plot(np.arange(1, len(metrics["loss"]) + 1), metrics["loss"], label=method.upper())
-    ax.set_yscale("log")
-    ax.set_xlabel("Iteration")
-    ax.set_ylabel("Flow-matching loss")
-    ax.set_title("Flow-matching training comparison")
-    ax.legend()
-    fig.savefig(output_path)
-    plt.close(fig)
 
 
 def plot_joint_samples(models, validation_data, seed, output_path):
@@ -356,6 +388,7 @@ def serializable_config(args, methods, n_steps):
         "n_steps": n_steps,
         "batch_size": args.batch_size,
         "eval_every": args.eval_every,
+        "loss_smoothing_alpha": args.loss_smoothing_alpha,
         "seed": args.seed,
         "validation_samples": N_VALIDATION_SAMPLES,
         "plot_samples": N_PLOT_SAMPLES,
@@ -393,11 +426,13 @@ def main(argv=None):
             validation_data,
             bandwidth,
             output_dir,
+            all_metrics,
         )
         models[method] = model
         all_metrics[method] = metrics
 
-    plot_joint_loss(all_metrics, output_dir / "joint_loss.pdf")
+    plot_loss(all_metrics, output_dir / "joint_loss.pdf")
+    plot_loss(all_metrics, output_dir / "joint_loss_smoothed.pdf", smoothed=True)
     plot_joint_samples(models, validation_data, args.seed + 100_000, output_dir / "joint_samples.pdf")
     print(output_dir)
     return output_dir
