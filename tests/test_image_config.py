@@ -201,6 +201,34 @@ def test_fid_requires_at_least_two_fake_samples():
             raise AssertionError("Expected one-sample FID preflight failure")
 
 
+def test_obsolete_diffuse_source_checkout_fields_are_rejected():
+    cases = (
+        ("rhs", "source_dir"),
+        ("fid", "source_auto_download"),
+    )
+    for target, field in cases:
+        with tempfile.TemporaryDirectory() as directory:
+            payload = base_config(directory)
+            if target == "rhs":
+                payload["rhs"] = {
+                    "type": "sit",
+                    "variant": "S",
+                    "source_dir": "legacy-checkout",
+                }
+            else:
+                payload["evaluation"]["fid"] = {
+                    "enabled": True,
+                    "num_samples_final": 2,
+                    "source_auto_download": True,
+                }
+            try:
+                load_config(write_config(directory, payload))
+            except ValueError as error:
+                assert field in str(error)
+            else:
+                raise AssertionError(f"Expected obsolete {field} rejection")
+
+
 if __name__ == "__main__":
     test_lists_are_literal_and_only_methods_restarts_expand()
     test_resource_groups_reserve_disjoint_devices()
@@ -210,4 +238,5 @@ if __name__ == "__main__":
     test_all_required_presets_resolve_and_plan()
     test_runtime_defaults_are_persisted_for_run_planning()
     test_fid_requires_at_least_two_fake_samples()
+    test_obsolete_diffuse_source_checkout_fields_are_rejected()
     print("Image config tests passed.")

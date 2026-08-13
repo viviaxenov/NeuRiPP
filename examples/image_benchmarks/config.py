@@ -143,6 +143,12 @@ def _validate_encoder(
         return (latent_dim,)
     if encoder_type != "vae":
         raise ValueError("problem.encoder.type must be one of: none, ae, vae")
+    obsolete = {"source_dir", "source_auto_download"} & set(config)
+    if obsolete:
+        raise ValueError(
+            "Packaged DiffuseNNX does not accept obsolete VAE source fields: "
+            + ", ".join(sorted(obsolete))
+        )
     _boolean(config.get("sample_posterior", True), "problem.encoder.sample_posterior")
     if image_shape[-1] != 3 or image_shape[0] % 8 or image_shape[1] % 8:
         raise ValueError("VAE requires RGB image dimensions divisible by eight")
@@ -205,6 +211,12 @@ def _validate_rhs(config: dict[str, Any], state_shape: tuple[int, ...], base: Pa
                 f"rhs.variant must be one of: {', '.join(sorted(UNET_VARIANTS))}"
             )
     if rhs_type == "sit":
+        obsolete = {"source_dir", "source_auto_download"} & set(config)
+        if obsolete:
+            raise ValueError(
+                "Packaged DiffuseNNX does not accept obsolete SiT source fields: "
+                + ", ".join(sorted(obsolete))
+            )
         if config.get("implementation", "diffuse_nnx") != "diffuse_nnx":
             raise ValueError("Only rhs.implementation='diffuse_nnx' is supported for SiT")
         variant = str(config.get("variant", "S")).upper()
@@ -331,6 +343,12 @@ def load_config(path: str | Path) -> dict[str, Any]:
     fid.setdefault("enabled", False)
     _boolean(fid["enabled"], "evaluation.fid.enabled")
     if fid["enabled"]:
+        obsolete = {"source_dir", "source_auto_download"} & set(fid)
+        if obsolete:
+            raise ValueError(
+                "Packaged DiffuseNNX does not accept obsolete FID source fields: "
+                + ", ".join(sorted(obsolete))
+            )
         _boolean(fid.get("auto_download", True), "evaluation.fid.auto_download")
         fid["num_samples_final"] = _integer_at_least(
             fid.get("num_samples_final", 50000),

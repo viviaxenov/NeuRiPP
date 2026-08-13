@@ -125,8 +125,15 @@ def prepare_assets(config: dict[str, Any]) -> dict[str, Any]:
         prepare_vae_checkpoint,
     )
 
-    prepared: dict[str, Any] = {"diffuse_nnx_version": require_diffuse_nnx()}
+    prepared: dict[str, Any] = {}
     encoder = config["problem"]["encoder"]
+    uses_diffuse_nnx = (
+        encoder["type"] == "vae"
+        or config["rhs"]["type"] == "sit"
+        or config["evaluation"]["fid"]["enabled"]
+    )
+    if uses_diffuse_nnx:
+        prepared["diffuse_nnx_version"] = require_diffuse_nnx()
 
     if encoder["type"] == "vae":
         prepared["vae_checkpoint"] = prepare_vae_checkpoint(
