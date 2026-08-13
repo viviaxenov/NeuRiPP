@@ -263,8 +263,11 @@ def test_fashion_300epoch_comparison_has_exact_method_settings():
     assert methods["adamw"]["learning_rate"] == 1e-3
     assert methods["ngd"]["step_size"] == 1e-3
     assert methods["ngd"]["linear_solver_regularization"] == 1e-3
+    assert methods["ngd"]["linear_solver_maxiter"] == 10
     assert "stepsize_schedule" not in methods["ngd"]
     assert "stepsize_schedule_name" not in methods["ngd"]
+    assert config["resources"]["gpus_per_run"] == 8
+    assert config["resources"]["max_concurrent_runs"] == 1
 
 
 def test_obsolete_diffuse_source_checkout_fields_are_rejected():

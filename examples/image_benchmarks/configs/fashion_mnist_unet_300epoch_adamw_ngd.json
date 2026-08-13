@@ -23,7 +23,7 @@
         "step_size": 0.001,
         "linear_solver_regularization": 0.001,
         "linear_solver_tolerance": 0.000001,
-        "linear_solver_maxiter": 50
+        "linear_solver_maxiter": 10
       }
     }
   ],
@@ -43,8 +43,8 @@
   },
   "resources": {
     "gpu_ids": [0, 1, 2, 3, 4, 5, 6, 7],
-    "gpus_per_run": 4,
-    "max_concurrent_runs": 2,
+    "gpus_per_run": 8,
+    "max_concurrent_runs": 1,
     "data_parallel": true,
     "worker_env": {"XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9"}
   },
