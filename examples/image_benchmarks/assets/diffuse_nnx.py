@@ -18,6 +18,10 @@ DIFFUSE_NNX_VERSION = "0.2.0.dev0"
 def _normalized_repository(url: str) -> str:
     """Normalize accepted HTTPS/Git spelling without weakening repository identity."""
 
+    if url.startswith("git@github.com:"):
+        url = "https://github.com/" + url.removeprefix("git@github.com:")
+    elif url.startswith("ssh://git@github.com/"):
+        url = "https://github.com/" + url.removeprefix("ssh://git@github.com/")
     return url.removesuffix(".git").rstrip("/")
 
 
@@ -66,10 +70,21 @@ def _verified_distribution() -> tuple[str, Path]:
                 text=True,
                 stderr=subprocess.STDOUT,
             ).strip()
+            remote = subprocess.check_output(
+                ["git", "-C", str(checkout), "remote", "get-url", "origin"],
+                text=True,
+                stderr=subprocess.STDOUT,
+            ).strip()
         except (FileNotFoundError, subprocess.CalledProcessError) as error:
             raise RuntimeError(
                 "editable diffuse-nnx provenance is not a valid Git checkout"
             ) from error
+        if _normalized_repository(remote) != _normalized_repository(
+            DIFFUSE_NNX_REPOSITORY
+        ):
+            raise RuntimeError(
+                "editable diffuse-nnx checkout origin does not match the pinned fork"
+            )
         package_root = checkout / "src" / "diffuse_nnx"
     else:
         package_root = Path(distribution.locate_file("diffuse_nnx")).resolve()
