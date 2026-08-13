@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from importlib import import_module, metadata
+import json
 from types import ModuleType
 
 
@@ -26,6 +27,13 @@ def require_diffuse_nnx() -> str:
             f"Unsupported diffuse-nnx version {version}; expected {DIFFUSE_NNX_VERSION} "
             f"from commit {DIFFUSE_NNX_COMMIT}"
         )
+    direct_url = metadata.distribution("diffuse-nnx").read_text("direct_url.json")
+    if direct_url:
+        commit = json.loads(direct_url).get("vcs_info", {}).get("commit_id")
+        if commit is not None and commit != DIFFUSE_NNX_COMMIT:
+            raise RuntimeError(
+                f"Unsupported diffuse-nnx commit {commit}; expected {DIFFUSE_NNX_COMMIT}"
+            )
     return version
 
 

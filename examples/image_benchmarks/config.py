@@ -361,7 +361,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
         fid["weights_path"] = _resolve_path(
             fid.get(
                 "weights_path",
-                "../../../artifacts/inception/inception_v3_weights_fid.pickle",
+                "artifacts/inception/inception_v3_weights_fid.pickle",
             ),
             base,
             "evaluation.fid.weights_path",
