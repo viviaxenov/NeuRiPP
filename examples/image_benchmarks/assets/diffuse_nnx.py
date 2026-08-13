@@ -15,6 +15,12 @@ DIFFUSE_NNX_COMMIT = "da5f2b79497722931d279b012c90bec61050466b"
 DIFFUSE_NNX_VERSION = "0.2.0.dev0"
 
 
+def _normalized_repository(url: str) -> str:
+    """Normalize accepted HTTPS/Git spelling without weakening repository identity."""
+
+    return url.removesuffix(".git").rstrip("/")
+
+
 def _verified_distribution() -> tuple[str, Path]:
     """Return the exact installed version and expected import-package root."""
 
@@ -36,7 +42,17 @@ def _verified_distribution() -> tuple[str, Path]:
         provenance = json.loads(direct_url or "")
     except (json.JSONDecodeError, AttributeError) as error:
         raise RuntimeError("diffuse-nnx installation provenance is invalid") from error
-    commit = provenance.get("vcs_info", {}).get("commit_id")
+    vcs_info = provenance.get("vcs_info", {})
+    commit = vcs_info.get("commit_id")
+    if commit is not None:
+        if vcs_info.get("vcs") != "git":
+            raise RuntimeError("diffuse-nnx provenance must use Git")
+        if _normalized_repository(provenance.get("url", "")) != _normalized_repository(
+            DIFFUSE_NNX_REPOSITORY
+        ):
+            raise RuntimeError(
+                "diffuse-nnx provenance repository does not match the pinned fork"
+            )
     if commit is None and "dir_info" in provenance:
         if provenance["dir_info"].get("editable") is not True:
             raise RuntimeError("local diffuse-nnx installation must be explicitly editable")
