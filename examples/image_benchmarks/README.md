@@ -22,6 +22,8 @@ python -m pip install -e ".[cuda12,image-benchmarks-diffuse]"
 
 The DiffuseNNX dependency is pinned to commit
 [`da5f2b79497722931d279b012c90bec61050466b`](https://github.com/viviaxenov/diffuse_nnx/tree/da5f2b79497722931d279b012c90bec61050466b).
+The benchmark intentionally rejects editable DiffuseNNX checkouts because they
+cannot provide immutable package provenance; install it through the extra above.
 
 ## Datasets and local paths
 

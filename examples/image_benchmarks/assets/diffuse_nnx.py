@@ -5,9 +5,7 @@ from __future__ import annotations
 from importlib import import_module, metadata
 import json
 from pathlib import Path
-import subprocess
 from types import ModuleType
-from urllib.parse import unquote, urlparse
 
 
 DIFFUSE_NNX_REPOSITORY = "https://github.com/viviaxenov/diffuse_nnx.git"
@@ -57,56 +55,12 @@ def _verified_distribution() -> tuple[str, Path]:
             raise RuntimeError(
                 "diffuse-nnx provenance repository does not match the pinned fork"
             )
-    if commit is None and "dir_info" in provenance:
-        if provenance["dir_info"].get("editable") is not True:
-            raise RuntimeError("local diffuse-nnx installation must be explicitly editable")
-        parsed = urlparse(provenance.get("url", ""))
-        if parsed.scheme != "file":
-            raise RuntimeError("editable diffuse-nnx provenance is not a local Git checkout")
-        checkout = Path(unquote(parsed.path)).resolve()
-        try:
-            commit = subprocess.check_output(
-                ["git", "-C", str(checkout), "rev-parse", "HEAD"],
-                text=True,
-                stderr=subprocess.STDOUT,
-            ).strip()
-            remote = subprocess.check_output(
-                ["git", "-C", str(checkout), "remote", "get-url", "origin"],
-                text=True,
-                stderr=subprocess.STDOUT,
-            ).strip()
-            dirty = subprocess.check_output(
-                [
-                    "git",
-                    "-C",
-                    str(checkout),
-                    "status",
-                    "--porcelain",
-                    "--untracked-files=all",
-                    "--",
-                    "src/diffuse_nnx",
-                    "pyproject.toml",
-                ],
-                text=True,
-                stderr=subprocess.STDOUT,
-            ).strip()
-        except (FileNotFoundError, subprocess.CalledProcessError) as error:
-            raise RuntimeError(
-                "editable diffuse-nnx provenance is not a valid Git checkout"
-            ) from error
-        if _normalized_repository(remote) != _normalized_repository(
-            DIFFUSE_NNX_REPOSITORY
-        ):
-            raise RuntimeError(
-                "editable diffuse-nnx checkout origin does not match the pinned fork"
-            )
-        if dirty:
-            raise RuntimeError(
-                "editable diffuse-nnx checkout has package or metadata modifications"
-            )
-        package_root = checkout / "src" / "diffuse_nnx"
-    else:
-        package_root = Path(distribution.locate_file("diffuse_nnx")).resolve()
+    if "dir_info" in provenance:
+        raise RuntimeError(
+            "editable diffuse-nnx installations are unsupported; install the exact "
+            "VCS dependency through NeuRiPP[image-benchmarks-diffuse]"
+        )
+    package_root = Path(distribution.locate_file("diffuse_nnx")).resolve()
     if commit != DIFFUSE_NNX_COMMIT:
         raise RuntimeError(
             f"Unsupported diffuse-nnx commit {commit}; expected {DIFFUSE_NNX_COMMIT}"
