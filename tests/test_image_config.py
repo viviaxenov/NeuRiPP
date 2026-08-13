@@ -146,6 +146,7 @@ def test_all_required_presets_resolve_and_plan():
         "fashion_mnist_ae64_mlp.json",
         "fashion_mnist_unet.json",
         "fashion_mnist_unet_ngd_smoke.json",
+        "fashion_mnist_unet_300epoch_adamw_ngd.json",
         "cifar10_unet_small.json",
         "cifar10_unet.json",
         "flowers64_unet.json",
@@ -238,6 +239,32 @@ def test_dataset_split_configuration_rejects_obsolete_holdouts():
             assert "obsolete" in str(error)
         else:
             raise AssertionError("Expected obsolete validation holdout rejection")
+
+
+def test_fashion_300epoch_comparison_has_exact_method_settings():
+    path = (
+        ROOT
+        / "examples"
+        / "image_benchmarks"
+        / "configs"
+        / "fashion_mnist_unet_300epoch_adamw_ngd.json"
+    )
+    config = load_config(path)
+    assert config["training"] == {
+        "max_steps": 35100,
+        "target_loader_epochs": 300,
+        "batch_size": 512,
+        "log_every": 10,
+        "validation_every": 1170,
+        "checkpoint_every": 1170,
+        "keep_checkpoints": 3,
+    }
+    methods = {method["name"]: method["kwargs"] for method in config["methods"]}
+    assert methods["adamw"]["learning_rate"] == 1e-3
+    assert methods["ngd"]["step_size"] == 1e-3
+    assert methods["ngd"]["linear_solver_regularization"] == 1e-3
+    assert "stepsize_schedule" not in methods["ngd"]
+    assert "stepsize_schedule_name" not in methods["ngd"]
 
 
 def test_obsolete_diffuse_source_checkout_fields_are_rejected():

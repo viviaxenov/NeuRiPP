@@ -25,3 +25,9 @@ Fashion-MNIST presets are `fashion_mnist_mlp.json`,
 `fashion_mnist_unet_ngd_smoke.json` is a two-GPU, global-batch-512 integration
 check that runs exactly ten NGD optimizer steps with FID/KID disabled and MMD
 plus sliced-Wasserstein enabled.
+
+`fashion_mnist_unet_300epoch_adamw_ngd.json` compares AdamW and constant-step
+NGD on the same Fashion-MNIST U-Net, seeds, and batches. With 60,000 training
+examples, batch 512, and `drop_last=true`, each loader epoch has 117 updates;
+therefore 300 complete loader epochs are 35,100 optimizer steps (17,971,200
+examples processed, or 299.52 dataset-size-normalized effective epochs).

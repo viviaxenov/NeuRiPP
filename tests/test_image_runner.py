@@ -138,9 +138,45 @@ def test_plot_only_rejects_run_selection():
             raise AssertionError("Expected plot/run selection conflict")
 
 
+def test_plot_session_overlays_training_loss_by_step_and_time():
+    runner = load_runner()
+    with tempfile.TemporaryDirectory() as directory:
+        session = Path(directory)
+        (session / "plots").mkdir()
+        runs = [
+            {"run_id": "adam", "method": {"name": "adamw"}, "restart_index": 0},
+            {"run_id": "ngd", "method": {"name": "ngd"}, "restart_index": 0},
+        ]
+        (session / "planned_runs.json").write_text(json.dumps(runs), encoding="utf-8")
+        for index, run in enumerate(runs):
+            run_dir = session / "runs" / run["run_id"]
+            run_dir.mkdir(parents=True)
+            records = [
+                {
+                    "type": "train",
+                    "optimizer_step": step,
+                    "wall_clock_train_s": step * (index + 1),
+                    "loss": 10.0 / step,
+                }
+                for step in (1, 2)
+            ]
+            (run_dir / "metrics.jsonl").write_text(
+                "".join(json.dumps(record) + "\n" for record in records),
+                encoding="utf-8",
+            )
+        runner.plot_session(session)
+        for filename in (
+            "training_loss_vs_iteration.png",
+            "training_loss_vs_time.png",
+            "training_loss_comparison.png",
+        ):
+            assert (session / "plots" / filename).stat().st_size > 0
+
+
 if __name__ == "__main__":
     test_runner_import_and_validation_do_not_import_jax()
     test_plot_only_does_not_prepare_dataset()
     test_worker_sets_environment_before_dispatch()
     test_plot_only_rejects_run_selection()
+    test_plot_session_overlays_training_loss_by_step_and_time()
     print("Image runner tests passed.")

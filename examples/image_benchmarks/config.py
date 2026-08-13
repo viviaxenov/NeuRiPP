@@ -311,6 +311,10 @@ def load_config(path: str | Path) -> dict[str, Any]:
     training = _object(config["training"], "training")
     _positive_integer(training.get("max_steps"), "training.max_steps")
     batch_size = _positive_integer(training.get("batch_size"), "training.batch_size")
+    if "target_loader_epochs" in training:
+        training["target_loader_epochs"] = _positive_integer(
+            training["target_loader_epochs"], "training.target_loader_epochs"
+        )
     for name in ("log_every", "checkpoint_every", "validation_every"):
         training[name] = _positive_integer(training.get(name, 1000), f"training.{name}")
     training["keep_checkpoints"] = _positive_integer(

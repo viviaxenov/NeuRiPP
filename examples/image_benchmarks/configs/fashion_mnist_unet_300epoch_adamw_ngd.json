@@ -1,0 +1,52 @@
+{
+  "extends": "fashion_mnist_unet.json",
+  "experiment": {"name": "fashion_mnist_unet_300epoch_adamw_ngd", "seed": 73},
+  "training": {
+    "max_steps": 35100,
+    "target_loader_epochs": 300,
+    "batch_size": 512,
+    "log_every": 10,
+    "validation_every": 1170,
+    "checkpoint_every": 1170,
+    "keep_checkpoints": 3
+  },
+  "methods": [
+    {
+      "name": "adamw",
+      "n_restarts": 1,
+      "kwargs": {"learning_rate": 0.001, "weight_decay": 0.0}
+    },
+    {
+      "name": "ngd",
+      "n_restarts": 1,
+      "kwargs": {
+        "step_size": 0.001,
+        "linear_solver_regularization": 0.001,
+        "linear_solver_tolerance": 0.000001,
+        "linear_solver_maxiter": 50
+      }
+    }
+  ],
+  "evaluation": {
+    "split": "test",
+    "seed": 1073,
+    "val_fm_loss": {"enabled": true, "num_samples": 1000, "batch_size": 256},
+    "sampling": {"method": "heun", "steps": 50, "batch_size": 256},
+    "fid": {"enabled": false},
+    "kid": {"enabled": false},
+    "sample_metrics": {
+      "num_samples": 1000,
+      "batch_size": 256,
+      "mmd": {"enabled": false},
+      "sliced_wasserstein": {"enabled": false}
+    }
+  },
+  "resources": {
+    "gpu_ids": [0, 1, 2, 3, 4, 5, 6, 7],
+    "gpus_per_run": 4,
+    "max_concurrent_runs": 2,
+    "data_parallel": true,
+    "worker_env": {"XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9"}
+  },
+  "plotting": {"sample_grid": {"enabled": true, "rows": 8, "columns": 8}}
+}

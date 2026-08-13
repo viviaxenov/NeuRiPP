@@ -1042,11 +1042,26 @@ def plot_session(session_dir: Path) -> None:
     planned = json.loads((session_dir / "planned_runs.json").read_text(encoding="utf-8"))
     figure, axes = plt.subplots(2, 2, figsize=(12, 10), layout="constrained")
     plotted = False
+    training_series = []
     for run in planned:
         metrics_path = session_dir / "runs" / run["run_id"] / "metrics.jsonl"
         if not metrics_path.is_file():
             continue
         records = [json.loads(line) for line in metrics_path.read_text(encoding="utf-8").splitlines()]
+        training_records = [
+            record
+            for record in records
+            if record.get("type") == "train"
+            and record.get("loss") is not None
+            and np.isfinite(record["loss"])
+        ]
+        if training_records:
+            training_series.append(
+                (
+                    f"{run['method']['name']} r{run['restart_index']}",
+                    training_records,
+                )
+            )
         validation = [record for record in records if record.get("type") == "validation"]
         if validation:
             label = f"{run['method']['name']} r{run['restart_index']}"
@@ -1098,6 +1113,48 @@ def plot_session(session_dir: Path) -> None:
     figure.savefig(session_dir / "plots" / "validation_fm_loss.png", dpi=140)
     plt.close(figure)
 
+    plot_specs = (
+        ("optimizer_step", "Optimizer iteration", "training_loss_vs_iteration.png"),
+        ("wall_clock_train_s", "Training wall-clock (s)", "training_loss_vs_time.png"),
+    )
+    for key, xlabel, filename in plot_specs:
+        comparison, axis = plt.subplots(figsize=(8, 6), layout="constrained")
+        for label, records in training_series:
+            axis.plot(
+                [record[key] for record in records],
+                [record["loss"] for record in records],
+                label=label,
+                linewidth=1.2,
+            )
+        axis.set_xlabel(xlabel)
+        axis.set_ylabel("Training Flow-Matching loss")
+        axis.set_yscale("log")
+        axis.grid(True, alpha=0.25)
+        if training_series:
+            axis.legend()
+        comparison.savefig(session_dir / "plots" / filename, dpi=160)
+        plt.close(comparison)
+
+    combined, combined_axes = plt.subplots(
+        1, 2, figsize=(14, 5.5), layout="constrained"
+    )
+    for axis, (key, xlabel, _) in zip(combined_axes, plot_specs, strict=True):
+        for label, records in training_series:
+            axis.plot(
+                [record[key] for record in records],
+                [record["loss"] for record in records],
+                label=label,
+                linewidth=1.2,
+            )
+        axis.set_xlabel(xlabel)
+        axis.set_ylabel("Training Flow-Matching loss")
+        axis.set_yscale("log")
+        axis.grid(True, alpha=0.25)
+        if training_series:
+            axis.legend()
+    combined.savefig(session_dir / "plots" / "training_loss_comparison.png", dpi=160)
+    plt.close(combined)
+
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1148,6 +1205,17 @@ def main(argv=None):
         raise ValueError(
             "training.batch_size exceeds the prepared training split size"
         )
+    target_loader_epochs = config["training"].get("target_loader_epochs")
+    if target_loader_epochs is not None:
+        steps_per_loader_epoch = (
+            manifest.splits["train"].count // config["training"]["batch_size"]
+        )
+        expected_steps = target_loader_epochs * steps_per_loader_epoch
+        if config["training"]["max_steps"] != expected_steps:
+            raise ValueError(
+                "training.max_steps does not match target_loader_epochs with drop_last: "
+                f"expected {expected_steps}, got {config['training']['max_steps']}"
+            )
     if args.prepare_data:
         verify_manifest_batches(config, manifest)
         return 0
