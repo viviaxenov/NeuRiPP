@@ -1,5 +1,6 @@
 import tempfile
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import jax.numpy as jnp
@@ -7,8 +8,11 @@ import numpy as np
 import scipy.linalg
 from flax import nnx
 
-from neuripp.image_benchmarks.encoders.identity import IdentityEncoder
-from neuripp.image_benchmarks.evaluation.fid import (
+ROOT = Path(__file__).parents[1]
+sys.path.insert(0, str(ROOT / "examples"))
+
+from image_benchmarks.encoders.identity import IdentityEncoder
+from image_benchmarks.evaluation.fid import (
     FIDCacheKey,
     _sqrtm_with_error_estimate,
     calculate_fid,
@@ -17,14 +21,14 @@ from neuripp.image_benchmarks.evaluation.fid import (
     statistics_from_feature_batches,
     write_fid_stats,
 )
-from neuripp.image_benchmarks.evaluation.evaluator import (
+from image_benchmarks.evaluation.evaluator import (
     evaluate_checkpoint,
     prepare_real_feature_cache,
 )
-from neuripp.image_benchmarks.evaluation.kid import calculate_kid
-from neuripp.image_benchmarks.evaluation.reconstruction import reconstruction_metrics
-from neuripp.image_benchmarks.evaluation.sampling import generate_image_batches
-from neuripp.image_benchmarks.evaluation.validation import (
+from image_benchmarks.evaluation.kid import calculate_kid
+from image_benchmarks.evaluation.reconstruction import reconstruction_metrics
+from image_benchmarks.evaluation.sampling import generate_image_batches
+from image_benchmarks.evaluation.validation import (
     evaluate_fixed_fm_loss,
     make_fixed_fm_validation,
 )

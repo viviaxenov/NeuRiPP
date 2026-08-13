@@ -10,8 +10,8 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from neuripp.image_benchmarks.distributed import DataParallelContext
-from neuripp.image_benchmarks.training.methods import ResolvedMethod, resolve_method
+from image_benchmarks.distributed import DataParallelContext
+from image_benchmarks.training.methods import ResolvedMethod, resolve_method
 
 
 class ImageTrainer:

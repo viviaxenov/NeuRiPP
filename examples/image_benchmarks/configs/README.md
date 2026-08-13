@@ -1,9 +1,11 @@
 # Image benchmark presets
 
-Each JSON file launches directly with:
+Each JSON file is dedicated to `flow_matching_image_benchmark_runner.py` and
+launches directly with:
 
 ```bash
-python examples/flow_matching_image_benchmark_runner.py --config <file>
+python examples/flow_matching_image_benchmark_runner.py \
+  --config examples/image_benchmarks/configs/<file>
 ```
 
 Preset files may use `extends` only to avoid duplicating common training and

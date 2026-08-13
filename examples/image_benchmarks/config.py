@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from neuripp.image_benchmarks.datasets.registry import get_dataset_spec
+from image_benchmarks.datasets.registry import get_dataset_spec
 
 
 REQUIRED_TOP_LEVEL = {

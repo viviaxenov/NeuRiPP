@@ -12,6 +12,7 @@ RUNNER_PATH = ROOT / "examples" / "flow_matching_image_benchmark_runner.py"
 
 
 def load_runner():
+    sys.path.insert(0, str(ROOT / "examples"))
     specification = importlib.util.spec_from_file_location("image_benchmark_runner", RUNNER_PATH)
     module = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(module)

@@ -1,6 +1,12 @@
+from pathlib import Path
+import sys
+
 import numpy as np
 
-from neuripp.image_benchmarks.training.data import RestartableLatentStream
+ROOT = Path(__file__).parents[1]
+sys.path.insert(0, str(ROOT / "examples"))
+
+from image_benchmarks.training.data import RestartableLatentStream
 
 
 def _stream(mean, std, *, seed=1, sampling_seed=2, sample_posterior=True):

@@ -25,9 +25,14 @@ from typing import Any
 
 import numpy as np
 
-from neuripp.image_benchmarks.config import gpu_groups, load_config, plan_runs
-from neuripp.image_benchmarks.datasets.hf_loader import download_dataset
-from neuripp.image_benchmarks.datasets.manifest import DatasetManifest
+# Keep benchmark-only modules local to examples rather than the installable package.
+EXAMPLES_DIR = Path(__file__).resolve().parent
+if str(EXAMPLES_DIR) not in sys.path:
+    sys.path.insert(0, str(EXAMPLES_DIR))
+
+from image_benchmarks.config import gpu_groups, load_config, plan_runs
+from image_benchmarks.datasets.hf_loader import download_dataset
+from image_benchmarks.datasets.manifest import DatasetManifest
 
 
 def _utc_now() -> str:
@@ -94,7 +99,7 @@ def prepare_dataset(config: dict[str, Any]) -> DatasetManifest:
 def verify_manifest_batches(config: dict[str, Any], manifest: DatasetManifest) -> None:
     """Load one deterministic batch from every logical split after preparation."""
 
-    from neuripp.image_benchmarks.datasets.hf_loader import load_split
+    from image_benchmarks.datasets.hf_loader import load_split
 
     for split in manifest.splits:
         iterator = load_split(
@@ -114,8 +119,8 @@ def verify_manifest_batches(config: dict[str, Any], manifest: DatasetManifest) -
 
 
 def prepare_assets(config: dict[str, Any]) -> dict[str, Any]:
-    from neuripp.image_benchmarks.assets.diffuse_nnx import prepare_diffuse_nnx_source
-    from neuripp.image_benchmarks.assets.files import prepare_vae_checkpoint
+    from image_benchmarks.assets.diffuse_nnx import prepare_diffuse_nnx_source
+    from image_benchmarks.assets.files import prepare_vae_checkpoint
 
     prepared: dict[str, Any] = {}
     encoder = config["problem"]["encoder"]
@@ -224,8 +229,8 @@ def _collect_images(iterator, count: int) -> tuple[np.ndarray, list[str]]:
 
 
 def _build_encoder(config, manifest, seed):
-    from neuripp.image_benchmarks.datasets.hf_loader import load_split
-    from neuripp.image_benchmarks.encoders.registry import build_encoder
+    from image_benchmarks.datasets.hf_loader import load_split
+    from image_benchmarks.encoders.registry import build_encoder
 
     encoder_config = config["problem"]["encoder"]
     image_shape = tuple(config["resolved"]["image_shape"])
@@ -270,8 +275,8 @@ def _build_encoder(config, manifest, seed):
 
 
 def _ensure_latent_cache(config, manifest, encoder, split, seed):
-    from neuripp.image_benchmarks.datasets.hf_loader import load_split
-    from neuripp.image_benchmarks.encoders.cache import (
+    from image_benchmarks.datasets.hf_loader import load_split
+    from image_benchmarks.encoders.cache import (
         LatentCacheKey,
         LatentCacheWriter,
         open_latent_cache,
@@ -348,8 +353,8 @@ def _make_stream(
     sampling_seed=None,
     augmentation_seed=None,
 ):
-    from neuripp.image_benchmarks.datasets.hf_loader import load_split
-    from neuripp.image_benchmarks.training.data import (
+    from image_benchmarks.datasets.hf_loader import load_split
+    from image_benchmarks.training.data import (
         RestartableImageStream,
         RestartableLatentStream,
     )
@@ -388,9 +393,9 @@ def _make_stream(
 
 
 def _fixed_validation(config, manifest, encoder, run):
-    from neuripp.image_benchmarks.datasets.hf_loader import load_split
-    from neuripp.image_benchmarks.evaluation.validation import make_fixed_fm_validation
-    from neuripp.image_benchmarks.training.data import RestartableLatentStream
+    from image_benchmarks.datasets.hf_loader import load_split
+    from image_benchmarks.evaluation.validation import make_fixed_fm_validation
+    from image_benchmarks.training.data import RestartableLatentStream
 
     evaluation = config["evaluation"]["val_fm_loss"]
     count = min(evaluation["num_samples"], manifest.splits[
@@ -507,7 +512,7 @@ def _git_commit():
 
 
 def _save_sample_grid(run_dir, model, encoder, config, seed):
-    from neuripp.image_benchmarks.evaluation.sampling import generate_image_batches
+    from image_benchmarks.evaluation.sampling import generate_image_batches
     import matplotlib.pyplot as plt
 
     grid = config.get("plotting", {}).get("sample_grid", {})
@@ -541,17 +546,17 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
     import jax.numpy as jnp
     from flax import nnx
 
-    from neuripp.image_benchmarks.distributed import DataParallelContext
-    from neuripp.image_benchmarks.encoders.identity import IdentityEncoder
-    from neuripp.image_benchmarks.evaluation.evaluator import (
+    from image_benchmarks.distributed import DataParallelContext
+    from image_benchmarks.encoders.identity import IdentityEncoder
+    from image_benchmarks.evaluation.evaluator import (
         evaluate_checkpoint,
         prepare_real_feature_cache,
     )
-    from neuripp.image_benchmarks.evaluation.fid import FIDCacheKey
-    from neuripp.image_benchmarks.evaluation.inception import DiffuseInceptionFeatures
-    from neuripp.image_benchmarks.evaluation.reconstruction import reconstruction_metrics
-    from neuripp.image_benchmarks.rhs.registry import build_rhs
-    from neuripp.image_benchmarks.training.trainer import ImageTrainer
+    from image_benchmarks.evaluation.fid import FIDCacheKey
+    from image_benchmarks.evaluation.inception import DiffuseInceptionFeatures
+    from image_benchmarks.evaluation.reconstruction import reconstruction_metrics
+    from image_benchmarks.rhs.registry import build_rhs
+    from image_benchmarks.training.trainer import ImageTrainer
     from neuripp.parametric_pushforward.flow_matching import FlowMatching, flow_matching_loss
 
     run_dir = Path(session_dir) / "runs" / run["run_id"]
@@ -681,7 +686,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             }
             _append_jsonl(metrics_path, record)
         if step % training["validation_every"] == 0 or step == training["max_steps"]:
-            from neuripp.image_benchmarks.evaluation.validation import evaluate_fixed_fm_loss
+            from image_benchmarks.evaluation.validation import evaluate_fixed_fm_loss
 
             start = time.perf_counter()
             val_loss = evaluate_fixed_fm_loss(
@@ -704,7 +709,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         run_dir, trainer, train_stream, training["keep_checkpoints"]
     )
     if not np.isfinite(final_validation):
-        from neuripp.image_benchmarks.evaluation.validation import evaluate_fixed_fm_loss
+        from image_benchmarks.evaluation.validation import evaluate_fixed_fm_loss
 
         final_validation = evaluate_fixed_fm_loss(
             trainer.model,
@@ -724,7 +729,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
     if fid_config["enabled"]:
         extractor = DiffuseInceptionFeatures(fid_config["source_dir"])
         evaluation_split = config["evaluation"]["split"]
-        from neuripp.image_benchmarks.datasets.hf_loader import load_split
+        from image_benchmarks.datasets.hf_loader import load_split
 
         real_iterator = load_split(
             manifest,
@@ -783,7 +788,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         _append_jsonl(metrics_path, {"type": "evaluation", **result})
 
     if encoder.__class__.__name__ != "IdentityEncoder":
-        from neuripp.image_benchmarks.datasets.hf_loader import load_split
+        from image_benchmarks.datasets.hf_loader import load_split
 
         recon_iterator = load_split(
             manifest,

@@ -10,9 +10,9 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from neuripp.image_benchmarks.rhs.diffuse_sit import load_diffuse_sit
-from neuripp.image_benchmarks.rhs.mlp import FlattenedRHS, TimeMLP
-from neuripp.image_benchmarks.rhs.unet import ImageUNet, UNET_PRESETS
+from image_benchmarks.rhs.diffuse_sit import load_diffuse_sit
+from image_benchmarks.rhs.mlp import FlattenedRHS, TimeMLP
+from image_benchmarks.rhs.unet import ImageUNet, UNET_PRESETS
 
 
 RHS_TYPES = {"mlp", "unet", "sit"}

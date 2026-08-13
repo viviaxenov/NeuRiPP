@@ -15,7 +15,7 @@ from typing import Iterable
 import numpy as np
 import scipy.linalg
 
-from neuripp.image_benchmarks.assets.diffuse_nnx import prepare_diffuse_nnx_source
+from image_benchmarks.assets.diffuse_nnx import prepare_diffuse_nnx_source
 
 
 def _sqrtm_with_error_estimate(matrix: np.ndarray):

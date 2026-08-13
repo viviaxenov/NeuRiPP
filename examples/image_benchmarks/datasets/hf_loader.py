@@ -11,19 +11,19 @@ from typing import Any, Callable, Iterator, Mapping
 
 import numpy as np
 
-from neuripp.image_benchmarks.datasets.manifest import DatasetManifest, SplitManifest
-from neuripp.image_benchmarks.datasets.registry import (
+from image_benchmarks.datasets.manifest import DatasetManifest, SplitManifest
+from image_benchmarks.datasets.registry import (
     PROJECT_SPLIT_SEED,
     DatasetSpec,
     get_dataset_spec,
 )
-from neuripp.image_benchmarks.datasets.splits import (
+from image_benchmarks.datasets.splits import (
     read_indices,
     split_fixed_counts,
     split_holdout,
     write_indices,
 )
-from neuripp.image_benchmarks.datasets.transforms import transform_image
+from image_benchmarks.datasets.transforms import transform_image
 
 
 def _default_load_dataset(*args, offline: bool = False, **kwargs):

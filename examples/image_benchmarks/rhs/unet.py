@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from neuripp.image_benchmarks.rhs.common import (
+from image_benchmarks.rhs.common import (
     group_count,
     sinusoidal_time_embedding,
 )

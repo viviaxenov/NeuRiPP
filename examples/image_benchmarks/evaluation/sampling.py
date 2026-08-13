@@ -10,7 +10,7 @@ import numpy as np
 from flax import nnx
 
 from neuripp._ode._ode import solve_ode_batched
-from neuripp.image_benchmarks.datasets.transforms import model_to_evaluation
+from image_benchmarks.datasets.transforms import model_to_evaluation
 
 
 def generate_image_batches(

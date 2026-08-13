@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from neuripp.image_benchmarks.encoders.diffuse_vae import load_diffuse_vae
-from neuripp.image_benchmarks.encoders.identity import IdentityEncoder
-from neuripp.image_benchmarks.encoders.project_ae import load_project_ae
+from image_benchmarks.encoders.diffuse_vae import load_diffuse_vae
+from image_benchmarks.encoders.identity import IdentityEncoder
+from image_benchmarks.encoders.project_ae import load_project_ae
 
 
 ENCODER_TYPES = {"none", "ae", "vae"}

@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
-from neuripp.image_benchmarks.assets.diffuse_nnx import prepare_diffuse_nnx_source
-from neuripp.image_benchmarks.evaluation.inception import DiffuseInceptionFeatures
-from neuripp.image_benchmarks.rhs.registry import build_rhs, parameter_count
+ROOT = Path(__file__).parents[1]
+sys.path.insert(0, str(ROOT / "examples"))
+
+from image_benchmarks.assets.diffuse_nnx import prepare_diffuse_nnx_source
+from image_benchmarks.evaluation.inception import DiffuseInceptionFeatures
+from image_benchmarks.rhs.registry import build_rhs, parameter_count
 
 
 EXPECTED_SIT_PARAMETERS = {"S": 32_474_640, "B": 129_534_864}

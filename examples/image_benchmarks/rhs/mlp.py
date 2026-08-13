@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from neuripp.image_benchmarks.rhs.common import sinusoidal_time_embedding
+from image_benchmarks.rhs.common import sinusoidal_time_embedding
 
 
 ACTIVATIONS: dict[str, Callable] = {

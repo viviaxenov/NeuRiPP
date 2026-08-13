@@ -14,7 +14,7 @@ import numpy as np
 import optax
 from flax import nnx
 
-from neuripp.image_benchmarks.encoders.project_ae_model import AutoEncoder
+from image_benchmarks.encoders.project_ae_model import AutoEncoder
 
 
 def build_autoencoder(

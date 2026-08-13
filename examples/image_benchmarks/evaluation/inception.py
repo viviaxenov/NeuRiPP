@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from neuripp.image_benchmarks.assets.diffuse_nnx import prepare_diffuse_nnx_source
+from image_benchmarks.assets.diffuse_nnx import prepare_diffuse_nnx_source
 
 
 _IMPORT_LOCK = threading.Lock()

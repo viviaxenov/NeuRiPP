@@ -9,9 +9,12 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
-from neuripp.image_benchmarks.distributed import DataParallelContext
-from neuripp.image_benchmarks.training.methods import resolve_method
-from neuripp.image_benchmarks.training.trainer import ImageTrainer
+ROOT = Path(__file__).parents[1]
+sys.path.insert(0, str(ROOT / "examples"))
+
+from image_benchmarks.distributed import DataParallelContext
+from image_benchmarks.training.methods import resolve_method
+from image_benchmarks.training.trainer import ImageTrainer
 from neuripp.parametric_pushforward.flow_matching import FlowMatching, flow_matching_loss
 
 

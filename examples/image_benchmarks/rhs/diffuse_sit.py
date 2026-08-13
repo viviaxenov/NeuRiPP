@@ -8,7 +8,7 @@ from typing import Any
 import jax.numpy as jnp
 from flax import nnx
 
-from neuripp.image_benchmarks.assets.diffuse_nnx import (
+from image_benchmarks.assets.diffuse_nnx import (
     import_diffuse_module,
     prepare_diffuse_nnx_source,
 )

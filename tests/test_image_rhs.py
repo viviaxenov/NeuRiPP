@@ -1,9 +1,15 @@
+from pathlib import Path
+import sys
+
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from neuripp.image_benchmarks.rhs.diffuse_sit import DiffuseSiTRHS
-from neuripp.image_benchmarks.rhs.registry import (
+ROOT = Path(__file__).parents[1]
+sys.path.insert(0, str(ROOT / "examples"))
+
+from image_benchmarks.rhs.diffuse_sit import DiffuseSiTRHS
+from image_benchmarks.rhs.registry import (
     build_rhs,
     parameter_count,
     validate_rhs_compatibility,

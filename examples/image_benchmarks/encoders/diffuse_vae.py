@@ -9,11 +9,11 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from neuripp.image_benchmarks.assets.diffuse_nnx import (
+from image_benchmarks.assets.diffuse_nnx import (
     import_diffuse_module,
     prepare_diffuse_nnx_source,
 )
-from neuripp.image_benchmarks.assets.files import prepare_vae_checkpoint, sha256_path
+from image_benchmarks.assets.files import prepare_vae_checkpoint, sha256_path
 
 
 class DiffuseVAEEncoder:

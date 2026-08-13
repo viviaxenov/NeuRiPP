@@ -1,9 +1,13 @@
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 
-from neuripp.image_benchmarks.config import gpu_groups, load_config, plan_runs
+ROOT = Path(__file__).parents[1]
+sys.path.insert(0, str(ROOT / "examples"))
+
+from image_benchmarks.config import gpu_groups, load_config, plan_runs
 
 
 def base_config(tmpdir):
@@ -152,7 +156,7 @@ def test_all_required_presets_resolve_and_plan():
         "imagenet256_vae_sit_s2.json",
         "imagenet256_vae_sit_b2.json",
     }
-    root = Path(__file__).parents[1] / "examples" / "configs" / "image_benchmarks"
+    root = ROOT / "examples" / "image_benchmarks" / "configs"
     assert required <= {path.name for path in root.glob("*.json")}
     previous = os.environ.get("HF_TOKEN")
     os.environ["HF_TOKEN"] = "structural-validation-token"

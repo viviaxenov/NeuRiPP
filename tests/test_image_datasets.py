@@ -1,14 +1,18 @@
 import tempfile
 import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
 
-from neuripp.image_benchmarks.datasets.hf_loader import download_dataset, load_split
-from neuripp.image_benchmarks.datasets.manifest import DatasetManifest
-from neuripp.image_benchmarks.datasets.registry import DATASET_REGISTRY, get_dataset_spec
-from neuripp.image_benchmarks.datasets.transforms import (
+ROOT = Path(__file__).parents[1]
+sys.path.insert(0, str(ROOT / "examples"))
+
+from image_benchmarks.datasets.hf_loader import download_dataset, load_split
+from image_benchmarks.datasets.manifest import DatasetManifest
+from image_benchmarks.datasets.registry import DATASET_REGISTRY, get_dataset_spec
+from image_benchmarks.datasets.transforms import (
     model_to_evaluation,
     transform_image,
 )
@@ -241,8 +245,8 @@ def test_offline_placeholder_is_not_used_as_hf_revision():
 
 def test_split_order_matches_across_independent_processes():
     program = (
-        "import json; "
-        "from neuripp.image_benchmarks.datasets.splits import stable_index_order; "
+        f"import json, sys; sys.path.insert(0, {str(ROOT / 'examples')!r}); "
+        "from image_benchmarks.datasets.splits import stable_index_order; "
         "print(json.dumps(stable_index_order(100, 23).tolist()))"
     )
     first = subprocess.check_output([sys.executable, "-c", program], text=True)

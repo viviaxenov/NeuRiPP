@@ -10,13 +10,13 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from neuripp.image_benchmarks.datasets.transforms import model_to_evaluation
-from neuripp.image_benchmarks.evaluation.features import (
+from image_benchmarks.datasets.transforms import model_to_evaluation
+from image_benchmarks.evaluation.features import (
     InceptionFeatureCache,
     InceptionFeatureWriter,
     open_feature_cache,
 )
-from neuripp.image_benchmarks.evaluation.fid import (
+from image_benchmarks.evaluation.fid import (
     FIDCacheKey,
     FeatureStats,
     calculate_fid,
@@ -24,9 +24,9 @@ from neuripp.image_benchmarks.evaluation.fid import (
     statistics_from_feature_batches,
     write_fid_stats,
 )
-from neuripp.image_benchmarks.evaluation.kid import calculate_kid
-from neuripp.image_benchmarks.evaluation.sampling import generate_image_batches
-from neuripp.image_benchmarks.evaluation.validation import (
+from image_benchmarks.evaluation.kid import calculate_kid
+from image_benchmarks.evaluation.sampling import generate_image_batches
+from image_benchmarks.evaluation.validation import (
     FixedFMValidationSet,
     evaluate_fixed_fm_loss,
 )

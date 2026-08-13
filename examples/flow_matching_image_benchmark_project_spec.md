@@ -1048,41 +1048,42 @@ Adapt to the existing repository rather than forcing these exact directories.
 
 ```text
 project/
-├── benchmarks/
-│   ├── datasets/
-│   │   ├── registry.py
-│   │   ├── hf_loader.py
-│   │   ├── splits.py
-│   │   └── transforms.py
-│   ├── encoders/
-│   │   ├── base.py
-│   │   ├── identity.py
-│   │   ├── project_ae.py
-│   │   └── diffuse_vae.py
-│   ├── rhs/
-│   │   ├── registry.py
-│   │   ├── mlp.py
-│   │   ├── unet.py
-│   │   └── diffuse_sit.py
-│   ├── eval/
-│   │   ├── val_loss.py
-│   │   ├── fid.py
-│   │   ├── kid.py
-│   │   └── reconstruction.py
-│   ├── assets/
-│   │   └── download.py
-│   └── config_validation.py
-├── configs/
+├── examples/
+│   ├── flow_matching_image_benchmark_runner.py
 │   └── image_benchmarks/
-│       ├── mnist_mlp.yaml
-│       ├── cifar10_unet.yaml
-│       ├── flowers256_vae_unet.yaml
-│       ├── flowers256_vae_sit_s2.yaml
-│       ├── afhqcat256_vae_unet.yaml
-│       ├── lsun256_vae_unet.yaml
-│       ├── ffhq64_unet.yaml
-│       ├── imagenet64_unet.yaml
-│       └── imagenet256_vae_sit_b2.yaml
+│       ├── datasets/
+│       │   ├── registry.py
+│       │   ├── hf_loader.py
+│       │   ├── splits.py
+│       │   └── transforms.py
+│       ├── encoders/
+│       │   ├── base.py
+│       │   ├── identity.py
+│       │   ├── project_ae.py
+│       │   └── diffuse_vae.py
+│       ├── rhs/
+│       │   ├── registry.py
+│       │   ├── mlp.py
+│       │   ├── unet.py
+│       │   └── diffuse_sit.py
+│       ├── evaluation/
+│       │   ├── validation.py
+│       │   ├── fid.py
+│       │   ├── kid.py
+│       │   └── reconstruction.py
+│       ├── assets/
+│       ├── training/
+│       ├── config.py
+│       └── configs/
+│           ├── mnist_mlp.json
+│           ├── cifar10_unet.json
+│           ├── flowers256_vae_unet.json
+│           ├── flowers256_vae_sit_s2.json
+│           ├── afhqcat256_vae_unet.json
+│           ├── lsun256_vae_unet.json
+│           ├── ffhq64_unet.json
+│           ├── imagenet64_unet.json
+│           └── imagenet256_vae_sit_b2.json
 └── tests/
     └── benchmarks/
 ```

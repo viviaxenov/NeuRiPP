@@ -4,7 +4,9 @@ from flax import nnx
 
 from typing import Tuple, Callable
 
-from neuripp.image_benchmarks.encoders.project_ae_model import (
+# Benchmark-only architecture support lives beside this example script.
+
+from image_benchmarks.encoders.project_ae_model import (
     AutoEncoder,
     Decoder,
     Encoder,

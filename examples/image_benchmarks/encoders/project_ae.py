@@ -9,8 +9,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from neuripp.image_benchmarks.assets.files import sha256_path
-from neuripp.image_benchmarks.encoders import project_ae_training
+from image_benchmarks.assets.files import sha256_path
+from image_benchmarks.encoders import project_ae_training
 
 
 class ProjectAEEncoder:

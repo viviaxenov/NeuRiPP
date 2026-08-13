@@ -1,25 +1,29 @@
 import tempfile
 from pathlib import Path
+import sys
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from neuripp.image_benchmarks.assets.files import prepare_vae_checkpoint
-from neuripp.image_benchmarks.encoders.cache import (
+ROOT = Path(__file__).parents[1]
+sys.path.insert(0, str(ROOT / "examples"))
+
+from image_benchmarks.assets.files import prepare_vae_checkpoint
+from image_benchmarks.encoders.cache import (
     LatentCacheKey,
     LatentCacheWriter,
     open_latent_cache,
     sample_cached_stats,
     write_latent_cache,
 )
-from neuripp.image_benchmarks.encoders.diffuse_vae import DiffuseVAEEncoder
-from neuripp.image_benchmarks.encoders.identity import IdentityEncoder
-from neuripp.image_benchmarks.encoders.project_ae import (
+from image_benchmarks.encoders.diffuse_vae import DiffuseVAEEncoder
+from image_benchmarks.encoders.identity import IdentityEncoder
+from image_benchmarks.encoders.project_ae import (
     ProjectAEEncoder,
 )
-from neuripp.image_benchmarks.encoders.project_ae_training import build_autoencoder
-from neuripp.image_benchmarks.encoders.registry import encoder_state_shape
+from image_benchmarks.encoders.project_ae_training import build_autoencoder
+from image_benchmarks.encoders.registry import encoder_state_shape
 
 
 class FakeAE:
