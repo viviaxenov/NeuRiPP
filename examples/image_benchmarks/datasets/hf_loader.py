@@ -19,8 +19,7 @@ from image_benchmarks.datasets.registry import (
 )
 from image_benchmarks.datasets.splits import (
     read_indices,
-    split_fixed_counts,
-    split_holdout,
+    stable_index_order,
     write_indices,
 )
 from image_benchmarks.datasets.transforms import transform_image
@@ -85,38 +84,23 @@ def _require_split(dataset: Mapping[str, Any], *names: str) -> str:
     raise ValueError(f"Required dataset split {names} not found; available: {available}")
 
 
-def _holdout_selection(
+def _official_train_test_selection(
     dataset: Mapping[str, Any],
-    spec: DatasetSpec,
-    validation_size: int | float,
-    seed: int,
 ) -> dict[str, tuple[str, np.ndarray]]:
     train_name = _require_split(dataset, "train")
     test_name = _require_split(dataset, "test")
-    train_source = dataset[train_name]
-    indices = np.arange(len(train_source), dtype=np.int64)
-    train, validation = split_holdout(
-        indices,
-        (
-            _identifiers(train_source, train_name, spec.filename_key)
-            if spec.filename_key
-            else None
-        ),
-        validation_size,
-        seed,
-    )
+    train = np.arange(len(dataset[train_name]), dtype=np.int64)
+    test = np.arange(len(dataset[test_name]), dtype=np.int64)
     return {
         "train": (train_name, train),
-        "validation": (train_name, validation),
-        "test": (test_name, np.arange(len(dataset[test_name]), dtype=np.int64)),
+        "validation": (test_name, test.copy()),
+        "test": (test_name, test),
     }
 
 
 def _afhq_selection(
     dataset: Mapping[str, Any],
     spec: DatasetSpec,
-    seed: int,
-    validation_size: int | float,
 ) -> dict[str, tuple[str, np.ndarray]]:
     train_candidates: tuple[str, np.ndarray] | None = None
     test_candidates: tuple[str, np.ndarray] | None = None
@@ -144,15 +128,9 @@ def _afhq_selection(
             "verify the pinned dataset revision"
         )
     train_source_name, candidates = train_candidates
-    source = dataset[train_source_name]
-    all_ids = _identifiers(source, train_source_name, spec.filename_key)
-    candidate_ids = [all_ids[index] for index in candidates]
-    train, validation = split_holdout(
-        candidates, candidate_ids, validation_size, seed
-    )
     return {
-        "train": (train_source_name, train),
-        "validation": (train_source_name, validation),
+        "train": (train_source_name, candidates),
+        "validation": (test_candidates[0], test_candidates[1].copy()),
         "test": test_candidates,
     }
 
@@ -161,52 +139,53 @@ def _build_selections(
     dataset: Mapping[str, Any],
     spec: DatasetSpec,
     seed: int,
-    validation_size: int | float | None,
+    train_size: int | None,
 ) -> dict[str, tuple[str, np.ndarray]]:
-    if spec.split_recipe == "train_holdout_test":
-        size = spec.default_validation_size if validation_size is None else validation_size
-        if size is None:
-            raise ValueError(f"No validation size configured for {spec.name}")
-        return _holdout_selection(dataset, spec, size, seed)
+    if spec.split_recipe == "official_train_test":
+        return _official_train_test_selection(dataset)
 
     if spec.split_recipe == "provided_three_way":
         train = _require_split(dataset, "train")
-        validation = _require_split(dataset, "validation", "valid")
         test = _require_split(dataset, "test")
+        test_indices = np.arange(len(dataset[test]), dtype=np.int64)
         return {
             "train": (train, np.arange(len(dataset[train]), dtype=np.int64)),
-            "validation": (
-                validation,
-                np.arange(len(dataset[validation]), dtype=np.int64),
-            ),
-            "test": (test, np.arange(len(dataset[test]), dtype=np.int64)),
+            "validation": (test, test_indices.copy()),
+            "test": (test, test_indices),
         }
 
     if spec.split_recipe == "afhq_cat":
-        size = spec.default_validation_size if validation_size is None else validation_size
-        if size is None:
-            raise ValueError("No validation size configured for AFHQ cat")
-        return _afhq_selection(dataset, spec, seed, size)
+        return _afhq_selection(dataset, spec)
 
-    if spec.split_recipe == "ffhq_60_5_5":
+    if spec.split_recipe == "full_train_reference":
+        train_name = _require_split(dataset, "train")
+        reference_name = _require_split(dataset, "test", "validation", "val")
+        reference = np.arange(len(dataset[reference_name]), dtype=np.int64)
+        return {
+            "train": (train_name, np.arange(len(dataset[train_name]), dtype=np.int64)),
+            "validation": (reference_name, reference.copy()),
+            "test": (reference_name, reference),
+        }
+
+    if spec.split_recipe == "ffhq_random":
         source_name = "train" if "train" in dataset else _split_names(dataset)[0]
         source = dataset[source_name]
         if len(source) != 70000:
             raise ValueError(f"FFHQ-64 expected 70000 examples; got {len(source)}")
         indices = np.arange(len(source), dtype=np.int64)
-        train, validation, test = split_fixed_counts(
-            indices,
-            (
-                _identifiers(source, source_name, spec.filename_key)
-                if spec.filename_key
-                else None
-            ),
-            (60000, 5000, 5000),
-            seed,
-        )
+        resolved_train_size = spec.default_train_size if train_size is None else train_size
+        if not isinstance(resolved_train_size, int) or isinstance(resolved_train_size, bool):
+            raise ValueError("FFHQ train_size must be an integer")
+        if not 1 <= resolved_train_size < len(indices):
+            raise ValueError(
+                f"FFHQ train_size must be between 1 and {len(indices) - 1}"
+            )
+        order = stable_index_order(len(indices), seed)
+        train = indices[order[:resolved_train_size]]
+        test = indices[order[resolved_train_size:]]
         return {
             "train": (source_name, train),
-            "validation": (source_name, validation),
+            "validation": (source_name, test.copy()),
             "test": (source_name, test),
         }
 
@@ -214,25 +193,13 @@ def _build_selections(
         train_name = _require_split(dataset, "train")
         reference_name = _require_split(dataset, "validation", "val")
         train_source = dataset[train_name]
-        size = spec.default_validation_size if validation_size is None else validation_size
-        if size:
-            train, fm_validation = split_holdout(
-                np.arange(len(train_source), dtype=np.int64),
-                None,
-                size,
-                seed,
-            )
-        else:
-            train = np.arange(len(train_source), dtype=np.int64)
-            fm_validation = None
+        train = np.arange(len(train_source), dtype=np.int64)
         reference_indices = np.arange(len(dataset[reference_name]), dtype=np.int64)
         selections = {
             "train": (train_name, train),
             "validation": (reference_name, reference_indices),
             "test": (reference_name, reference_indices.copy()),
         }
-        if fm_validation is not None:
-            selections["fm_validation"] = (train_name, fm_validation)
         return selections
 
     raise ValueError(f"Unknown split recipe {spec.split_recipe!r}")
@@ -245,7 +212,7 @@ def _manifest_directory(
     resolution: int,
     crop: str,
     split_seed: int,
-    validation_size: int | float | None,
+    train_size: int | None,
 ) -> Path:
     key = json.dumps(
         {
@@ -254,7 +221,7 @@ def _manifest_directory(
             "resolution": resolution,
             "crop": crop,
             "split_seed": split_seed,
-            "validation_size": validation_size,
+            "train_size": train_size,
         },
         sort_keys=True,
     )
@@ -271,7 +238,7 @@ def download_dataset(
     resolution: int | None = None,
     crop: str | None = None,
     split_seed: int = PROJECT_SPLIT_SEED,
-    validation_size: int | float | None = None,
+    train_size: int | None = None,
     offline: bool = False,
     load_dataset_fn: Callable[..., Mapping[str, Any]] | None = None,
     revision_resolver: Callable[[str, str | None, str | None, bool], str] | None = None,
@@ -280,6 +247,10 @@ def download_dataset(
 
     if isinstance(spec, str):
         spec = get_dataset_spec(spec)
+    if train_size is not None and spec.split_recipe != "ffhq_random":
+        raise ValueError("train_size is only configurable for FFHQ-64")
+    if spec.split_recipe == "ffhq_random" and train_size is None:
+        train_size = spec.default_train_size
     resolution = spec.validate_resolution(resolution)
     crop = spec.preprocessing if crop is None else crop
     token = hf_token or os.environ.get("HF_TOKEN")
@@ -322,7 +293,7 @@ def download_dataset(
         raise
 
     selections = _build_selections(
-        dataset, spec, split_seed, validation_size=validation_size
+        dataset, spec, split_seed, train_size=train_size
     )
     manifest_dir = _manifest_directory(
         Path(cache_dir),
@@ -331,7 +302,7 @@ def download_dataset(
         resolution,
         crop,
         split_seed,
-        validation_size,
+        train_size,
     )
     split_manifests: dict[str, SplitManifest] = {}
     for logical_name, (source_name, indices) in selections.items():
@@ -360,6 +331,7 @@ def download_dataset(
         source_fingerprints=_source_fingerprints(dataset),
         splits=split_manifests,
         manifest_dir=manifest_dir,
+        train_size=train_size,
     )
     manifest.write()
     return manifest

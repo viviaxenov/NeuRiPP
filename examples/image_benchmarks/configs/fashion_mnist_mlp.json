@@ -1,0 +1,5 @@
+{
+  "extends": "mnist_mlp.json",
+  "experiment": {"name": "fashion_mnist_pixels_mlp"},
+  "problem": {"dataset": {"name": "fashion_mnist"}}
+}

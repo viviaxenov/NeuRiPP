@@ -9,7 +9,6 @@
       "name": "mnist",
       "resolution": 28,
       "cache_dir": "../../../data/huggingface",
-      "validation_size": 32,
       "horizontal_flip": false
     },
     "encoder": {

@@ -142,6 +142,10 @@ def test_all_required_presets_resolve_and_plan():
         "mnist_mlp.json",
         "mnist_ae32_mlp.json",
         "mnist_ae64_mlp.json",
+        "fashion_mnist_mlp.json",
+        "fashion_mnist_ae64_mlp.json",
+        "fashion_mnist_unet.json",
+        "fashion_mnist_unet_ngd_smoke.json",
         "cifar10_unet_small.json",
         "cifar10_unet.json",
         "flowers64_unet.json",
@@ -199,6 +203,41 @@ def test_fid_requires_at_least_two_fake_samples():
             assert "at least 2" in str(error)
         else:
             raise AssertionError("Expected one-sample FID preflight failure")
+
+
+def test_sample_metric_configuration_is_resolved_and_strict():
+    with tempfile.TemporaryDirectory() as directory:
+        payload = base_config(directory)
+        payload["evaluation"]["sample_metrics"] = {
+            "num_samples": 8,
+            "batch_size": 4,
+            "mmd": {"enabled": True, "bw_multipliers": [0.5, 1, 2]},
+            "sliced_wasserstein": {"enabled": True, "num_projections": 7},
+        }
+        config = load_config(write_config(directory, payload))
+        metrics = config["evaluation"]["sample_metrics"]
+        assert metrics["mmd"]["bw_multipliers"] == [0.5, 1.0, 2.0]
+        assert metrics["sliced_wasserstein"]["num_projections"] == 7
+
+        payload["evaluation"]["sample_metrics"]["mmd"]["bandwidths"] = [1.0]
+        try:
+            load_config(write_config(directory, payload))
+        except ValueError as error:
+            assert "exactly one" in str(error)
+        else:
+            raise AssertionError("Expected ambiguous MMD bandwidth rejection")
+
+
+def test_dataset_split_configuration_rejects_obsolete_holdouts():
+    with tempfile.TemporaryDirectory() as directory:
+        payload = base_config(directory)
+        payload["problem"]["dataset"]["validation_size"] = 100
+        try:
+            load_config(write_config(directory, payload))
+        except ValueError as error:
+            assert "obsolete" in str(error)
+        else:
+            raise AssertionError("Expected obsolete validation holdout rejection")
 
 
 def test_obsolete_diffuse_source_checkout_fields_are_rejected():

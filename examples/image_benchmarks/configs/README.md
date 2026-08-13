@@ -19,3 +19,9 @@ The DiffuseNNX `vae_trial1.pkl` has no trusted checksum bundled with NeuRiPP.
 VAE presets therefore contain a 64-zero placeholder for `expected_sha256`.
 Replace it with a trusted, independently obtained checksum before running; the
 runner intentionally rejects a checkpoint that does not match it.
+
+Fashion-MNIST presets are `fashion_mnist_mlp.json`,
+`fashion_mnist_ae64_mlp.json`, and `fashion_mnist_unet.json`. The additional
+`fashion_mnist_unet_ngd_smoke.json` is a two-GPU, global-batch-512 integration
+check that runs exactly ten NGD optimizer steps with FID/KID disabled and MMD
+plus sliced-Wasserstein enabled.

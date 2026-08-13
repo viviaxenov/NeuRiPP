@@ -27,7 +27,11 @@ from image_benchmarks.evaluation.evaluator import (
 )
 from image_benchmarks.evaluation.kid import calculate_kid
 from image_benchmarks.evaluation.reconstruction import reconstruction_metrics
-from image_benchmarks.evaluation.sampling import generate_image_batches
+from image_benchmarks.evaluation.sample_metrics import evaluate_sample_metrics
+from image_benchmarks.evaluation.sampling import (
+    generate_image_batches,
+    generate_state_batches,
+)
 from image_benchmarks.evaluation.validation import (
     evaluate_fixed_fm_loss,
     make_fixed_fm_validation,
@@ -189,6 +193,70 @@ def test_sampling_is_independent_of_evaluation_batch_size():
     np.testing.assert_array_equal(first, second)
 
 
+def test_state_sampling_is_deterministic_and_does_not_decode():
+    model = FlowMatching(
+        ZeroRHS((2,)), nnx.Rngs(21), 2, ode_method="euler", ode_nstep_max=1
+    )
+    first = np.concatenate(
+        list(generate_state_batches(model, num_samples=5, batch_size=2, seed=22))
+    )
+    second = np.concatenate(
+        list(generate_state_batches(model, num_samples=5, batch_size=3, seed=22))
+    )
+    np.testing.assert_array_equal(first, second)
+
+
+def test_mmd_and_sliced_wasserstein_are_deterministic_in_state_space():
+    real = np.random.default_rng(30).normal(size=(12, 2, 2, 1)).astype(np.float32)
+    generated = real + 1.0
+    config = {
+        "mmd": {"enabled": True, "bw_multipliers": [0.5, 1.0, 2.0]},
+        "sliced_wasserstein": {"enabled": True, "num_projections": 11},
+    }
+    first = evaluate_sample_metrics(real, generated, config, seed=31)
+    second = evaluate_sample_metrics(real, generated, config, seed=31)
+    assert first == second
+    assert first["mmd"] > 0.0
+    assert first["mmd_bandwidth_source"] == "median_multipliers"
+    assert len(first["mmd_bandwidths"]) == 3
+    assert first["sliced_wasserstein"] > 0.0
+    assert first["sample_metrics_state_dimension"] == 4
+
+
+def test_mmd_explicit_bandwidths_are_reported():
+    real = np.arange(12, dtype=np.float32).reshape(6, 2)
+    result = evaluate_sample_metrics(
+        real,
+        real.copy(),
+        {
+            "mmd": {"enabled": True, "bandwidths": [0.25, 2.0]},
+            "sliced_wasserstein": {"enabled": False},
+        },
+        seed=32,
+    )
+    assert result["mmd"] == 0.0
+    assert result["mmd_bandwidths"] == [0.25, 2.0]
+    assert result["mmd_bandwidth_source"] == "explicit"
+
+
+def test_mmd_median_rejects_degenerate_real_states():
+    states = np.zeros((4, 3), dtype=np.float32)
+    try:
+        evaluate_sample_metrics(
+            states,
+            states,
+            {
+                "mmd": {"enabled": True, "bw_multipliers": [1.0]},
+                "sliced_wasserstein": {"enabled": False},
+            },
+            seed=33,
+        )
+    except ValueError as error:
+        assert "explicit bandwidths" in str(error)
+    else:
+        raise AssertionError("Expected degenerate median bandwidth rejection")
+
+
 def test_local_fid_matches_diffuse_reference_formula():
     source = '''def calculate_fid(stats: dict[str, np.ndarray], ref_stats: dict[str, np.ndarray]) -> float:\n    m = np.square(stats["mu"] - ref_stats["mu"]).sum()\n    s, _ = scipy.linalg.sqrtm(np.dot(stats["sigma"], ref_stats["sigma"]), disp=False)\n    return float(np.real(m + np.trace(stats["sigma"] + ref_stats["sigma"] - s * 2)))\n'''
     with tempfile.TemporaryDirectory() as directory:
@@ -294,6 +362,10 @@ if __name__ == "__main__":
     test_identity_reconstruction_metrics_are_exact()
     test_latent_sampling_uses_decoder_and_uint8_adapter()
     test_sampling_is_independent_of_evaluation_batch_size()
+    test_state_sampling_is_deterministic_and_does_not_decode()
+    test_mmd_and_sliced_wasserstein_are_deterministic_in_state_space()
+    test_mmd_explicit_bandwidths_are_reported()
+    test_mmd_median_rejects_degenerate_real_states()
     test_local_fid_matches_diffuse_reference_formula()
     test_fid_supports_scipy_sqrtm_without_disp_argument()
     test_end_to_end_checkpoint_evaluation_with_feature_caches()

@@ -21,7 +21,7 @@ class DatasetSpec:
     supported_resolutions: tuple[int, ...] | None = None
     gated: bool = False
     filename_key: str | None = None
-    default_validation_size: int | float | None = None
+    default_train_size: int | None = None
 
     def validate_resolution(self, resolution: int | None) -> int:
         resolved = self.default_resolution if resolution is None else resolution
@@ -43,8 +43,16 @@ DATASET_REGISTRY: dict[str, DatasetSpec] = {
         label_key="label",
         default_resolution=28,
         channels=1,
-        split_recipe="train_holdout_test",
-        default_validation_size=5000,
+        split_recipe="official_train_test",
+    ),
+    "fashion_mnist": DatasetSpec(
+        name="fashion_mnist",
+        hf_id="zalando-datasets/fashion_mnist",
+        image_key="image",
+        label_key="label",
+        default_resolution=28,
+        channels=1,
+        split_recipe="official_train_test",
     ),
     "cifar10": DatasetSpec(
         name="cifar10",
@@ -53,8 +61,7 @@ DATASET_REGISTRY: dict[str, DatasetSpec] = {
         label_key="label",
         default_resolution=32,
         channels=3,
-        split_recipe="train_holdout_test",
-        default_validation_size=5000,
+        split_recipe="official_train_test",
     ),
     "flowers102": DatasetSpec(
         name="flowers102",
@@ -76,7 +83,6 @@ DATASET_REGISTRY: dict[str, DatasetSpec] = {
         split_recipe="afhq_cat",
         supported_resolutions=(256, 512),
         filename_key="filename",
-        default_validation_size=0.1,
     ),
     "lsun_church": DatasetSpec(
         name="lsun_church",
@@ -85,9 +91,8 @@ DATASET_REGISTRY: dict[str, DatasetSpec] = {
         label_key=None,
         default_resolution=256,
         channels=3,
-        split_recipe="train_holdout_test",
+        split_recipe="full_train_reference",
         supported_resolutions=(256,),
-        default_validation_size=5000,
     ),
     "ffhq64": DatasetSpec(
         name="ffhq64",
@@ -96,8 +101,9 @@ DATASET_REGISTRY: dict[str, DatasetSpec] = {
         label_key=None,
         default_resolution=64,
         channels=3,
-        split_recipe="ffhq_60_5_5",
+        split_recipe="ffhq_random",
         supported_resolutions=(64,),
+        default_train_size=60000,
     ),
     "imagenet64": DatasetSpec(
         name="imagenet64",
@@ -108,7 +114,6 @@ DATASET_REGISTRY: dict[str, DatasetSpec] = {
         channels=3,
         split_recipe="imagenet",
         supported_resolutions=(64,),
-        default_validation_size=5000,
     ),
     "imagenet256": DatasetSpec(
         name="imagenet256",
@@ -120,7 +125,6 @@ DATASET_REGISTRY: dict[str, DatasetSpec] = {
         split_recipe="imagenet",
         supported_resolutions=(256,),
         gated=True,
-        default_validation_size=5000,
     ),
 }
 

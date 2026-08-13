@@ -35,14 +35,15 @@ Face controls the internal dataset directory names beneath that cache.
 
 | Registry name | Hugging Face dataset | Supported resolution | Split policy |
 |---|---|---:|---|
-| `mnist` | [`ylecun/mnist`](https://huggingface.co/datasets/ylecun/mnist) | 28 | Reserve 5,000 training examples for validation; retain the provided test set. |
-| `cifar10` | [`uoft-cs/cifar10`](https://huggingface.co/datasets/uoft-cs/cifar10) | 32 | Reserve 5,000 training examples for validation; retain the provided test set. |
-| `flowers102` | [`pufanyi/flowers102`](https://huggingface.co/datasets/pufanyi/flowers102) | 64, 256 | Use the provided train, validation, and test splits. |
-| `afhq_cat` | [`bitmind/AFHQ`](https://huggingface.co/datasets/bitmind/AFHQ) | 256, 512 | Select `train/cat/*` and `test/cat/*`; reserve 10% of cat training images for validation. |
-| `lsun_church` | [`tglcourse/lsun_church_train`](https://huggingface.co/datasets/tglcourse/lsun_church_train) | 256 | Reserve 5,000 training examples for validation; retain the provided test set. |
-| `ffhq64` | [`Dmini/FFHQ-64x64`](https://huggingface.co/datasets/Dmini/FFHQ-64x64) | 64 | Deterministic 60,000/5,000/5,000 train/validation/test partition. |
-| `imagenet64` | [`benjamin-paine/imagenet-1k-64x64`](https://huggingface.co/datasets/benjamin-paine/imagenet-1k-64x64) | 64 | Official validation is the final reference; reserve 5,000 training examples for FM validation. |
-| `imagenet256` | [`ILSVRC/imagenet-1k`](https://huggingface.co/datasets/ILSVRC/imagenet-1k) | 256 | Official validation is the final reference; reserve 5,000 training examples for FM validation. |
+| `mnist` | [`ylecun/mnist`](https://huggingface.co/datasets/ylecun/mnist) | 28 | Use all 60,000 official training examples; validation aliases the official 10,000-example test set. |
+| `fashion_mnist` | [`zalando-datasets/fashion_mnist`](https://huggingface.co/datasets/zalando-datasets/fashion_mnist) | 28 | Use all 60,000 official training examples; validation aliases the official 10,000-example test set. |
+| `cifar10` | [`uoft-cs/cifar10`](https://huggingface.co/datasets/uoft-cs/cifar10) | 32 | Use the complete official training set; validation aliases the official test set. |
+| `flowers102` | [`pufanyi/flowers102`](https://huggingface.co/datasets/pufanyi/flowers102) | 64, 256 | Preserve the complete official training set; test is used as the evaluation reference. |
+| `afhq_cat` | [`bitmind/AFHQ`](https://huggingface.co/datasets/bitmind/AFHQ) | 256, 512 | Select all `train/cat/*`; validation aliases all `test/cat/*`. |
+| `lsun_church` | [`tglcourse/lsun_church_train`](https://huggingface.co/datasets/tglcourse/lsun_church_train) | 256 | Preserve the complete provided training set; use a provided test/validation split when available. |
+| `ffhq64` | [`Dmini/FFHQ-64x64`](https://huggingface.co/datasets/Dmini/FFHQ-64x64) | 64 | Deterministic partition controlled by `train_size` (default 60,000) and `split_seed`; the remainder is evaluation data. |
+| `imagenet64` | [`benjamin-paine/imagenet-1k-64x64`](https://huggingface.co/datasets/benjamin-paine/imagenet-1k-64x64) | 64 | Preserve all official training examples; official validation is the evaluation reference. |
+| `imagenet256` | [`ILSVRC/imagenet-1k`](https://huggingface.co/datasets/ILSVRC/imagenet-1k) | 256 | Preserve all official training examples; official validation is the evaluation reference. |
 
 `imagenet256` is gated. Accept the dataset terms on Hugging Face and export
 `HF_TOKEN` before preparation. The harness fails rather than substituting a
@@ -88,6 +89,17 @@ but disabled when latents are cached.
 
 FID features use DiffuseNNX's
 [`InceptionV3`](https://github.com/viviaxenov/diffuse_nnx/blob/da5f2b79497722931d279b012c90bec61050466b/src/diffuse_nnx/eval/inception.py).
+
+### Sample metrics
+
+`evaluation.sample_metrics` can enable MMD and sliced Wasserstein over generated
+and real **model states**: normalized pixels for `none`, AE vectors for `ae`, or
+scaled VAE latents for `vae`. MMD uses NeuRiPP's `gaussian_mmd` and requires
+exactly one positive list, either explicit `bandwidths` or `bw_multipliers` of
+the real-state median heuristic. Sliced Wasserstein uses OTT-JAX and accepts
+`num_projections`. `num_samples`, `batch_size`, evaluation seed, and split are
+explicitly configurable; results and resolved metric provenance are written to
+`sample_metrics.json`, `metrics.jsonl`, and `final_summary.json`.
 
 ## External assets
 

@@ -10,7 +10,6 @@
       "resolution": 32,
       "cache_dir": "../../../data/huggingface",
       "split_seed": 20260811,
-      "validation_size": 5000,
       "crop": "center_square",
       "horizontal_flip": true,
       "offline": false

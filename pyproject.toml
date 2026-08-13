@@ -47,6 +47,7 @@ image-benchmarks = [
   "tqdm>=4.67.1",
   "torch>=2.5",
   "torchvision>=0.20",
+  "ott-jax>=0.6,<0.7",
 ]
 image-benchmarks-diffuse = [
   "datasets[vision]>=5.0.0",
@@ -60,6 +61,7 @@ image-benchmarks-diffuse = [
   "tqdm>=4.67.1",
   "torch>=2.5",
   "torchvision>=0.20",
+  "ott-jax>=0.6,<0.7",
   "diffuse-nnx[vae,eval] @ git+https://github.com/viviaxenov/diffuse_nnx.git@da5f2b79497722931d279b012c90bec61050466b",
 ]
 docs = [

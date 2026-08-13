@@ -61,6 +61,7 @@ def fake_loader_factory(dataset):
 def test_registry_contains_all_required_datasets():
     expected = {
         "mnist",
+        "fashion_mnist",
         "cifar10",
         "flowers102",
         "afhq_cat",
@@ -82,7 +83,6 @@ def test_manifest_and_splits_are_process_independent():
         first = download_dataset(
             "mnist",
             first_dir,
-            validation_size=3,
             split_seed=17,
             load_dataset_fn=loader,
             revision_resolver=resolver,
@@ -90,7 +90,6 @@ def test_manifest_and_splits_are_process_independent():
         second = download_dataset(
             "mnist",
             second_dir,
-            validation_size=3,
             split_seed=17,
             load_dataset_fn=loader,
             revision_resolver=resolver,
@@ -105,35 +104,38 @@ def test_manifest_and_splits_are_process_independent():
             )
             np.testing.assert_array_equal(first_indices, second_indices)
         assert first.summary()["split_counts"] == {
-            "train": 9,
-            "validation": 3,
+            "train": 12,
+            "validation": 4,
             "test": 4,
         }
+        assert first.splits["validation"].source_split == "test"
         loaded = DatasetManifest.read(first.path)
         assert loaded.digest == first.digest
 
 
-def test_validation_policy_has_distinct_manifest_key():
+def test_official_test_alias_does_not_reduce_training_set():
     dataset = fake_mnist()
     loader = fake_loader_factory(dataset)
     with tempfile.TemporaryDirectory() as directory:
         first = download_dataset(
             "mnist",
             directory,
-            validation_size=2,
+            split_seed=2,
             load_dataset_fn=loader,
             revision_resolver=lambda *args: "fake-revision",
         )
         second = download_dataset(
             "mnist",
             directory,
-            validation_size=3,
+            split_seed=3,
             load_dataset_fn=loader,
             revision_resolver=lambda *args: "fake-revision",
         )
         assert first.manifest_dir != second.manifest_dir
-        assert first.splits["validation"].count == 2
-        assert second.splits["validation"].count == 3
+        assert first.splits["train"].count == 12
+        assert second.splits["train"].count == 12
+        assert first.splits["validation"].count == 4
+        assert second.splits["validation"].count == 4
 
 
 def test_lazy_loader_returns_normalized_nhwc_batches():
@@ -144,7 +146,6 @@ def test_lazy_loader_returns_normalized_nhwc_batches():
             "mnist",
             directory,
             resolution=10,
-            validation_size=3,
             load_dataset_fn=loader,
             revision_resolver=lambda *args: "fake-revision",
         )
@@ -201,7 +202,7 @@ def test_gated_dataset_requires_credentials_before_download():
                 raise AssertionError("Expected gated ImageNet credential validation")
 
 
-def test_imagenet_keeps_official_validation_as_validation():
+def test_imagenet_keeps_full_train_and_official_validation_as_evaluation():
     image = np.zeros((4, 4, 3), dtype=np.uint8)
     dataset = {
         "train": FakeSplit([{"image": image, "label": 0}] * 10, "train"),
@@ -211,14 +212,51 @@ def test_imagenet_keeps_official_validation_as_validation():
         manifest = download_dataset(
             "imagenet64",
             directory,
-            validation_size=2,
             load_dataset_fn=fake_loader_factory(dataset),
             revision_resolver=lambda *args: "fake-revision",
         )
         assert manifest.splits["validation"].source_split == "validation"
         assert manifest.splits["validation"].count == 4
-        assert manifest.splits["fm_validation"].source_split == "train"
-        assert manifest.splits["fm_validation"].count == 2
+        assert manifest.splits["test"].source_split == "validation"
+        assert manifest.splits["train"].count == 10
+        assert "fm_validation" not in manifest.splits
+
+
+def test_ffhq_train_size_and_seed_are_manifest_identity():
+    image = np.zeros((2, 2, 3), dtype=np.uint8)
+    dataset = {"train": FakeSplit([{"image": image}] * 70000, "ffhq")}
+    loader = fake_loader_factory(dataset)
+    resolver = lambda *args: "fake-revision"
+    with tempfile.TemporaryDirectory() as directory:
+        default = download_dataset(
+            "ffhq64", directory, load_dataset_fn=loader, revision_resolver=resolver
+        )
+        smaller = download_dataset(
+            "ffhq64",
+            directory,
+            train_size=55000,
+            load_dataset_fn=loader,
+            revision_resolver=resolver,
+        )
+        reseeded = download_dataset(
+            "ffhq64",
+            directory,
+            train_size=55000,
+            split_seed=9,
+            load_dataset_fn=loader,
+            revision_resolver=resolver,
+        )
+        assert default.train_size == 60000
+        assert default.summary()["split_counts"] == {
+            "train": 60000,
+            "validation": 10000,
+            "test": 10000,
+        }
+        assert smaller.train_size == 55000
+        assert smaller.splits["train"].count == 55000
+        assert smaller.splits["test"].count == 15000
+        assert smaller.manifest_dir != default.manifest_dir
+        assert reseeded.manifest_dir != smaller.manifest_dir
 
 
 def test_offline_placeholder_is_not_used_as_hf_revision():
@@ -235,7 +273,6 @@ def test_offline_placeholder_is_not_used_as_hf_revision():
             "mnist",
             directory,
             offline=True,
-            validation_size=3,
             load_dataset_fn=loader,
         )
         list(load_split(manifest, "test", 2, 0, offline=True, load_dataset_fn=loader))
@@ -260,7 +297,6 @@ def test_loader_rejects_changed_source_fingerprint():
         manifest = download_dataset(
             "mnist",
             directory,
-            validation_size=3,
             load_dataset_fn=fake_loader_factory(dataset),
             revision_resolver=lambda *args: "unresolved",
         )
@@ -283,11 +319,12 @@ def test_loader_rejects_changed_source_fingerprint():
 if __name__ == "__main__":
     test_registry_contains_all_required_datasets()
     test_manifest_and_splits_are_process_independent()
-    test_validation_policy_has_distinct_manifest_key()
+    test_official_test_alias_does_not_reduce_training_set()
     test_lazy_loader_returns_normalized_nhwc_batches()
     test_transform_round_trip_and_deterministic_flip()
     test_gated_dataset_requires_credentials_before_download()
-    test_imagenet_keeps_official_validation_as_validation()
+    test_imagenet_keeps_full_train_and_official_validation_as_evaluation()
+    test_ffhq_train_size_and_seed_are_manifest_identity()
     test_offline_placeholder_is_not_used_as_hf_revision()
     test_split_order_matches_across_independent_processes()
     test_loader_rejects_changed_source_fingerprint()

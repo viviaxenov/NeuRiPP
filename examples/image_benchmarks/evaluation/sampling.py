@@ -13,9 +13,8 @@ from neuripp._ode._ode import solve_ode_batched
 from image_benchmarks.datasets.transforms import model_to_evaluation
 
 
-def generate_image_batches(
+def generate_state_batches(
     model,
-    encoder,
     *,
     num_samples: int,
     batch_size: int,
@@ -45,5 +44,15 @@ def generate_image_batches(
             method=method,
             **dict(solver_kwargs),
         )
-        images = encoder.decode(states)
-        yield model_to_evaluation(np.asarray(images))
+        yield np.asarray(states)
+
+
+def generate_image_batches(
+    model,
+    encoder,
+    **kwargs: Any,
+) -> Iterator[np.ndarray]:
+    """Decode deterministic generated model-state batches for image metrics."""
+
+    for states in generate_state_batches(model, **kwargs):
+        yield model_to_evaluation(np.asarray(encoder.decode(states)))

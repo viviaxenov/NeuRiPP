@@ -84,7 +84,7 @@ def _dataset_kwargs(config: dict[str, Any]) -> dict[str, Any]:
         "resolution": dataset["resolution"],
         "crop": dataset.get("crop"),
         "split_seed": int(dataset.get("split_seed", 20260811)),
-        "validation_size": dataset.get("validation_size"),
+        "train_size": dataset.get("train_size"),
         "offline": bool(dataset.get("offline", False)),
     }
 
@@ -424,6 +424,50 @@ def _fixed_validation(config, manifest, encoder, run):
     return make_fixed_fm_validation(
         states, identifiers, run["rng_seeds"]["evaluation"]
     )
+
+
+def _real_sample_metric_states(config, manifest, encoder, run, count):
+    """Collect deterministic evaluation examples in the model's state space."""
+
+    from image_benchmarks.datasets.hf_loader import load_split
+    from image_benchmarks.training.data import RestartableLatentStream
+
+    split = config["evaluation"]["split"]
+    metric_config = config["evaluation"]["sample_metrics"]
+    encoder_config = config["problem"]["encoder"]
+    if encoder_config["type"] == "none":
+        iterator = load_split(
+            manifest,
+            split,
+            metric_config["batch_size"],
+            config["evaluation"]["seed"],
+            shuffle=False,
+            offline=config["problem"]["dataset"].get("offline", False),
+        )
+        states, _ = _collect_images(iterator, count)
+        return states
+    cache = _ensure_latent_cache(
+        config, manifest, encoder, split, run["rng_seeds"]["encoder_sampling"]
+    )
+    mean, std, _ = cache.load(load_identifiers=False)
+    stream = RestartableLatentStream(
+        mean,
+        std,
+        batch_size=min(metric_config["batch_size"], count),
+        seed=config["evaluation"]["seed"],
+        sampling_seed=config["evaluation"]["seed"],
+        sample_posterior=bool(encoder_config.get("sample_posterior", True)),
+        shuffle=False,
+        drop_last=False,
+    )
+    batches = []
+    collected = 0
+    while collected < count:
+        batch = np.asarray(stream.next_batch())
+        take = min(len(batch), count - collected)
+        batches.append(batch[:take])
+        collected += take
+    return np.concatenate(batches)
 
 
 def _checkpoint_dirs(run_dir):
@@ -780,6 +824,60 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             best_validation, result["val_fm_loss"]
         )
         _append_jsonl(metrics_path, {"type": "evaluation", **result})
+
+    sample_metric_config = config["evaluation"]["sample_metrics"]
+    if any(
+        sample_metric_config[name]["enabled"]
+        for name in ("mmd", "sliced_wasserstein")
+    ):
+        from image_benchmarks.evaluation.sample_metrics import evaluate_sample_metrics
+        from image_benchmarks.evaluation.sampling import generate_state_batches
+
+        start = time.perf_counter()
+        metric_count = min(
+            sample_metric_config["num_samples"],
+            manifest.splits[config["evaluation"]["split"]].count,
+        )
+        if metric_count < 2:
+            raise ValueError("Sample metric evaluation split must contain at least two examples")
+        real_states = _real_sample_metric_states(
+            config, manifest, encoder, run, metric_count
+        )
+        generated_states = np.concatenate(
+            list(
+                generate_state_batches(
+                    trainer.model,
+                    num_samples=metric_count,
+                    batch_size=sample_metric_config["batch_size"],
+                    seed=run["rng_seeds"]["sampling"],
+                    ode_method=sampling["method"],
+                    ode_steps=sampling["steps"],
+                    ode_kwargs=sampling.get("kwargs", {}),
+                )
+            )
+        )
+        sample_metric_result = evaluate_sample_metrics(
+            real_states,
+            generated_states,
+            sample_metric_config,
+            seed=config["evaluation"]["seed"],
+        )
+        sample_metric_result["sample_metrics_state_space"] = config["problem"][
+            "encoder"
+        ]["type"]
+        sample_metric_result["sample_metrics_split"] = config["evaluation"]["split"]
+        sample_metric_result["sample_metrics_seed"] = config["evaluation"]["seed"]
+        sample_metric_result["sample_metrics_sampling_seed"] = run["rng_seeds"][
+            "sampling"
+        ]
+        duration = time.perf_counter() - start
+        trainer.record_evaluation_time(duration)
+        sample_metric_result["sample_metrics_duration_s"] = duration
+        final_summary.update(sample_metric_result)
+        _write_json(run_dir / "sample_metrics.json", sample_metric_result)
+        _append_jsonl(
+            metrics_path, {"type": "sample_metrics", **sample_metric_result}
+        )
 
     if encoder.__class__.__name__ != "IdentityEncoder":
         from image_benchmarks.datasets.hf_loader import load_split

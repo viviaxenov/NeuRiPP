@@ -1,0 +1,8 @@
+{
+  "extends": "_base_ae.json",
+  "experiment": {"name": "fashion_mnist_ae64_mlp"},
+  "problem": {
+    "dataset": {"name": "fashion_mnist", "resolution": 28, "horizontal_flip": false},
+    "encoder": {"latent_dim": 64, "checkpoint": "../../../artifacts/ae/fashion_mnist_latent64"}
+  }
+}

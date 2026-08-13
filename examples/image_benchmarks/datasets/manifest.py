@@ -33,6 +33,7 @@ class DatasetManifest:
     source_fingerprints: dict[str, str]
     splits: dict[str, SplitManifest]
     manifest_dir: Path
+    train_size: int | None = None
 
     @property
     def path(self) -> Path:
@@ -84,6 +85,7 @@ class DatasetManifest:
             "channels": self.channels,
             "normalization": self.normalization,
             "split_seed": self.split_seed,
+            "train_size": self.train_size,
             "split_counts": {
                 name: split.count for name, split in self.splits.items()
             },

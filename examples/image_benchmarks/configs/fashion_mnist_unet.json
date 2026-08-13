@@ -1,0 +1,7 @@
+{
+  "extends": "_base_pixel.json",
+  "experiment": {"name": "fashion_mnist_pixels_unet"},
+  "problem": {"dataset": {"name": "fashion_mnist", "resolution": 28, "horizontal_flip": false}},
+  "rhs": {"type": "unet", "variant": "small", "channel_mult": [1, 2, 2], "attention_resolutions": [14]},
+  "training": {"batch_size": 256}
+}

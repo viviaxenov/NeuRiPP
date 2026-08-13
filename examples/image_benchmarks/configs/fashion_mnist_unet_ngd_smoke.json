@@ -1,0 +1,52 @@
+{
+  "extends": "fashion_mnist_unet.json",
+  "experiment": {"name": "fashion_mnist_unet_ngd_smoke", "seed": 73},
+  "rhs": {
+    "base_channels": 16,
+    "channel_mult": [1, 2],
+    "num_res_blocks": 1,
+    "num_heads": 1,
+    "attention_resolutions": []
+  },
+  "training": {
+    "max_steps": 10,
+    "batch_size": 512,
+    "log_every": 1,
+    "validation_every": 10,
+    "checkpoint_every": 10,
+    "keep_checkpoints": 2
+  },
+  "methods": [{
+    "name": "ngd",
+    "n_restarts": 1,
+    "kwargs": {
+      "step_size": 0.001,
+      "linear_solver_regularization": 0.001,
+      "linear_solver_tolerance": 0.000001,
+      "linear_solver_maxiter": 10,
+      "natural_grad_clipping_threshold": 20.0
+    }
+  }],
+  "evaluation": {
+    "split": "test",
+    "seed": 1073,
+    "val_fm_loss": {"enabled": true, "num_samples": 512, "batch_size": 256},
+    "sampling": {"method": "euler", "steps": 4, "batch_size": 256},
+    "fid": {"enabled": false},
+    "kid": {"enabled": false},
+    "sample_metrics": {
+      "num_samples": 512,
+      "batch_size": 256,
+      "mmd": {"enabled": true, "bw_multipliers": [0.5, 1.0, 2.0]},
+      "sliced_wasserstein": {"enabled": true, "num_projections": 32}
+    }
+  },
+  "resources": {
+    "gpu_ids": [0, 1],
+    "gpus_per_run": 2,
+    "max_concurrent_runs": 1,
+    "data_parallel": true,
+    "worker_env": {"XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9"}
+  },
+  "plotting": {"sample_grid": {"enabled": true, "rows": 4, "columns": 4}}
+}

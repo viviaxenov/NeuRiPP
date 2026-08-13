@@ -74,6 +74,19 @@ def _boolean(value: Any, name: str) -> bool:
     return value
 
 
+def _positive_number_list(value: Any, name: str) -> list[float]:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{name} must be a non-empty array")
+    if any(
+        not isinstance(item, (int, float))
+        or isinstance(item, bool)
+        or not float(item) > 0.0
+        for item in value
+    ):
+        raise ValueError(f"{name} values must be positive numbers")
+    return [float(item) for item in value]
+
+
 def _resolve_path(value: Any, base: Path, name: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{name} must be a non-empty path string")
@@ -264,6 +277,14 @@ def load_config(path: str | Path) -> dict[str, Any]:
             "Do not store problem.dataset.hf_token in JSON; configure HF_TOKEN in the environment"
         )
     spec = get_dataset_spec(dataset.get("name"))
+    if "validation_size" in dataset:
+        raise ValueError(
+            "problem.dataset.validation_size is obsolete; official training sets are preserved"
+        )
+    if "train_size" in dataset:
+        if spec.name != "ffhq64":
+            raise ValueError("problem.dataset.train_size is only supported for ffhq64")
+        _positive_integer(dataset["train_size"], "problem.dataset.train_size")
     resolution = spec.validate_resolution(dataset.get("resolution"))
     dataset["resolution"] = resolution
     dataset["cache_dir"] = _resolve_path(
@@ -323,7 +344,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
             raise ValueError("Only stepsize_schedule='schedule_exp' is supported")
 
     evaluation = _object(config["evaluation"], "evaluation")
-    evaluation.setdefault("split", "validation")
+    evaluation.setdefault("split", "test")
     if evaluation["split"] not in {"validation", "test"}:
         raise ValueError("evaluation.split must be one of: validation, test")
     evaluation.setdefault("seed", master_seed + 1000)
@@ -408,6 +429,47 @@ def load_config(path: str | Path) -> dict[str, Any]:
     sampling["batch_size"] = _positive_integer(
         sampling.get("batch_size", batch_size), "evaluation.sampling.batch_size"
     )
+    sample_metrics = _object(
+        evaluation.setdefault("sample_metrics", {}), "evaluation.sample_metrics"
+    )
+    sample_metrics["num_samples"] = _integer_at_least(
+        sample_metrics.get("num_samples", 1000),
+        2,
+        "evaluation.sample_metrics.num_samples",
+    )
+    sample_metrics["batch_size"] = _positive_integer(
+        sample_metrics.get("batch_size", sampling["batch_size"]),
+        "evaluation.sample_metrics.batch_size",
+    )
+    mmd = _object(
+        sample_metrics.setdefault("mmd", {"enabled": False}),
+        "evaluation.sample_metrics.mmd",
+    )
+    mmd.setdefault("enabled", False)
+    _boolean(mmd["enabled"], "evaluation.sample_metrics.mmd.enabled")
+    if mmd["enabled"]:
+        choices = [name for name in ("bandwidths", "bw_multipliers") if name in mmd]
+        if len(choices) != 1:
+            raise ValueError(
+                "Enabled MMD requires exactly one of evaluation.sample_metrics.mmd."
+                "bandwidths or bw_multipliers"
+            )
+        mmd[choices[0]] = _positive_number_list(
+            mmd[choices[0]], f"evaluation.sample_metrics.mmd.{choices[0]}"
+        )
+    sliced = _object(
+        sample_metrics.setdefault("sliced_wasserstein", {"enabled": False}),
+        "evaluation.sample_metrics.sliced_wasserstein",
+    )
+    sliced.setdefault("enabled", False)
+    _boolean(
+        sliced["enabled"], "evaluation.sample_metrics.sliced_wasserstein.enabled"
+    )
+    if sliced["enabled"]:
+        sliced["num_projections"] = _positive_integer(
+            sliced.get("num_projections", 100),
+            "evaluation.sample_metrics.sliced_wasserstein.num_projections",
+        )
 
     resources = _object(config["resources"], "resources")
     gpu_ids = resources.get("gpu_ids", [])
