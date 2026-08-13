@@ -75,6 +75,21 @@ def _verified_distribution() -> tuple[str, Path]:
                 text=True,
                 stderr=subprocess.STDOUT,
             ).strip()
+            dirty = subprocess.check_output(
+                [
+                    "git",
+                    "-C",
+                    str(checkout),
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=all",
+                    "--",
+                    "src/diffuse_nnx",
+                    "pyproject.toml",
+                ],
+                text=True,
+                stderr=subprocess.STDOUT,
+            ).strip()
         except (FileNotFoundError, subprocess.CalledProcessError) as error:
             raise RuntimeError(
                 "editable diffuse-nnx provenance is not a valid Git checkout"
@@ -84,6 +99,10 @@ def _verified_distribution() -> tuple[str, Path]:
         ):
             raise RuntimeError(
                 "editable diffuse-nnx checkout origin does not match the pinned fork"
+            )
+        if dirty:
+            raise RuntimeError(
+                "editable diffuse-nnx checkout has package or metadata modifications"
             )
         package_root = checkout / "src" / "diffuse_nnx"
     else:
