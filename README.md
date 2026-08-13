@@ -43,11 +43,15 @@ python -m pip install -e ".[cuda12]"               # CUDA 12, core only
 python -m pip install -e ".[cuda13]"               # CUDA 13, core only
 python -m pip install -e ".[cuda13,examples]"      # CUDA 13 with examples
 python -m pip install -e ".[cuda12,examples,docs]" # CUDA 12, examples and docs
+python -m pip install -e ".[cuda12,image-benchmarks-diffuse]" # Image benchmarks with DiffuseNNX
 ```
 
 The supported stack pins JAX 0.11.0 and Flax 0.12.8. The `examples` extra also
 installs `uncprop` from the configured GitHub fork. A fresh virtual environment
 is recommended when switching CPU or CUDA targets.
+
+The complete image flow-matching benchmark setup is documented in
+[`examples/image_benchmarks/README.md`](examples/image_benchmarks/README.md).
 
 ### Building docs
 [See](./docs/README.md)
