@@ -1,6 +1,13 @@
 {
   "extends": "fashion_mnist_unet.json",
   "experiment": {"name": "fashion_mnist_unet_300epoch_adamw_ngd", "seed": 73},
+  "rhs": {
+    "base_channels": 16,
+    "channel_mult": [1, 2],
+    "num_res_blocks": 1,
+    "num_heads": 1,
+    "attention_resolutions": []
+  },
   "training": {
     "max_steps": 35100,
     "target_loader_epochs": 300,

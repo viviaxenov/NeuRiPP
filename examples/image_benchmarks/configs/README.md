@@ -33,3 +33,5 @@ therefore 300 complete loader epochs are 35,100 optimizer steps (17,971,200
 examples processed, or 299.52 dataset-size-normalized effective epochs).
 The methods run sequentially on all eight configured GPUs; NGD uses at most ten
 CG iterations per update with its requested constant step and regularization.
+The comparison uses the compact U-Net (`base_channels=16`, multipliers `[1,2]`,
+one residual block), identically for both optimizers.

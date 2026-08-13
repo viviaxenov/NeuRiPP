@@ -268,6 +268,9 @@ def test_fashion_300epoch_comparison_has_exact_method_settings():
     assert "stepsize_schedule_name" not in methods["ngd"]
     assert config["resources"]["gpus_per_run"] == 8
     assert config["resources"]["max_concurrent_runs"] == 1
+    assert config["rhs"]["base_channels"] == 16
+    assert config["rhs"]["channel_mult"] == [1, 2]
+    assert config["rhs"]["num_res_blocks"] == 1
 
 
 def test_obsolete_diffuse_source_checkout_fields_are_rejected():
