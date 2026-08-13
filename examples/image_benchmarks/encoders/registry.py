@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from image_benchmarks.encoders.diffuse_vae import load_diffuse_vae
@@ -77,12 +76,9 @@ def build_encoder(
             "obtained independently from the checkpoint download. The upstream "
             "pickle must not be loaded using a trust-on-first-use checksum."
         )
-    source_dir = config.get("source_dir", "artifacts/external/diffuse_nnx")
     return load_diffuse_vae(
         checkpoint=checkpoint,
-        source_dir=Path(source_dir),
         auto_download=bool(config.get("auto_download", True)),
-        source_auto_download=bool(config.get("source_auto_download", True)),
         sample_posterior=bool(config.get("sample_posterior", True)),
         seed=seed,
         expected_sha256=expected_sha256,

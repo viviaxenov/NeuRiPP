@@ -9,10 +9,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from image_benchmarks.assets.diffuse_nnx import (
-    import_diffuse_module,
-    prepare_diffuse_nnx_source,
-)
+from image_benchmarks.assets.diffuse_nnx import import_diffuse_module
 from image_benchmarks.assets.files import prepare_vae_checkpoint, sha256_path
 
 
@@ -86,9 +83,7 @@ class DiffuseVAEEncoder:
 def load_diffuse_vae(
     *,
     checkpoint: str | Path,
-    source_dir: str | Path,
     auto_download: bool,
-    source_auto_download: bool = True,
     sample_posterior: bool,
     seed: int = 0,
     expected_sha256: str | None = None,
@@ -103,19 +98,10 @@ def load_diffuse_vae(
         auto_download=auto_download,
         expected_sha256=expected_sha256,
     )
-    source_dir = prepare_diffuse_nnx_source(
-        source_dir, auto_download=source_auto_download
-    )
-    module = import_diffuse_module("networks.encoders.sd_vae", source_dir)
-    try:
-        import ml_collections
-    except ModuleNotFoundError as error:
-        raise ModuleNotFoundError(
-            "DiffuseNNX VAE requires the 'image-benchmarks' optional dependencies"
-        ) from error
-    model = module.StabilityVAE(
-        ml_collections.ConfigDict(),
-        pretrained_path=metadata["path"],
+    module = import_diffuse_module("diffuse_nnx.networks.encoders.sd_vae")
+    model = module.StabilityVAE.from_pretrained(
+        metadata["path"],
+        expected_sha256=expected_sha256,
         encoded_pixels=False,
         rngs=nnx.Rngs(seed, gaussian=seed + 1),
     )

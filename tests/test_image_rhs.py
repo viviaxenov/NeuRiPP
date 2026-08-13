@@ -90,6 +90,13 @@ def test_sit_adapter_is_unconditional_and_shape_preserving():
     assert model.calls_without_labels == 1
 
 
+def test_packaged_diffuse_sit_uses_canonical_import():
+    from image_benchmarks.assets.diffuse_nnx import import_diffuse_module
+
+    module = import_diffuse_module("diffuse_nnx.networks.transformers.dit_nnx")
+    assert module.DiT.__module__.startswith("diffuse_nnx.")
+
+
 def test_architecture_compatibility_errors_are_preflighted():
     try:
         validate_rhs_compatibility({"type": "mlp"}, (32, 32, 3))
@@ -177,6 +184,7 @@ if __name__ == "__main__":
     test_explicit_mlp_flatten_adapter()
     test_unet_output_shapes_for_pixels_and_latents()
     test_sit_adapter_is_unconditional_and_shape_preserving()
+    test_packaged_diffuse_sit_uses_canonical_import()
     test_architecture_compatibility_errors_are_preflighted()
     test_unet_dropout_runs_inside_flow_matching_vmap()
     test_unet_pullback_metric_supports_stateless_dropout()

@@ -17,7 +17,6 @@ from image_benchmarks.evaluation.fid import (
     _sqrtm_with_error_estimate,
     calculate_fid,
     load_fid_stats,
-    load_diffuse_fid_function,
     statistics_from_feature_batches,
     write_fid_stats,
 )
@@ -178,17 +177,9 @@ def test_sampling_is_independent_of_evaluation_batch_size():
     np.testing.assert_array_equal(first, second)
 
 
-def test_local_fid_matches_function_loaded_from_reference_source():
+def test_local_fid_matches_diffuse_reference_formula():
     source = '''def calculate_fid(stats: dict[str, np.ndarray], ref_stats: dict[str, np.ndarray]) -> float:\n    m = np.square(stats["mu"] - ref_stats["mu"]).sum()\n    s, _ = scipy.linalg.sqrtm(np.dot(stats["sigma"], ref_stats["sigma"]), disp=False)\n    return float(np.real(m + np.trace(stats["sigma"] + ref_stats["sigma"] - s * 2)))\n'''
     with tempfile.TemporaryDirectory() as directory:
-        source_dir = Path(directory)
-        (source_dir / "eval").mkdir()
-        (source_dir / "eval" / "utils.py").write_text(source, encoding="utf-8")
-        # Bypass source checkout verification only for this isolated AST unit by
-        # loading the exact function body directly through a temporary git repo
-        # would add no useful coverage. Numerical parity is checked below using
-        # the same reference source form; pinned-source integration is a separate
-        # smoke command.
         rng = np.random.default_rng(19)
         left = statistics_from_feature_batches([rng.normal(size=(8, 4))])
         right = statistics_from_feature_batches([rng.normal(size=(9, 4))])
@@ -264,7 +255,6 @@ def test_end_to_end_checkpoint_evaluation_with_feature_caches():
             fid_cache_root=directory,
             fake_cache_root=Path(directory) / "fake",
             extractor=FakeExtractor(),
-            diffuse_source_dir=None,
             step=1,
             epoch=0.5,
             wall_clock_train_s=1.0,
@@ -291,7 +281,7 @@ if __name__ == "__main__":
     test_identity_reconstruction_metrics_are_exact()
     test_latent_sampling_uses_decoder_and_uint8_adapter()
     test_sampling_is_independent_of_evaluation_batch_size()
-    test_local_fid_matches_function_loaded_from_reference_source()
+    test_local_fid_matches_diffuse_reference_formula()
     test_fid_supports_scipy_sqrtm_without_disp_argument()
     test_end_to_end_checkpoint_evaluation_with_feature_caches()
     print("Image evaluation tests passed.")

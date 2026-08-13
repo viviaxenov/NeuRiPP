@@ -131,7 +131,6 @@ def evaluate_checkpoint(
     fid_cache_root: str | Path,
     fake_cache_root: str | Path,
     extractor,
-    diffuse_source_dir: str | Path | None,
     step: int,
     epoch: float,
     wall_clock_train_s: float,
@@ -194,9 +193,7 @@ def evaluate_checkpoint(
         "epoch": float(epoch),
         "wall_clock_train_s": float(wall_clock_train_s),
         "val_fm_loss": float(val_fm_loss),
-        "fid": calculate_fid(
-            fake_stats, real_stats, diffuse_source_dir=diffuse_source_dir
-        ),
+        "fid": calculate_fid(fake_stats, real_stats),
         "fid_num_fake": int(fake_stats.count),
         "fid_num_real": int(real_stats.count),
     }

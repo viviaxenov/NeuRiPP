@@ -11,7 +11,7 @@
     "split": "test",
     "val_fm_loss": {"enabled": true, "num_samples": 5000, "batch_size": 128},
     "sampling": {"method": "heun", "steps": 50, "batch_size": 128},
-    "fid": {"enabled": true, "num_samples_final": 50000, "batch_size": 64, "cache_dir": "../../../artifacts/fid", "source_dir": "../../../artifacts/external/diffuse_nnx"},
+    "fid": {"enabled": true, "num_samples_final": 50000, "batch_size": 64, "cache_dir": "../../../artifacts/fid", "weights_path": "../../../artifacts/inception/inception_v3_weights_fid.pickle", "auto_download": true},
     "kid": {"enabled": false}
   },
   "resources": {"gpu_ids": [0, 1, 2, 3, 4, 5, 6], "gpus_per_run": 1, "max_concurrent_runs": 7, "data_parallel": true, "worker_env": {"XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9"}},

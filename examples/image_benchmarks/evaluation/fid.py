@@ -3,20 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import ast
 import hashlib
 import json
 import os
 from pathlib import Path
 import tempfile
-from types import SimpleNamespace
 from typing import Iterable
 
 import numpy as np
 import scipy.linalg
-
-from image_benchmarks.assets.diffuse_nnx import prepare_diffuse_nnx_source
-
 
 def _sqrtm_with_error_estimate(matrix: np.ndarray):
     """Normalize SciPy's pre/post-1.18 ``sqrtm`` return conventions."""
@@ -39,7 +34,7 @@ class FIDCacheKey:
     channel_conversion: str
     dataset_resize: str = "pillow_lanczos"
     inception_resize: str = "jax_bilinear_299"
-    feature_extractor: str = "diffuse_nnx_inception_v3_fid_023afd2"
+    feature_extractor: str = "diffuse_nnx_inception_v3_fid_da5f2b7_4e030efa"
     split_indices_sha256: str = ""
     dataset_manifest_digest: str = ""
 
@@ -97,47 +92,14 @@ def statistics_from_feature_batches(
     return accumulator.finalize()
 
 
-def load_diffuse_fid_function(source_dir: str | Path):
-    """Load the exact pinned ``calculate_fid`` function without Torch imports."""
-
-    source_dir = prepare_diffuse_nnx_source(source_dir, auto_download=False)
-    path = source_dir / "eval" / "utils.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    function = next(
-        (
-            node
-            for node in tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == "calculate_fid"
-        ),
-        None,
-    )
-    if function is None:
-        raise ImportError(f"Pinned DiffuseNNX calculate_fid not found in {path}")
-    module = ast.Module(body=[function], type_ignores=[])
-    scipy_compat = SimpleNamespace(
-        linalg=SimpleNamespace(
-            sqrtm=lambda matrix, disp=False: _sqrtm_with_error_estimate(matrix)
-        )
-    )
-    namespace = {"np": np, "scipy": scipy_compat}
-    exec(compile(module, str(path), "exec"), namespace)
-    return namespace["calculate_fid"]
-
-
 def calculate_fid(
     fake: FeatureStats,
     real: FeatureStats,
-    *,
-    diffuse_source_dir: str | Path | None = None,
 ) -> float:
-    """Match ``diffuse_nnx.eval.utils.calculate_fid`` on cached statistics."""
+    """Match DiffuseNNX FID while supporting current and legacy SciPy APIs."""
 
     if fake.mu.shape != real.mu.shape or fake.sigma.shape != real.sigma.shape:
         raise ValueError("FID statistics have incompatible dimensions")
-    if diffuse_source_dir is not None:
-        reference = load_diffuse_fid_function(diffuse_source_dir)
-        return reference(fake.as_diffuse_dict(), real.as_diffuse_dict())
     mean_term = np.square(fake.mu - real.mu).sum()
     covariance_root, _ = _sqrtm_with_error_estimate(fake.sigma @ real.sigma)
     score = mean_term + np.trace(fake.sigma + real.sigma - 2.0 * covariance_root)

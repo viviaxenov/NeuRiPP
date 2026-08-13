@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import jax.numpy as jnp
 from flax import nnx
 
-from image_benchmarks.assets.diffuse_nnx import (
-    import_diffuse_module,
-    prepare_diffuse_nnx_source,
-)
+from image_benchmarks.assets.diffuse_nnx import import_diffuse_module
 
 
 SIT_VARIANTS = {
@@ -52,8 +48,6 @@ def load_diffuse_sit(
     state_shape: tuple[int, int, int],
     variant: str,
     patch_size: int,
-    source_dir: str | Path,
-    source_auto_download: bool,
     rngs: nnx.Rngs,
     dtype=jnp.float32,
 ) -> DiffuseSiTRHS:
@@ -65,10 +59,7 @@ def load_diffuse_sit(
         raise ValueError("DiffuseNNX DiT currently requires a square spatial state")
     if height % patch_size or width % patch_size:
         raise ValueError("SiT state dimensions must be divisible by patch_size")
-    source_dir = prepare_diffuse_nnx_source(
-        source_dir, auto_download=source_auto_download
-    )
-    module = import_diffuse_module("networks.transformers.dit_nnx", source_dir)
+    module = import_diffuse_module("diffuse_nnx.networks.transformers.dit_nnx")
 
     class CompatibleDiT(module.DiT):
         """Flax 0.12 compatibility shim for the upstream Python block list."""

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from pathlib import Path
 from typing import Any
 
 import jax
@@ -113,8 +112,6 @@ def build_rhs(
         state_shape=state_shape,
         variant=config.get("variant", "S").upper(),
         patch_size=int(config.get("patch_size", 2)),
-        source_dir=Path(config.get("source_dir", "artifacts/external/diffuse_nnx")),
-        source_auto_download=bool(config.get("source_auto_download", True)),
         rngs=rngs,
         dtype=_dtype(config),
     )

@@ -144,10 +144,6 @@ def _validate_encoder(
     if encoder_type != "vae":
         raise ValueError("problem.encoder.type must be one of: none, ae, vae")
     _boolean(config.get("sample_posterior", True), "problem.encoder.sample_posterior")
-    _boolean(
-        config.get("source_auto_download", True),
-        "problem.encoder.source_auto_download",
-    )
     if image_shape[-1] != 3 or image_shape[0] % 8 or image_shape[1] % 8:
         raise ValueError("VAE requires RGB image dimensions divisible by eight")
     checkpoint = _resolve_path(
@@ -165,11 +161,6 @@ def _validate_encoder(
         or any(character not in "0123456789abcdefABCDEF" for character in checksum)
     ):
         raise ValueError("VAE expected_sha256 must be a trusted 64-character hex checksum")
-    config["source_dir"] = _resolve_path(
-        config.get("source_dir", "artifacts/external/diffuse_nnx"),
-        base,
-        "problem.encoder.source_dir",
-    )
     if config.get("cache_latents", True):
         config["latent_cache_dir"] = _resolve_path(
             config.get("latent_cache_dir", "artifacts/latents"),
@@ -214,7 +205,6 @@ def _validate_rhs(config: dict[str, Any], state_shape: tuple[int, ...], base: Pa
                 f"rhs.variant must be one of: {', '.join(sorted(UNET_VARIANTS))}"
             )
     if rhs_type == "sit":
-        _boolean(config.get("source_auto_download", True), "rhs.source_auto_download")
         if config.get("implementation", "diffuse_nnx") != "diffuse_nnx":
             raise ValueError("Only rhs.implementation='diffuse_nnx' is supported for SiT")
         variant = str(config.get("variant", "S")).upper()
@@ -226,11 +216,6 @@ def _validate_rhs(config: dict[str, Any], state_shape: tuple[int, ...], base: Pa
             raise ValueError("SiT patch_size must divide both spatial dimensions")
         if config.get("class_conditioning", False):
             raise ValueError("Image benchmark SiT must be unconditional")
-        config["source_dir"] = _resolve_path(
-            config.get("source_dir", "artifacts/external/diffuse_nnx"),
-            base,
-            "rhs.source_dir",
-        )
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
@@ -346,10 +331,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
     fid.setdefault("enabled", False)
     _boolean(fid["enabled"], "evaluation.fid.enabled")
     if fid["enabled"]:
-        _boolean(
-            fid.get("source_auto_download", True),
-            "evaluation.fid.source_auto_download",
-        )
+        _boolean(fid.get("auto_download", True), "evaluation.fid.auto_download")
         fid["num_samples_final"] = _integer_at_least(
             fid.get("num_samples_final", 50000),
             2,
@@ -358,11 +340,27 @@ def load_config(path: str | Path) -> dict[str, Any]:
         fid["cache_dir"] = _resolve_path(
             fid.get("cache_dir", "artifacts/fid"), base, "evaluation.fid.cache_dir"
         )
-        fid["source_dir"] = _resolve_path(
-            fid.get("source_dir", "artifacts/external/diffuse_nnx"),
+        fid["weights_path"] = _resolve_path(
+            fid.get(
+                "weights_path",
+                "../../../artifacts/inception/inception_v3_weights_fid.pickle",
+            ),
             base,
-            "evaluation.fid.source_dir",
+            "evaluation.fid.weights_path",
         )
+        checksum = fid.get(
+            "expected_sha256",
+            "4e030efa5bccac3222d975f658d1884f9e00fab24f2812082884539220b90d77",
+        )
+        if (
+            not isinstance(checksum, str)
+            or len(checksum) != 64
+            or any(character not in "0123456789abcdefABCDEF" for character in checksum)
+        ):
+            raise ValueError(
+                "evaluation.fid.expected_sha256 must be a trusted 64-character hex checksum"
+            )
+        fid["expected_sha256"] = checksum.lower()
         fid["batch_size"] = _positive_integer(
             fid.get("batch_size", 64), "evaluation.fid.batch_size"
         )

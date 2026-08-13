@@ -83,7 +83,8 @@
       "num_samples_final": 50000,
       "batch_size": 64,
       "cache_dir": "../../../artifacts/fid",
-      "source_dir": "../../../artifacts/external/diffuse_nnx"
+      "weights_path": "../../../artifacts/inception/inception_v3_weights_fid.pickle",
+      "auto_download": true
     },
     "kid": {
       "enabled": false,

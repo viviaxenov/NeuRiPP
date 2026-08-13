@@ -119,44 +119,28 @@ def verify_manifest_batches(config: dict[str, Any], manifest: DatasetManifest) -
 
 
 def prepare_assets(config: dict[str, Any]) -> dict[str, Any]:
-    from image_benchmarks.assets.diffuse_nnx import prepare_diffuse_nnx_source
-    from image_benchmarks.assets.files import prepare_vae_checkpoint
+    from image_benchmarks.assets.diffuse_nnx import require_diffuse_nnx
+    from image_benchmarks.assets.files import (
+        prepare_inception_weights,
+        prepare_vae_checkpoint,
+    )
 
-    prepared: dict[str, Any] = {}
+    prepared: dict[str, Any] = {"diffuse_nnx_version": require_diffuse_nnx()}
     encoder = config["problem"]["encoder"]
-    source_policies: dict[str, bool] = {}
-
-    def require_source(path, auto_download):
-        path = str(path)
-        source_policies[path] = source_policies.get(path, True) and bool(auto_download)
 
     if encoder["type"] == "vae":
-        require_source(
-            encoder["source_dir"], encoder.get("source_auto_download", True)
-        )
         prepared["vae_checkpoint"] = prepare_vae_checkpoint(
             encoder["checkpoint"],
             auto_download=bool(encoder.get("auto_download", True)),
             expected_sha256=encoder.get("expected_sha256"),
         )
-    if config["rhs"]["type"] == "sit":
-        require_source(
-            config["rhs"]["source_dir"],
-            config["rhs"].get("source_auto_download", True),
-        )
     if config["evaluation"]["fid"]["enabled"]:
-        require_source(
-            config["evaluation"]["fid"]["source_dir"],
-            config["evaluation"]["fid"].get("source_auto_download", True),
+        fid = config["evaluation"]["fid"]
+        prepared["inception_weights"] = prepare_inception_weights(
+            fid["weights_path"],
+            auto_download=bool(fid.get("auto_download", True)),
+            expected_sha256=fid["expected_sha256"],
         )
-    prepared["diffuse_nnx_sources"] = [
-        str(
-            prepare_diffuse_nnx_source(
-                source, auto_download=source_policies[source]
-            )
-        )
-        for source in sorted(source_policies)
-    ]
     return prepared
 
 
@@ -727,7 +711,10 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
     }
     fid_config = config["evaluation"]["fid"]
     if fid_config["enabled"]:
-        extractor = DiffuseInceptionFeatures(fid_config["source_dir"])
+        extractor = DiffuseInceptionFeatures(
+            fid_config["weights_path"],
+            expected_sha256=fid_config["expected_sha256"],
+        )
         evaluation_split = config["evaluation"]["split"]
         from image_benchmarks.datasets.hf_loader import load_split
 
@@ -764,7 +751,6 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             fid_cache_root=fid_config["cache_dir"],
             fake_cache_root=run_dir / "fake_features",
             extractor=extractor,
-            diffuse_source_dir=fid_config["source_dir"],
             step=trainer.step_count,
             epoch=trainer.effective_epoch or 0.0,
             wall_clock_train_s=trainer.wall_clock_train_s,
@@ -837,7 +823,10 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         run_dir / "metadata.json",
         {
             "git_commit": _git_commit(),
-            "diffuse_nnx_commit": "023afd23c7b62a8cdb00e840b36a4ab8fc970bba",
+            "diffuse_nnx_commit": "da5f2b79497722931d279b012c90bec61050466b",
+            "inception_weights_sha256": (
+                fid_config.get("expected_sha256") if fid_config["enabled"] else None
+            ),
             "dataset_manifest_digest": manifest.digest,
             "dataset_hf_id": manifest.hf_id,
             "dataset_hf_revision": manifest.hf_revision,

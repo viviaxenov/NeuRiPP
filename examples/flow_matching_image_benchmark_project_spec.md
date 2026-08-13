@@ -55,16 +55,13 @@ Prefer adapting/importing tested reference code over rewriting algorithms.
 
 ### 3.1 DiffuseNNX
 
-Pin DiffuseNNX to Git commit
-`023afd23c7b62a8cdb00e840b36a4ab8fc970bba` in the project dependency
+Pin the installable DiffuseNNX fork to Git commit
+`da5f2b79497722931d279b012c90bec61050466b` in the project dependency
 metadata. Do not depend on an unpinned `main` branch for paper experiments.
 
-The pinned repository currently uses `setuptools.find_packages()` while some
-source directories are namespace-style directories without `__init__.py`.
-Consequently, the integration must include an import smoke test. If a normal
-installation does not expose a required module, add a small local adapter or a
-provenance-preserving port of only the required implementation. Do not rely on
-manually adding a developer checkout to `PYTHONPATH` for benchmark runs.
+The pinned fork uses a standard ``src/diffuse_nnx`` package layout. Integration
+tests must import its canonical modules from an installed distribution and must
+not clone a source checkout or modify ``PYTHONPATH`` for benchmark runs.
 
 DiffuseNNX currently provides:
 

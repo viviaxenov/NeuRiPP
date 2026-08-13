@@ -9,7 +9,10 @@ import numpy as np
 ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "examples"))
 
-from image_benchmarks.assets.files import prepare_vae_checkpoint
+from image_benchmarks.assets.files import (
+    prepare_inception_weights,
+    prepare_vae_checkpoint,
+)
 from image_benchmarks.encoders.cache import (
     LatentCacheKey,
     LatentCacheWriter,
@@ -140,6 +143,44 @@ def test_vae_asset_rejects_checksum_before_publication():
         assert not path.exists()
 
 
+def test_inception_asset_is_idempotent_and_checksum_verified():
+    calls = []
+
+    def download(url, destination):
+        calls.append(url)
+        destination.write_bytes(b"inception-weights")
+
+    expected = __import__("hashlib").sha256(b"inception-weights").hexdigest()
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "inception.pkl"
+        first = prepare_inception_weights(
+            path, expected_sha256=expected, download_fn=download
+        )
+        second = prepare_inception_weights(
+            path, expected_sha256=expected, download_fn=download
+        )
+        assert first == second
+        assert len(calls) == 1
+
+
+def test_inception_asset_rejects_checksum_before_publication():
+    def download(url, destination):
+        del url
+        destination.write_bytes(b"untrusted")
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "inception.pkl"
+        try:
+            prepare_inception_weights(
+                path, expected_sha256="0" * 64, download_fn=download
+            )
+        except RuntimeError as error:
+            assert "Failed to download" in str(error)
+        else:
+            raise AssertionError("Expected Inception checksum rejection")
+        assert not path.exists()
+
+
 def test_latent_cache_key_invalidation_and_round_trip():
     base = LatentCacheKey("revision-a", "train", 256, "center_square", "abc", 0.18215)
     changed = LatentCacheKey("revision-a", "train", 64, "center_square", "abc", 0.18215)
@@ -231,6 +272,8 @@ if __name__ == "__main__":
     test_diffuse_vae_stats_scale_sampling_and_decode()
     test_vae_asset_preparation_is_idempotent_and_hashed()
     test_vae_asset_rejects_checksum_before_publication()
+    test_inception_asset_is_idempotent_and_checksum_verified()
+    test_inception_asset_rejects_checksum_before_publication()
     test_latent_cache_key_invalidation_and_round_trip()
     test_encoder_registry_resolves_representation_shapes()
     test_incremental_latent_cache_writer()
