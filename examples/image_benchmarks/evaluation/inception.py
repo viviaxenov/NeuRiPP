@@ -12,12 +12,16 @@ from image_benchmarks.assets.diffuse_nnx import import_diffuse_module
 from image_benchmarks.assets.files import INCEPTION_WEIGHTS_SHA256
 
 
+def inception_provenance(expected_sha256: str) -> str:
+    """Return the FID cache identity for a specific verified weights file."""
+
+    return "diffuse_nnx_inception_v3_fid_da5f2b7_" + expected_sha256.lower()[:16]
+
+
 class DiffuseInceptionFeatures:
     """Single-process feature extractor backed by verified external weights."""
 
     feature_dim = 2048
-    provenance = "diffuse_nnx_inception_v3_fid_da5f2b7_4e030efa"
-
     def __init__(
         self,
         weights_path: str | Path,
@@ -26,7 +30,8 @@ class DiffuseInceptionFeatures:
     ):
         module = import_diffuse_module("diffuse_nnx.eval.inception")
         self.weights_path = Path(weights_path).expanduser().resolve()
-        self.expected_sha256 = expected_sha256
+        self.expected_sha256 = expected_sha256.lower()
+        self.provenance = inception_provenance(self.expected_sha256)
         self.detector = module.InceptionV3(
             pretrained=True,
             weights_path=str(self.weights_path),

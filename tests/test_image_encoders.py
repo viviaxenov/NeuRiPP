@@ -181,6 +181,19 @@ def test_inception_asset_rejects_checksum_before_publication():
         assert not path.exists()
 
 
+def test_uppercase_vae_checksum_is_normalized_by_config():
+    from image_benchmarks.config import _validate_encoder
+
+    config = {
+        "type": "vae",
+        "checkpoint": "vae.pkl",
+        "auto_download": True,
+        "expected_sha256": "A" * 64,
+    }
+    _validate_encoder(config, (256, 256, 3), Path.cwd())
+    assert config["expected_sha256"] == "a" * 64
+
+
 def test_latent_cache_key_invalidation_and_round_trip():
     base = LatentCacheKey("revision-a", "train", 256, "center_square", "abc", 0.18215)
     changed = LatentCacheKey("revision-a", "train", 64, "center_square", "abc", 0.18215)
@@ -274,6 +287,7 @@ if __name__ == "__main__":
     test_vae_asset_rejects_checksum_before_publication()
     test_inception_asset_is_idempotent_and_checksum_verified()
     test_inception_asset_rejects_checksum_before_publication()
+    test_uppercase_vae_checksum_is_normalized_by_config()
     test_latent_cache_key_invalidation_and_round_trip()
     test_encoder_registry_resolves_representation_shapes()
     test_incremental_latent_cache_writer()

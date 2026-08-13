@@ -36,7 +36,7 @@ METHOD_NAMES = {
 COMPUTE_DTYPES = {"bfloat16", "float16", "float32"}
 MLP_ACTIVATIONS = {"gelu", "relu", "selu", "silu", "swish", "tanh"}
 UNET_VARIANTS = {"small", "cifar_reference", "large"}
-SIT_VARIANTS = {"S", "B"}
+SIT_VARIANTS = {"S", "B", "L", "XL"}
 SAMPLING_METHODS = {"rk45", "euler", "heun"}
 RNG_STREAMS = (
     "dataset_shuffle",
@@ -167,6 +167,7 @@ def _validate_encoder(
         or any(character not in "0123456789abcdefABCDEF" for character in checksum)
     ):
         raise ValueError("VAE expected_sha256 must be a trusted 64-character hex checksum")
+    config["expected_sha256"] = checksum.lower()
     if config.get("cache_latents", True):
         config["latent_cache_dir"] = _resolve_path(
             config.get("latent_cache_dir", "artifacts/latents"),

@@ -739,6 +739,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             manifest.resolution,
             manifest.crop,
             "gray_to_rgb" if manifest.channels == 1 else "rgb",
+            feature_extractor=extractor.provenance,
             split_indices_sha256=manifest.splits[evaluation_split].indices_sha256,
             dataset_manifest_digest=manifest.digest,
         )

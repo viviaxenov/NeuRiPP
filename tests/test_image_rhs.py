@@ -101,9 +101,10 @@ def test_packaged_diffuse_sit_uses_canonical_import():
     module = import_diffuse_module("diffuse_nnx.networks.transformers.dit_nnx")
     assert module.DiT.__module__.startswith("diffuse_nnx.")
     direct_url = metadata.distribution("diffuse-nnx").read_text("direct_url.json")
-    if direct_url:
-        commit = json.loads(direct_url).get("vcs_info", {}).get("commit_id")
-        assert commit in {None, DIFFUSE_NNX_COMMIT}
+    provenance = json.loads(direct_url)
+    commit = provenance.get("vcs_info", {}).get("commit_id")
+    if commit is not None:
+        assert commit == DIFFUSE_NNX_COMMIT
 
 
 def test_architecture_compatibility_errors_are_preflighted():

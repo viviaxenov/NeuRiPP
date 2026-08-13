@@ -20,6 +20,7 @@ from image_benchmarks.evaluation.fid import (
     statistics_from_feature_batches,
     write_fid_stats,
 )
+from image_benchmarks.evaluation.inception import inception_provenance
 from image_benchmarks.evaluation.evaluator import (
     evaluate_checkpoint,
     prepare_real_feature_cache,
@@ -115,6 +116,17 @@ def test_fid_statistics_and_cache_round_trip():
         np.testing.assert_array_equal(loaded.mu, stats.mu)
         np.testing.assert_array_equal(loaded.sigma, stats.sigma)
         assert loaded.count == 20
+
+
+def test_inception_cache_provenance_depends_on_weights_checksum():
+    first = inception_provenance("a" * 64)
+    second = inception_provenance("b" * 64)
+    assert first != second
+    assert FIDCacheKey(
+        "revision", "test", 32, "center_square", "rgb", feature_extractor=first
+    ).digest != FIDCacheKey(
+        "revision", "test", 32, "center_square", "rgb", feature_extractor=second
+    ).digest
 
 
 def test_kid_is_near_zero_for_same_distribution():
@@ -277,6 +289,7 @@ if __name__ == "__main__":
     test_fixed_fm_validation_is_repeatable()
     test_fixed_fm_validation_keeps_dropout_rng_across_batch_sizes()
     test_fid_statistics_and_cache_round_trip()
+    test_inception_cache_provenance_depends_on_weights_checksum()
     test_kid_is_near_zero_for_same_distribution()
     test_identity_reconstruction_metrics_are_exact()
     test_latent_sampling_uses_decoder_and_uint8_adapter()
