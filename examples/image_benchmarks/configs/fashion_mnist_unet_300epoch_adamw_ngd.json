@@ -9,12 +9,12 @@
     "attention_resolutions": []
   },
   "training": {
-    "max_steps": 35100,
+    "max_steps": 9000,
     "target_loader_epochs": 300,
-    "batch_size": 512,
+    "batch_size": 2000,
     "log_every": 10,
-    "validation_every": 1170,
-    "checkpoint_every": 1170,
+    "validation_every": 300,
+    "checkpoint_every": 300,
     "keep_checkpoints": 3
   },
   "methods": [
@@ -30,7 +30,7 @@
         "step_size": 0.001,
         "linear_solver_regularization": 0.001,
         "linear_solver_tolerance": 0.000001,
-        "linear_solver_maxiter": 10
+        "linear_solver_maxiter": 50
       }
     }
   ],
@@ -49,9 +49,9 @@
     }
   },
   "resources": {
-    "gpu_ids": [0, 1, 2, 3, 4, 5, 6, 7],
-    "gpus_per_run": 8,
-    "max_concurrent_runs": 1,
+    "gpu_ids": [0, 1],
+    "gpus_per_run": 1,
+    "max_concurrent_runs": 2,
     "data_parallel": true,
     "worker_env": {"XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9"}
   },

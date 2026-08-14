@@ -28,10 +28,17 @@ plus sliced-Wasserstein enabled.
 
 `fashion_mnist_unet_300epoch_adamw_ngd.json` compares AdamW and constant-step
 NGD on the same Fashion-MNIST U-Net, seeds, and batches. With 60,000 training
-examples, batch 512, and `drop_last=true`, each loader epoch has 117 updates;
-therefore 300 complete loader epochs are 35,100 optimizer steps (17,971,200
-examples processed, or 299.52 dataset-size-normalized effective epochs).
-The methods run sequentially on all eight configured GPUs; NGD uses at most ten
-CG iterations per update with its requested constant step and regularization.
-The comparison uses the compact U-Net (`base_channels=16`, multipliers `[1,2]`,
-one residual block), identically for both optimizers.
+examples and batch 2000 (a divisor of 60,000), each loader epoch is exactly 30
+updates with no dropped images; therefore 300 complete loader epochs are 9,000
+optimizer steps (18,000,000 examples processed, exactly 300
+dataset-size-normalized effective epochs). The methods run in parallel, one GPU
+each (GPUs 0 and 1); NGD uses at most 50 CG iterations per update with its
+requested constant step and regularization. The comparison uses the compact
+U-Net (`base_channels=16`, multipliers `[1,2]`, one residual block),
+identically for both optimizers.
+
+Batch 2000 is the largest divisor of 60,000 that fits one A100-40GB with
+headroom: an NGD-only single-GPU memory sweep (`probe_ngd_memory.py`,
+candidates 600-4000, CG maxiter 50) measured a stable ~21 GiB peak at batch
+2000, while batch 3000 ran at the BFC arena ceiling (~31 GiB) and batch 4000
+failed with `RESOURCE_EXHAUSTED` (a single 29.7 GiB allocation).

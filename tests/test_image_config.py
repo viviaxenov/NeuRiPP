@@ -251,23 +251,24 @@ def test_fashion_300epoch_comparison_has_exact_method_settings():
     )
     config = load_config(path)
     assert config["training"] == {
-        "max_steps": 35100,
+        "max_steps": 9000,
         "target_loader_epochs": 300,
-        "batch_size": 512,
+        "batch_size": 2000,
         "log_every": 10,
-        "validation_every": 1170,
-        "checkpoint_every": 1170,
+        "validation_every": 300,
+        "checkpoint_every": 300,
         "keep_checkpoints": 3,
     }
     methods = {method["name"]: method["kwargs"] for method in config["methods"]}
     assert methods["adamw"]["learning_rate"] == 1e-3
     assert methods["ngd"]["step_size"] == 1e-3
     assert methods["ngd"]["linear_solver_regularization"] == 1e-3
-    assert methods["ngd"]["linear_solver_maxiter"] == 10
+    assert methods["ngd"]["linear_solver_maxiter"] == 50
     assert "stepsize_schedule" not in methods["ngd"]
     assert "stepsize_schedule_name" not in methods["ngd"]
-    assert config["resources"]["gpus_per_run"] == 8
-    assert config["resources"]["max_concurrent_runs"] == 1
+    assert config["resources"]["gpu_ids"] == [0, 1]
+    assert config["resources"]["gpus_per_run"] == 1
+    assert config["resources"]["max_concurrent_runs"] == 2
     assert config["rhs"]["base_channels"] == 16
     assert config["rhs"]["channel_mult"] == [1, 2]
     assert config["rhs"]["num_res_blocks"] == 1
