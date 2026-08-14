@@ -108,6 +108,17 @@ CUDA_VISIBLE_DEVICES=<first-gpu> nohup python \
    Typical settings: `--warmup 8` (compilation + cuDNN autotune),
    `--measure 20` (steady window for peak and step time).
 
+   For a **single candidate** (not a sweep), files are written via
+   `--output <path>` (`--output-dir` only applies to `--sweep` mode):
+
+```bash
+python examples/image_benchmarks/utility_scripts/gpu_probing/probe_ngd_memory.py \
+  --config examples/image_benchmarks/configs/<preset>.json \
+  --batch <batch> --warmup 8 --measure 20 \
+  --output probe_results/batch_<batch>.json \
+  --gpu-index <idx> --gpu-count <N>
+```
+
 3. Monitor while it runs:
    - `tail probe_sweep.log` (prints `[sweep] batch_XXXXX.json: rc=... peak=...`),
    - `nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader`,
