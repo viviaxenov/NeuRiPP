@@ -34,8 +34,11 @@ across the sweep parent and its freshly spawned candidate processes:
 
 Config: use --config with any image-benchmark preset (controls the dataset and
 the architecture/rhs). The method is always the worst-case NGD memory path
-(step_size 1e-3, linear regularization 1e-3, CG maxiter 50). The global batch
-size must divide the training split and must be divisible by --gpu-count.
+   (step_size 1e-3, linear regularization 1e-3, CG maxiter 50). The global batch
+   size must divide the training split and must be divisible by --gpu-count,
+   unless --allow-drop-last is given (then any batch <= the split size is
+   measured; the training loop drops the remainder each epoch, matching the
+   production loader's drop_last behavior).
 
 Usage:
   # single candidate
@@ -451,6 +454,10 @@ def main() -> int:
                         help="first GPU of the visible range (NVML/physical id)")
     parser.add_argument("--gpu-count", type=int, default=1,
                         help="GPUs per run; global batch is sharded over them")
+    parser.add_argument("--allow-drop-last", action="store_true",
+                        help="measure batches that do not divide the training "
+                             "split (remainder is dropped per epoch, as in the "
+                             "production drop_last loader)")
     args = parser.parse_args()
 
     config_path = Path(args.config).expanduser().resolve()
@@ -475,7 +482,8 @@ def main() -> int:
                  "--batch", str(batch_size), "--output", str(path),
                  "--warmup", str(args.warmup), "--measure", str(args.measure),
                  "--gpu-index", str(args.gpu_index),
-                 "--gpu-count", str(args.gpu_count)],
+                 "--gpu-count", str(args.gpu_count)]
+                + (["--allow-drop-last"] if args.allow_drop_last else []),
                 env=env,
                 capture_output=True, text=True,
             )
@@ -497,6 +505,7 @@ def main() -> int:
             "measure_steps": args.measure,
             "gpu_index": args.gpu_index,
             "gpu_count": args.gpu_count,
+            "allow_drop_last": args.allow_drop_last,
             "reports": reports,
         }
         output_path = output_dir / "summary.json"
@@ -511,10 +520,17 @@ def main() -> int:
     manifest = prepare_dataset(config)
     steps_per_epoch = manifest.splits["train"].count // batch_size
     report = {"batch_size": batch_size}
-    if steps_per_epoch * batch_size != manifest.splits["train"].count:
+    if not args.allow_drop_last and steps_per_epoch * batch_size != manifest.splits["train"].count:
         report["failed"] = True
         report["error"] = "batch size does not divide the training split"
+    elif steps_per_epoch < 1:
+        report["failed"] = True
+        report["error"] = "batch size exceeds the training split size"
     else:
+        report["steps_per_epoch"] = steps_per_epoch
+        report["dropped_per_epoch"] = (
+            manifest.splits["train"].count - steps_per_epoch * batch_size
+        )
         try:
             report = run_candidate(
                 config, run, manifest, batch_size,

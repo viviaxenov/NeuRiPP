@@ -86,6 +86,14 @@ Pick candidates that:
    "batch size does not divide the training split"), and
 2. are divisible by `--gpu-count`.
 
+If the training split count has no usable divisors (e.g. a prime count, such
+as the 6,551-example flowers102 train split), pass `--allow-drop-last`: any
+batch `< =` split size is then measured and the remainder is dropped each
+epoch, exactly matching the production `drop_last` training loader
+(`steps_per_epoch = split // batch`, `dropped_per_epoch = split % batch` are
+recorded in the report). This only relaxes measurement; the production run
+already drops the remainder, so measured peaks remain representative.
+
 Example for Fashion-MNIST (60,000 training examples, 1 GPU):
 `600, 1000, 1200, 1500, 2000, 3000, 4000`.
 
