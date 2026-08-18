@@ -21,7 +21,7 @@ REQUIRED_TOP_LEVEL = {
     "evaluation",
     "resources",
 }
-OPTIONAL_TOP_LEVEL = {"plotting"}
+OPTIONAL_TOP_LEVEL = {"plotting", "ema"}
 METHOD_NAMES = {
     "adagrad",
     "adam",
@@ -159,28 +159,55 @@ def _validate_encoder(
     obsolete = {"source_dir", "source_auto_download"} & set(config)
     if obsolete:
         raise ValueError(
-            "Packaged DiffuseNNX does not accept obsolete VAE source fields: "
+            "VAE encoder does not accept obsolete source fields: "
             + ", ".join(sorted(obsolete))
         )
     _boolean(config.get("sample_posterior", True), "problem.encoder.sample_posterior")
     if image_shape[-1] != 3 or image_shape[0] % 8 or image_shape[1] % 8:
         raise ValueError("VAE requires RGB image dimensions divisible by eight")
-    checkpoint = _resolve_path(
-        config.get("checkpoint"), base, "problem.encoder.checkpoint"
-    )
-    config["checkpoint"] = checkpoint
-    if not Path(checkpoint).exists() and not config.get("auto_download", True):
-        raise FileNotFoundError(
-            f"VAE checkpoint is missing and auto_download is false: {checkpoint}"
+    implementation = config.get("implementation", "diffuse_nnx")
+    if implementation not in ("diffuse_nnx", "diffusers"):
+        raise ValueError(
+            "problem.encoder.implementation must be 'diffuse_nnx' or 'diffusers'"
         )
-    checksum = config.get("expected_sha256")
-    if (
-        not isinstance(checksum, str)
-        or len(checksum) != 64
-        or any(character not in "0123456789abcdefABCDEF" for character in checksum)
-    ):
-        raise ValueError("VAE expected_sha256 must be a trusted 64-character hex checksum")
-    config["expected_sha256"] = checksum.lower()
+    if implementation == "diffusers":
+        checkpoint_id = config.get("checkpoint_id")
+        if not isinstance(checkpoint_id, str) or not checkpoint_id.strip():
+            raise ValueError(
+                "problem.encoder.checkpoint_id (Hugging Face repo id) is required "
+                "for the diffusers VAE"
+            )
+        config["checkpoint_id"] = checkpoint_id.strip()
+        checksum = config.get("expected_sha256")
+        if checksum is not None:
+            if (
+                not isinstance(checksum, str)
+                or len(checksum) != 64
+                or any(
+                    character not in "0123456789abcdefABCDEF" for character in checksum
+                )
+            ):
+                raise ValueError(
+                    "VAE expected_sha256 must be a trusted 64-character hex checksum"
+                )
+            config["expected_sha256"] = checksum.lower()
+    else:
+        checkpoint = _resolve_path(
+            config.get("checkpoint"), base, "problem.encoder.checkpoint"
+        )
+        config["checkpoint"] = checkpoint
+        if not Path(checkpoint).exists() and not config.get("auto_download", True):
+            raise FileNotFoundError(
+                f"VAE checkpoint is missing and auto_download is false: {checkpoint}"
+            )
+        checksum = config.get("expected_sha256")
+        if (
+            not isinstance(checksum, str)
+            or len(checksum) != 64
+            or any(character not in "0123456789abcdefABCDEF" for character in checksum)
+        ):
+            raise ValueError("VAE expected_sha256 must be a trusted 64-character hex checksum")
+        config["expected_sha256"] = checksum.lower()
     if config.get("cache_latents", True):
         config["latent_cache_dir"] = _resolve_path(
             config.get("latent_cache_dir", "artifacts/latents"),
@@ -320,6 +347,21 @@ def load_config(path: str | Path) -> dict[str, Any]:
     training["keep_checkpoints"] = _positive_integer(
         training.get("keep_checkpoints", 3), "training.keep_checkpoints"
     )
+
+    ema = config.get("ema")
+    if ema is not None:
+        ema = _object(ema, "ema")
+        ema["enabled"] = bool(ema.get("enabled", False))
+        if ema["enabled"]:
+            decay = ema.get("decay", 0.9999)
+            if not isinstance(decay, (int, float)) or not 0.0 < float(decay) < 1.0:
+                raise ValueError("ema.decay must be a number in (0, 1)")
+            ema["decay"] = float(decay)
+            start_step = ema.get("start_step", 0)
+            if not isinstance(start_step, int) or start_step < 0:
+                raise ValueError("ema.start_step must be a non-negative integer")
+            ema["start_step"] = start_step
+        config["ema"] = ema
 
     methods = config["methods"]
     if not isinstance(methods, list) or not methods:

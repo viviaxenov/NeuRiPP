@@ -15,14 +15,11 @@ def bandwidth_median(X: jnp.array) -> float:
         float: the bandwidth
     """
     N, d = X.shape
-    X = X.reshape(N, -1)
-    squared_norms = (X**2).sum(axis=-1)
-    pairwise_sq_dists = jnp.maximum(
-        squared_norms[:, None] + squared_norms[None, :] - 2.0 * X @ X.T,
-        0.0,
-    )
+    X_diffs = X[jnp.newaxis, :, :] - X[:, jnp.newaxis, :]
     idx = jnp.triu_indices(N, k=1)
-    H = jnp.median(pairwise_sq_dists[idx])
+    X_diffs = X_diffs[*idx, :]
+    pairwise_sq_dists = (X_diffs**2).sum(axis=-1)
+    H = jnp.median(pairwise_sq_dists)
     h = jnp.sqrt(0.5 * H / jnp.log(d + 1))
 
     return h
@@ -39,23 +36,15 @@ def gaussian_mmd(X1: jnp.ndarray, X2: jnp.ndarray, bandwidths: jnp.ndarray):
     X1 = X1.reshape(X1.shape[0], -1)
     X2 = X2.reshape(X2.shape[0], -1)
 
-    def squared_distances(left, right):
-        left_norms = (left**2).sum(axis=-1)
-        right_norms = (right**2).sum(axis=-1)
-        return jnp.maximum(
-            left_norms[:, None] + right_norms[None, :] - 2.0 * left @ right.T,
-            0.0,
-        )
-
-    def kernel_matrix(left, right):
-        distances = squared_distances(left, right)
-        return jnp.exp(
-            -0.5 * distances[:, :, None] / bandwidths[None, None, :]
-        ).sum(axis=-1)
-
-    k_x1x1 = kernel_matrix(X1, X1)
-    k_x1x2 = kernel_matrix(X1, X2)
-    k_x2x2 = kernel_matrix(X2, X2)
+    k_x1x1 = gk(
+        X1[:, None, None, :], X1[None, :, None, :], bandwidths[None, None, :]
+    ).sum(axis=-1)
+    k_x1x2 = gk(
+        X1[:, None, None, :], X2[None, :, None, :], bandwidths[None, None, :]
+    ).sum(axis=-1)
+    k_x2x2 = gk(
+        X2[:, None, None, :], X2[None, :, None, :], bandwidths[None, None, :]
+    ).sum(axis=-1)
 
     d1 = X1.shape[0]
     d2 = X2.shape[0]

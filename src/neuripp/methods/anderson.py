@@ -79,9 +79,7 @@ def get_anderson(
         )
         history = _update_history(history, residual, residual, history_length)
         args = (step_size, *args[1:])
-        # Initialization already applies the first optimizer update. Keep the
-        # internal schedule index aligned with externally reported steps.
-        return (model, natural_grad, history, 1, args, kwargs)
+        return (model, natural_grad, history, 0, args, kwargs)
 
     def _step(state, batch, rngs):
         model, previous_grad, history, i, args, kwargs = state

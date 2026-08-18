@@ -9,7 +9,13 @@ import numpy as np
 ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "examples"))
 
-from image_benchmarks.datasets.hf_loader import download_dataset, load_split
+from image_benchmarks.datasets.hf_loader import (
+    _build_loader,
+    _default_load_dataset,
+    _load_zip_imagefolder,
+    download_dataset,
+    load_split,
+)
 from image_benchmarks.datasets.manifest import DatasetManifest
 from image_benchmarks.datasets.registry import DATASET_REGISTRY, get_dataset_spec
 from image_benchmarks.datasets.transforms import (
@@ -73,6 +79,32 @@ def test_registry_contains_all_required_datasets():
     assert set(DATASET_REGISTRY) == expected
     assert get_dataset_spec("cifar10").hf_id == "uoft-cs/cifar10"
     assert get_dataset_spec("ffhq64").filename_key is None
+    assert get_dataset_spec("ffhq64").loader == "zip_imagefolder"
+    assert get_dataset_spec("ffhq64").archive_file == "ffhq-64x64.zip"
+    assert get_dataset_spec("mnist").loader == "default"
+
+
+def test_loader_dispatch_respects_spec_and_override():
+    assert _build_loader(get_dataset_spec("mnist"), None) is _default_load_dataset
+    zip_loader = _build_loader(get_dataset_spec("ffhq64"), None)
+    assert zip_loader.func is _load_zip_imagefolder
+    assert zip_loader.args == (get_dataset_spec("ffhq64"),)
+    custom = fake_loader_factory(fake_mnist())
+    assert _build_loader(get_dataset_spec("ffhq64"), custom) is custom
+    try:
+        _build_loader(get_dataset_spec("mnist"), None)  # sanity: default path still fine
+        _build_loader(
+            type(get_dataset_spec("mnist"))(
+                name="x", hf_id="x", image_key="image", label_key=None,
+                default_resolution=1, channels=1, split_recipe="official_train_test",
+                loader="bogus",
+            ),
+            None,
+        )
+    except ValueError as error:
+        assert "bogus" in str(error)
+    else:
+        raise AssertionError("Expected unknown loader rejection")
 
 
 def test_manifest_and_splits_are_process_independent():
@@ -318,6 +350,7 @@ def test_loader_rejects_changed_source_fingerprint():
 
 if __name__ == "__main__":
     test_registry_contains_all_required_datasets()
+    test_loader_dispatch_respects_spec_and_override()
     test_manifest_and_splits_are_process_independent()
     test_official_test_alias_does_not_reduce_training_set()
     test_lazy_loader_returns_normalized_nhwc_batches()

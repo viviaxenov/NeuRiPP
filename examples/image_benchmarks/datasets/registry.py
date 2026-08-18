@@ -22,6 +22,8 @@ class DatasetSpec:
     gated: bool = False
     filename_key: str | None = None
     default_train_size: int | None = None
+    loader: str = "default"
+    archive_file: str | None = None
 
     def validate_resolution(self, resolution: int | None) -> int:
         resolved = self.default_resolution if resolution is None else resolution
@@ -104,6 +106,8 @@ DATASET_REGISTRY: dict[str, DatasetSpec] = {
         split_recipe="ffhq_random",
         supported_resolutions=(64,),
         default_train_size=60000,
+        loader="zip_imagefolder",
+        archive_file="ffhq-64x64.zip",
     ),
     "imagenet64": DatasetSpec(
         name="imagenet64",

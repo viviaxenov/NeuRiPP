@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import math
 import os
+import shutil
+import zipfile
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
@@ -30,6 +33,76 @@ def _default_load_dataset(*args, offline: bool = False, **kwargs):
 
     download_config = DownloadConfig(local_files_only=offline)
     return load_dataset(*args, download_config=download_config, **kwargs)
+
+
+def _load_zip_imagefolder(spec: DatasetSpec, *args, offline: bool = False, **kwargs):
+    """Load a dataset that ships as a bare image archive (zip) on the Hub.
+
+    The Hub's automatic parquet conversion of such repositories can declare an
+    incompatible ``ClassLabel`` feature, which makes the default ``datasets``
+    loader fail on every hub-based path (plain load, feature override, and
+    hub-backed ``imagefolder``).  This loader downloads the archive directly,
+    extracts it once into the cache, and loads it as a local ``imagefolder``
+    dataset so the rest of the harness sees a regular split mapping.
+    """
+    from datasets import load_dataset
+    from huggingface_hub import hf_hub_download
+
+    cache_dir = Path(kwargs.pop("cache_dir", None) or ".")
+    token = kwargs.pop("token", None)
+    revision = kwargs.pop("revision", None)
+    split = kwargs.pop("split", None)
+    if kwargs:
+        raise TypeError(f"Unexpected loader kwargs: {sorted(kwargs)}")
+    if spec.archive_file is None:
+        raise ValueError(f"loader {spec.loader!r} requires spec.archive_file")
+
+    zip_path = hf_hub_download(
+        spec.hf_id,
+        spec.archive_file,
+        repo_type="dataset",
+        cache_dir=str(cache_dir),
+        token=token,
+        local_files_only=offline,
+    )
+
+    raw_dir = cache_dir / "raw" / spec.name
+    if not (raw_dir.is_dir() and any(raw_dir.iterdir())):
+        raw_dir.parent.mkdir(parents=True, exist_ok=True)
+        tmp_dir = raw_dir.with_name(f"{raw_dir.name}.tmp")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path) as archive:
+            archive.extractall(tmp_dir)
+        try:
+            os.replace(tmp_dir, raw_dir)
+        except OSError:
+            # A concurrent process published the extraction first.
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            if not (raw_dir.is_dir() and any(raw_dir.iterdir())):
+                raise
+
+    return load_dataset(
+        "imagefolder",
+        data_dir=str(raw_dir),
+        cache_dir=str(cache_dir),
+        **{
+            key: value
+            for key, value in {"split": split, "revision": revision, "token": token}.items()
+            if value is not None
+        },
+    )
+
+
+def _build_loader(spec: DatasetSpec, override: Callable[..., Mapping[str, Any]] | None):
+    """Pick the dataset loader, honoring an explicit override first."""
+    if override is not None:
+        return override
+    if spec.loader == "default":
+        return _default_load_dataset
+    if spec.loader == "zip_imagefolder":
+        return functools.partial(_load_zip_imagefolder, spec)
+    raise ValueError(f"Unknown dataset loader {spec.loader!r} for {spec.name!r}")
 
 
 def _resolve_revision(
@@ -261,7 +334,7 @@ def download_dataset(
         )
     resolver = revision_resolver or _resolve_revision
     resolved_revision = resolver(spec.hf_id, revision, token, offline)
-    loader = load_dataset_fn or _default_load_dataset
+    loader = _build_loader(spec, load_dataset_fn)
     try:
         requested_splits = (
             ["train", "validation"] if spec.split_recipe == "imagenet" else None
@@ -456,7 +529,7 @@ def load_split(
     if split != "train" and horizontal_flip:
         raise ValueError("horizontal_flip is only valid for the training split")
     split_manifest = manifest.splits[split]
-    loader = load_dataset_fn or _default_load_dataset
+    loader = _build_loader(get_dataset_spec(manifest.name), load_dataset_fn)
     loaded = loader(
         manifest.hf_id,
         cache_dir=str(manifest.manifest_dir.parents[2]),

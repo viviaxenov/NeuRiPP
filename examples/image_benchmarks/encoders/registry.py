@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from image_benchmarks.encoders.diffuse_vae import load_diffuse_vae
+from image_benchmarks.encoders.diffusers_vae import load_diffusers_vae
 from image_benchmarks.encoders.identity import IdentityEncoder
 from image_benchmarks.encoders.project_ae import load_project_ae
 
@@ -64,8 +65,28 @@ def build_encoder(
                 config.get("frozen_during_flow_training", True)
             ),
         )
-    if config.get("implementation", "diffuse_nnx") != "diffuse_nnx":
-        raise ValueError("Only encoder.implementation='diffuse_nnx' is supported for VAE")
+    implementation = config.get("implementation", "diffuse_nnx")
+    if implementation == "diffusers":
+        checkpoint_id = config.get("checkpoint_id")
+        if not isinstance(checkpoint_id, str) or not checkpoint_id:
+            raise ValueError("encoder.checkpoint_id is required for the diffusers VAE")
+        encoder = load_diffusers_vae(
+            checkpoint_id=checkpoint_id,
+            sample_posterior=bool(config.get("sample_posterior", True)),
+            seed=seed,
+        )
+        expected_sha256 = config.get("expected_sha256")
+        if expected_sha256 is not None and encoder.checkpoint_sha256 != expected_sha256:
+            raise ValueError(
+                "encoder.expected_sha256 does not match the weights digest of "
+                f"{checkpoint_id}: got {encoder.checkpoint_sha256}, "
+                f"expected {expected_sha256}"
+            )
+        return encoder
+    if implementation != "diffuse_nnx":
+        raise ValueError(
+            "encoder.implementation must be 'diffuse_nnx' or 'diffusers'"
+        )
     checkpoint = config.get("checkpoint")
     expected_sha256 = config.get("expected_sha256")
     if not isinstance(checkpoint, str) or not checkpoint:

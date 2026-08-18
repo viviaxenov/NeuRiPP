@@ -525,6 +525,120 @@ def _restore_latest(run_dir, trainer, stream):
     return latest
 
 
+def _save_ema_checkpoint(run_dir, trainer, keep):
+    """Persist the exponential moving average weights in their own directory."""
+    if not trainer.ema_enabled:
+        return None
+    import orbax.checkpoint as ocp
+
+    step = trainer.step_count
+    root = run_dir / "ema_checkpoint"
+    root.mkdir(parents=True, exist_ok=True)
+    destination = root / f"step_{step:09d}"
+    if destination.exists():
+        return destination
+    temporary = root / f".step_{step:09d}.tmp"
+    if temporary.exists():
+        shutil.rmtree(temporary)
+    payload = {"ema": trainer.ema_checkpoint_payload()}
+    checkpointer = ocp.StandardCheckpointer()
+    checkpointer.save(temporary, payload)
+    checkpointer.wait_until_finished()
+    _write_json(
+        temporary / "metadata.json",
+        {"step": step, "written_at": _utc_now(), "format": "orbax-standard"},
+    )
+    temporary.rename(destination)
+    for obsolete in sorted(
+        [path for path in root.iterdir() if path.is_dir() and path.name.startswith("step_")]
+    )[:-keep]:
+        shutil.rmtree(obsolete)
+    return destination
+
+
+def _fid_kid_eval(
+    model,
+    *,
+    run_identity,
+    config,
+    run,
+    encoder,
+    validation,
+    real_cache,
+    real_fid_key,
+    extractor,
+    fid_config,
+    sampling,
+    run_dir,
+    step,
+    epoch,
+    wall_clock_train_s,
+):
+    """Run FM-loss + FID/KID checkpoint evaluation for one model variant."""
+    from image_benchmarks.evaluation.evaluator import evaluate_checkpoint
+
+    return evaluate_checkpoint(
+        model=model,
+        encoder=encoder,
+        validation=validation,
+        real_feature_cache=real_cache,
+        real_fid_key=real_fid_key,
+        fid_cache_root=fid_config["cache_dir"],
+        fake_cache_root=run_dir / "fake_features",
+        extractor=extractor,
+        step=step,
+        epoch=epoch,
+        wall_clock_train_s=wall_clock_train_s,
+        fm_batch_size=config["evaluation"]["val_fm_loss"]["batch_size"],
+        num_fake=fid_config["num_samples_final"],
+        sampling_batch_size=sampling["batch_size"],
+        sampling_seed=run["rng_seeds"]["sampling"],
+        sampling_config=sampling,
+        kid_config=config["evaluation"]["kid"],
+        run_identity=run_identity,
+    )
+
+
+def _sample_metric_eval(
+    model,
+    *,
+    real_states,
+    metric_count,
+    config,
+    run,
+    encoder,
+    sample_metric_config,
+):
+    """Compute MMD / sliced-Wasserstein for one model variant."""
+    from image_benchmarks.evaluation.sample_metrics import evaluate_sample_metrics
+    from image_benchmarks.evaluation.sampling import generate_state_batches
+
+    generated_states = np.concatenate(
+        list(
+            generate_state_batches(
+                model,
+                num_samples=metric_count,
+                batch_size=sample_metric_config["batch_size"],
+                seed=run["rng_seeds"]["sampling"],
+                ode_method=config["evaluation"]["sampling"]["method"],
+                ode_steps=config["evaluation"]["sampling"]["steps"],
+                ode_kwargs=config["evaluation"]["sampling"].get("kwargs", {}),
+            )
+        )
+    )
+    result = evaluate_sample_metrics(
+        real_states,
+        generated_states,
+        sample_metric_config,
+        seed=config["evaluation"]["seed"],
+    )
+    result["sample_metrics_state_space"] = config["problem"]["encoder"]["type"]
+    result["sample_metrics_split"] = config["evaluation"]["split"]
+    result["sample_metrics_seed"] = config["evaluation"]["seed"]
+    result["sample_metrics_sampling_seed"] = run["rng_seeds"]["sampling"]
+    return result
+
+
 def _environment_snapshot():
     packages = {
         distribution.metadata["Name"]: distribution.version
@@ -546,7 +660,7 @@ def _git_commit():
         return "unknown"
 
 
-def _save_sample_grid(run_dir, model, encoder, config, seed):
+def _save_sample_grid(run_dir, model, encoder, config, seed, *, filename="sample_grid.png"):
     from image_benchmarks.evaluation.sampling import generate_image_batches
     import matplotlib.pyplot as plt
 
@@ -572,7 +686,7 @@ def _save_sample_grid(run_dir, model, encoder, config, seed):
         axis.imshow(np.squeeze(image), cmap="gray" if image.shape[-1] == 1 else None)
         axis.axis("off")
     figure.tight_layout()
-    figure.savefig(run_dir / "sample_grid.png", dpi=120)
+    figure.savefig(run_dir / filename, dpi=120)
     plt.close(figure)
 
 
@@ -583,10 +697,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
 
     from image_benchmarks.distributed import DataParallelContext
     from image_benchmarks.encoders.identity import IdentityEncoder
-    from image_benchmarks.evaluation.evaluator import (
-        evaluate_checkpoint,
-        prepare_real_feature_cache,
-    )
+    from image_benchmarks.evaluation.evaluator import prepare_real_feature_cache
     from image_benchmarks.evaluation.fid import FIDCacheKey
     from image_benchmarks.evaluation.inception import DiffuseInceptionFeatures
     from image_benchmarks.evaluation.reconstruction import reconstruction_metrics
@@ -655,6 +766,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         training_rngs,
         data_parallel=context,
         dataset_size=manifest.splits["train"].count,
+        ema_config=config.get("ema"),
     )
     if trainer.method.initialization_updates == 0:
         # The first batch has not been consumed by Optax/NGD initialization.
@@ -690,14 +802,31 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
     previous_validation = [
         float(record["val_fm_loss"])
         for record in previous_records
-        if record.get("val_fm_loss") is not None
+        if record.get("type") in {"validation", "evaluation"}
+        and record.get("val_fm_loss") is not None
+    ]
+    ema_previous_validation = [
+        float(record["val_fm_loss"])
+        for record in previous_records
+        if record.get("type") == "validation_ema"
+        and record.get("val_fm_loss") is not None
     ]
     best_validation = min(previous_validation, default=float("inf"))
+    ema_best_validation = min(ema_previous_validation, default=float("inf"))
     final_validation = next(
         (
             float(record["val_fm_loss"])
             for record in reversed(previous_records)
             if record.get("type") == "validation"
+            and record.get("val_fm_loss") is not None
+        ),
+        float("inf"),
+    )
+    ema_final_validation = next(
+        (
+            float(record["val_fm_loss"])
+            for record in reversed(previous_records)
+            if record.get("type") == "validation_ema"
             and record.get("val_fm_loss") is not None
         ),
         float("inf"),
@@ -736,13 +865,33 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
                 metrics_path,
                 {"type": "validation", **trainer.accounting(), "val_fm_loss": val_loss},
             )
+            if trainer.ema_enabled:
+                ema_start = time.perf_counter()
+                ema_val_loss = evaluate_fixed_fm_loss(
+                    trainer.ema_model,
+                    validation,
+                    batch_size=config["evaluation"]["val_fm_loss"]["batch_size"],
+                )
+                trainer.record_evaluation_time(time.perf_counter() - ema_start)
+                ema_best_validation = min(ema_best_validation, ema_val_loss)
+                ema_final_validation = ema_val_loss
+                _append_jsonl(
+                    metrics_path,
+                    {
+                        "type": "validation_ema",
+                        **trainer.accounting(),
+                        "val_fm_loss": ema_val_loss,
+                    },
+                )
         if step % training["checkpoint_every"] == 0:
             _save_checkpoint(
                 run_dir, trainer, train_stream, training["keep_checkpoints"]
             )
+            _save_ema_checkpoint(run_dir, trainer, training["keep_checkpoints"])
     checkpoint = _save_checkpoint(
         run_dir, trainer, train_stream, training["keep_checkpoints"]
     )
+    ema_checkpoint = _save_ema_checkpoint(run_dir, trainer, training["keep_checkpoints"])
     if not np.isfinite(final_validation):
         from image_benchmarks.evaluation.validation import evaluate_fixed_fm_loss
 
@@ -752,6 +901,15 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             batch_size=config["evaluation"]["val_fm_loss"]["batch_size"],
         )
         best_validation = min(best_validation, final_validation)
+    if trainer.ema_enabled and not np.isfinite(ema_final_validation):
+        from image_benchmarks.evaluation.validation import evaluate_fixed_fm_loss
+
+        ema_final_validation = evaluate_fixed_fm_loss(
+            trainer.ema_model,
+            validation,
+            batch_size=config["evaluation"]["val_fm_loss"]["batch_size"],
+        )
+        ema_best_validation = min(ema_best_validation, ema_final_validation)
 
     final_summary = {
         **trainer.accounting(),
@@ -759,6 +917,10 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         "final_val_fm_loss": final_validation,
         "best_val_fm_loss": best_validation,
         "checkpoint": str(checkpoint),
+        "ema_val_fm_loss": ema_final_validation,
+        "ema_final_val_fm_loss": ema_final_validation,
+        "ema_best_val_fm_loss": ema_best_validation,
+        "ema_checkpoint": str(ema_checkpoint) if ema_checkpoint is not None else None,
     }
     fid_config = config["evaluation"]["fid"]
     if fid_config["enabled"]:
@@ -794,25 +956,22 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             cache_root=fid_config["cache_dir"],
             key=fid_key,
         )
-        result = evaluate_checkpoint(
-            model=trainer.model,
+        result = _fid_kid_eval(
+            trainer.model,
+            run_identity=run["run_id"],
+            config=config,
+            run=run,
             encoder=encoder,
             validation=validation,
-            real_feature_cache=real_cache,
+            real_cache=real_cache,
             real_fid_key=fid_key,
-            fid_cache_root=fid_config["cache_dir"],
-            fake_cache_root=run_dir / "fake_features",
             extractor=extractor,
+            fid_config=fid_config,
+            sampling=sampling,
+            run_dir=run_dir,
             step=trainer.step_count,
             epoch=trainer.effective_epoch or 0.0,
             wall_clock_train_s=trainer.wall_clock_train_s,
-            fm_batch_size=config["evaluation"]["val_fm_loss"]["batch_size"],
-            num_fake=fid_config["num_samples_final"],
-            sampling_batch_size=sampling["batch_size"],
-            sampling_seed=run["rng_seeds"]["sampling"],
-            sampling_config=sampling,
-            kid_config=config["evaluation"]["kid"],
-            run_identity=run["run_id"],
         )
         evaluation_duration = float(result["wall_clock_evaluation_s"])
         trainer.record_evaluation_time(evaluation_duration)
@@ -824,15 +983,60 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             best_validation, result["val_fm_loss"]
         )
         _append_jsonl(metrics_path, {"type": "evaluation", **result})
+        if trainer.ema_enabled:
+            ema_result = _fid_kid_eval(
+                trainer.ema_model,
+                run_identity=f"{run['run_id']}:ema",
+                config=config,
+                run=run,
+                encoder=encoder,
+                validation=validation,
+                real_cache=real_cache,
+                real_fid_key=fid_key,
+                extractor=extractor,
+                fid_config=fid_config,
+                sampling=sampling,
+                run_dir=run_dir,
+                step=trainer.step_count,
+                epoch=trainer.effective_epoch or 0.0,
+                wall_clock_train_s=trainer.wall_clock_train_s,
+            )
+            ema_duration = float(ema_result["wall_clock_evaluation_s"])
+            trainer.record_evaluation_time(ema_duration)
+            ema_result["evaluation_duration_s"] = ema_duration
+            ema_result["wall_clock_evaluation_s"] = trainer.wall_clock_evaluation_s
+            ema_prefixed = {
+                "step": ema_result["step"],
+                "epoch": ema_result["epoch"],
+                "wall_clock_train_s": ema_result["wall_clock_train_s"],
+                "val_fm_loss": ema_result["val_fm_loss"],
+            }
+            for key in (
+                "fid",
+                "fid_num_fake",
+                "fid_num_real",
+                "kid_mean",
+                "kid_std",
+                "kid_stderr",
+                "kid_subsets",
+                "kid_subset_size",
+                "evaluation_duration_s",
+                "wall_clock_evaluation_s",
+            ):
+                if key in ema_result:
+                    ema_prefixed[f"ema_{key}"] = ema_result[key]
+            final_summary.update(ema_prefixed)
+            final_summary["ema_final_val_fm_loss"] = ema_result["val_fm_loss"]
+            final_summary["ema_best_val_fm_loss"] = min(
+                ema_best_validation, ema_result["val_fm_loss"]
+            )
+            _append_jsonl(metrics_path, {"type": "evaluation_ema", **ema_result})
 
     sample_metric_config = config["evaluation"]["sample_metrics"]
     if any(
         sample_metric_config[name]["enabled"]
         for name in ("mmd", "sliced_wasserstein")
     ):
-        from image_benchmarks.evaluation.sample_metrics import evaluate_sample_metrics
-        from image_benchmarks.evaluation.sampling import generate_state_batches
-
         start = time.perf_counter()
         metric_count = min(
             sample_metric_config["num_samples"],
@@ -843,33 +1047,15 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         real_states = _real_sample_metric_states(
             config, manifest, encoder, run, metric_count
         )
-        generated_states = np.concatenate(
-            list(
-                generate_state_batches(
-                    trainer.model,
-                    num_samples=metric_count,
-                    batch_size=sample_metric_config["batch_size"],
-                    seed=run["rng_seeds"]["sampling"],
-                    ode_method=sampling["method"],
-                    ode_steps=sampling["steps"],
-                    ode_kwargs=sampling.get("kwargs", {}),
-                )
-            )
+        sample_metric_result = _sample_metric_eval(
+            trainer.model,
+            real_states=real_states,
+            metric_count=metric_count,
+            config=config,
+            run=run,
+            encoder=encoder,
+            sample_metric_config=sample_metric_config,
         )
-        sample_metric_result = evaluate_sample_metrics(
-            real_states,
-            generated_states,
-            sample_metric_config,
-            seed=config["evaluation"]["seed"],
-        )
-        sample_metric_result["sample_metrics_state_space"] = config["problem"][
-            "encoder"
-        ]["type"]
-        sample_metric_result["sample_metrics_split"] = config["evaluation"]["split"]
-        sample_metric_result["sample_metrics_seed"] = config["evaluation"]["seed"]
-        sample_metric_result["sample_metrics_sampling_seed"] = run["rng_seeds"][
-            "sampling"
-        ]
         duration = time.perf_counter() - start
         trainer.record_evaluation_time(duration)
         sample_metric_result["sample_metrics_duration_s"] = duration
@@ -878,6 +1064,34 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         _append_jsonl(
             metrics_path, {"type": "sample_metrics", **sample_metric_result}
         )
+        if trainer.ema_enabled:
+            ema_sample_start = time.perf_counter()
+            ema_sample_metric_result = _sample_metric_eval(
+                trainer.ema_model,
+                real_states=real_states,
+                metric_count=metric_count,
+                config=config,
+                run=run,
+                encoder=encoder,
+                sample_metric_config=sample_metric_config,
+            )
+            ema_duration = time.perf_counter() - ema_sample_start
+            trainer.record_evaluation_time(ema_duration)
+            ema_sample_metric_result["sample_metrics_duration_s"] = ema_duration
+            ema_sample_prefixed = {
+                f"ema_{key}": value
+                for key, value in ema_sample_metric_result.items()
+                if not key.startswith("sample_metrics_")
+            }
+            final_summary.update(ema_sample_prefixed)
+            ema_sample_log = {
+                "sample_metrics_ema": True,
+                **ema_sample_metric_result,
+            }
+            _write_json(run_dir / "sample_metrics_ema.json", ema_sample_log)
+            _append_jsonl(
+                metrics_path, {"type": "sample_metrics_ema", **ema_sample_log}
+            )
 
     if encoder.__class__.__name__ != "IdentityEncoder":
         from image_benchmarks.datasets.hf_loader import load_split
@@ -923,6 +1137,17 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         run_dir, trainer.model, encoder, config, run["rng_seeds"]["sampling"]
     )
     trainer.record_evaluation_time(time.perf_counter() - start)
+    if trainer.ema_enabled:
+        start = time.perf_counter()
+        _save_sample_grid(
+            run_dir,
+            trainer.ema_model,
+            encoder,
+            config,
+            run["rng_seeds"]["sampling"],
+            filename="sample_grid_ema.png",
+        )
+        trainer.record_evaluation_time(time.perf_counter() - start)
     final_summary.update(trainer.accounting())
     _write_json(run_dir / "final_summary.json", final_summary)
     _write_json(
@@ -939,6 +1164,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             "encoder_checkpoint_sha256": getattr(encoder, "checkpoint_sha256", None),
             "method": run["method"],
             "seeds": run["rng_seeds"],
+            "ema": config.get("ema"),
             "devices": [str(device) for device in jax.devices()],
             "environment": _environment_snapshot(),
         },
@@ -1076,6 +1302,30 @@ def plot_session(session_dir: Path) -> None:
                 label=label,
             )
             plotted = True
+        ema_validation = [
+            record for record in records if record.get("type") == "validation_ema"
+        ]
+        if ema_validation:
+            ema_label = f"{run['method']['name']} r{run['restart_index']} EMA"
+            axes[0, 0].plot(
+                [record["effective_epoch"] for record in ema_validation],
+                [record["val_fm_loss"] for record in ema_validation],
+                label=ema_label,
+                linestyle="--",
+                marker="D",
+                markersize=3,
+                alpha=0.8,
+            )
+            axes[0, 1].plot(
+                [record["wall_clock_train_s"] for record in ema_validation],
+                [record["val_fm_loss"] for record in ema_validation],
+                label=ema_label,
+                linestyle="--",
+                marker="D",
+                markersize=3,
+                alpha=0.8,
+            )
+            plotted = True
         evaluations = [record for record in records if record.get("type") == "evaluation"]
         if evaluations:
             label = f"{run['method']['name']} r{run['restart_index']}"
@@ -1094,6 +1344,31 @@ def plot_session(session_dir: Path) -> None:
                         [record[metric] for record in points],
                         marker=marker,
                         label=f"{label} {metric}",
+                    )
+        ema_evaluations = [
+            record for record in records if record.get("type") == "evaluation_ema"
+        ]
+        if ema_evaluations:
+            ema_label = f"{run['method']['name']} r{run['restart_index']} EMA"
+            for metric in ("fid", "kid_mean"):
+                points = [
+                    record for record in ema_evaluations if record.get(metric) is not None
+                ]
+                if points:
+                    marker = "^" if metric == "fid" else "v"
+                    axes[1, 0].plot(
+                        [record["epoch"] for record in points],
+                        [record[metric] for record in points],
+                        marker=marker,
+                        linestyle="--",
+                        label=f"{ema_label} {metric}",
+                    )
+                    axes[1, 1].plot(
+                        [record["wall_clock_train_s"] for record in points],
+                        [record[metric] for record in points],
+                        marker=marker,
+                        linestyle="--",
+                        label=f"{ema_label} {metric}",
                     )
     for axis, xlabel in zip(
         axes[0], ("Effective epoch", "Training wall-clock (s)"), strict=True

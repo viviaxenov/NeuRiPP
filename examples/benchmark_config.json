@@ -1,0 +1,92 @@
+{
+  "output_root": "results/benchmarks",
+  "common_params": {
+    "max_iterations": 200,
+    "batch_size": 16,
+    "N_monte_carlo": 16,
+    "master_seed": 42,
+    "eval_every": 50
+  },
+  "problem": {
+    "functional": {
+      "kind": "CrossEntropy"
+    },
+    "distribution": {
+      "name": "checkerboard",
+      "resample_each": 1,
+      "seed": 3
+    }
+  },
+  "architectures": [
+    {
+      "rhs": {
+        "model": "MLP",
+        "dim_hidden": 8,
+        "n_hidden": [1,2],
+        "activation": "tanh"
+      },
+      "divergence_method": "hutchinson",
+      "ode_nstep_max": 4,
+      "ode_method": "euler"
+    }
+  ],
+  "methods": [
+    {
+      "method": "anderson",
+      "n_restarts": 6,
+      "history_length": [4, 6],
+      "regularization_method": ["l2", "adaptive"],
+      "ensure_descent": [true],
+      "stepsize_schedule": "schedule_exp",
+      "natural_grad_clipping_threshold": [null, 1.0, 5.0],
+      "step_size": [0.001],
+      "drop_every": [100, 1000],
+      "drop_by": [2.0, 10.0],
+      "relaxation": 1.0,
+      "regularization_factor": [1e-4, 0.001, 0.01],
+      "linear_solver_regularization": 0.001,
+      "linear_solver_tolerance": 1e-6
+    },
+    {
+      "method": "ngd",
+      "n_restarts": 6,
+      "stepsize_schedule": "schedule_exp",
+      "step_size": [0.001, 0.002, 0.004],
+      "drop_every": [100, 1000],
+      "drop_by": [2.0, 10.0],
+      "natural_grad_clipping_threshold": [null, 1.0, 5.0],
+      "linear_solver_regularization": [0.0001, 0.001],
+      "linear_solver_tolerance": 1e-6
+    },
+    {
+      "method": "adamw",
+      "n_restarts": 10,
+      "learning_rate": [0.001, 0.0005, 0.0001],
+      "weight_decay": [0.00001, 0.001]
+    }
+  ],
+  "plotting": {
+    "style_channels": {
+      "colormap": ["Blues", "Oranges"],
+      "linestyle": ["-", "--", ":"],
+      "linewidth": [1.5, 2.5]
+    },
+    "style_channel_map": {
+      "method": "cmap",
+      "step_size": "color",
+      "relaxation": "linestyle"
+    }
+  },
+  "parallel": {
+    "gpu_ids": [0, 1, 2],
+    "plot_gpu_id": 0,
+    "max_parallel": {
+      "anderson": 15,
+      "ngd": 96,
+      "adamw": 120
+    }
+  },
+  "worker_env": {
+    "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.80"
+  }
+}

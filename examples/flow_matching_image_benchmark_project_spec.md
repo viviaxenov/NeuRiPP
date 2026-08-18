@@ -180,6 +180,14 @@ Exact names may follow the existing project style.
 
 Use `datasets.load_dataset` and/or `huggingface_hub` rather than dataset-specific web scrapers.
 
+Datasets that ship as a bare image archive (e.g. `Dmini/FFHQ-64x64`, a single
+`ffhq-64x64.zip`) need a `zip_imagefolder` loader: the Hub's automatic parquet
+conversion of such repos can declare an incompatible `ClassLabel` feature that
+the default `datasets` loader rejects. Set `loader="zip_imagefolder"` and
+`archive_file=<name>` on the `DatasetSpec`; the loader downloads the archive,
+extracts it once under `cache_dir/raw/<name>`, and loads it as a local
+`imagefolder`.
+
 Requirements:
 
 - support `cache_dir`;

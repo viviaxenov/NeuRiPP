@@ -43,6 +43,54 @@ class ZeroClassEmbedder(nnx.Module):
         return jnp.zeros((labels.shape[0], self.hidden_size), dtype=jnp.float32)
 
 
+def _strip_rng_state(module: nnx.Module) -> None:
+    """Neutralize non-parameter graph nodes so nnx.vmap can trace the DiT.
+
+    The upstream DiT stores ``nnx.Rngs``/``RngStream``/``RngCount`` nodes
+    (e.g. ``self.rngs`` and the forked dropout streams inside every
+    ``nnx.Dropout``) and a frozen sincos table as an ``nnx.Buffer``.  The
+    flow-matching trainer jits the training step and vmapped the RHS over the
+    batch, and ``nnx.vmap`` refuses to extract a graph node that was already
+    traced at the outer ``nnx.jit`` level ("Cannot extract graph node from
+    different trace level").  Dropout is disabled for these unconditional
+    models and the positional buffer never receives gradients, so both kinds
+    of nodes can be demoted to static values.
+
+    The only dropout that exists in the upstream DiT is class-label dropout
+    (``ClassEmbedder``) plus block ``nnx.Dropout`` layers at rate 0.  These
+    runs are unconditional (``num_classes=1`` + ``ZeroClassEmbedder``,
+    ``enable_dropout=False``, ``class_dropout_prob=1.0``,
+    ``mlp_dropout=attn_dropout=0.0``), so neither can ever fire and stripping
+    the nodes is exact.
+
+    Caveat: if class conditioning or block dropout is ever enabled in a DiT
+    RHS, this stripping must be removed/reworked.  RNG streams then have to
+    be threaded through ``nnx.vmap`` (e.g. via the explicit-dropout-key path
+    ``uses_explicit_dropout_rng`` in
+    ``neuripp/parametric_pushforward/flow_matching.py``) instead of being
+    dropped from the graph.
+    """
+
+    from flax.nnx import rnglib
+
+    rng_types = (rnglib.Rngs, rnglib.RngStream, rnglib.RngCount)
+    for name, value in list(vars(module).items()):
+        if isinstance(value, rng_types):
+            setattr(module, name, nnx.data(None))
+        elif isinstance(value, nnx.Variable) and not isinstance(value, nnx.Param):
+            setattr(module, name, jnp.asarray(value.value))
+        elif isinstance(value, nnx.List):
+            for item in value:
+                if isinstance(item, nnx.Module):
+                    _strip_rng_state(item)
+        elif isinstance(value, nnx.Module):
+            _strip_rng_state(value)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                if isinstance(item, nnx.Module):
+                    _strip_rng_state(item)
+
+
 def load_diffuse_sit(
     *,
     state_shape: tuple[int, int, int],
@@ -83,4 +131,5 @@ def load_diffuse_sit(
     )
     model.y_embedder = ZeroClassEmbedder(SIT_VARIANTS[variant]["hidden_size"])
     model.num_classes = 0
+    _strip_rng_state(model)
     return DiffuseSiTRHS(model, state_shape)

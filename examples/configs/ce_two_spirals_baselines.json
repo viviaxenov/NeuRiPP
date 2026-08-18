@@ -1,0 +1,69 @@
+{
+  "output_root": "results/ce_two_spirals_baselines",
+  "common_params": {
+    "max_iterations": 250000,
+    "batch_size": 512,
+    "N_monte_carlo": 512,
+    "master_seed": 42,
+    "eval_every": 5000
+  },
+  "problem": {
+    "functional": {
+      "kind": "CrossEntropy"
+    },
+    "distribution": {
+      "name": "two_spirals",
+      "resample_each": 32,
+      "seed": 3
+    }
+  },
+  "architectures": [
+    {
+      "rhs": {
+        "model": "MLP",
+        "dim_hidden": [128, 64],
+        "n_hidden": [1],
+        "activation": "swish"
+      },
+      "divergence_method": "hutchinson",
+      "ode_nstep_max": 6,
+      "ode_method": "rk45",
+      "adaptive": "true",
+      "h_max": 0.3
+    }
+  ],
+  "methods": [
+    {
+      "method": "sgd",
+      "n_restarts": 6,
+      "learning_rate": [1e-2, 1e-3, 1e-4, 1e-5, 1e-6]
+    },
+    {
+      "method": "adam",
+      "n_restarts": 6,
+      "learning_rate": [1e-2, 1e-3, 1e-4, 1e-5, 1e-6] 
+    },
+    {
+      "method": "adamw",
+      "n_restarts": 6,
+      "learning_rate": [1e-2, 1e-3, 1e-4, 1e-5, 1e-6] 
+    }
+  ],
+  "plotting": {
+    "style_channels": {
+      "colormap": ["Blues", "Oranges"],
+      "linestyle": ["-", "--", ":"],
+      "linewidth": [1.5, 2.5]
+    }
+  },
+  "parallel": {
+    "gpu_ids": [0, 1, 2, 3, 4, 5],
+    "max_parallel": {
+      "anderson": 15,
+      "ngd": 96,
+      "adam": 120,
+      "sgd": 120,
+      "adamw": 120
+    }
+  }
+}

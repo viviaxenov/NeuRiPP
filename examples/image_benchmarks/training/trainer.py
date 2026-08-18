@@ -12,6 +12,7 @@ from flax import nnx
 
 from image_benchmarks.distributed import DataParallelContext
 from image_benchmarks.training.methods import ResolvedMethod, resolve_method
+from neuripp.utility.ema import EMA
 
 
 class ImageTrainer:
@@ -42,6 +43,7 @@ class ImageTrainer:
         *,
         data_parallel: DataParallelContext | None = None,
         dataset_size: int | None = None,
+        ema_config: dict[str, Any] | None = None,
     ):
         self.data_parallel = data_parallel
         if data_parallel is not None:
@@ -61,6 +63,13 @@ class ImageTrainer:
         self.state = self._dynamic_scalars(self.state)
         if data_parallel is not None:
             self.state = data_parallel.replicate_graph_node(self.state)
+        self._ema: EMA | None = None
+        if ema_config and ema_config.get("enabled", True):
+            self._ema = EMA(
+                self.model,
+                decay=float(ema_config.get("decay", 0.9999)),
+                start_step=int(ema_config.get("start_step", 0)),
+            )
         self._step = nnx.jit(self.method.step_fn)
         initial_batch_size = self._batch_size(initial_batch)
         self.step_count = self.method.initialization_updates
@@ -73,6 +82,25 @@ class ImageTrainer:
     def model(self):
         return self.state[0]
 
+    @property
+    def ema_enabled(self) -> bool:
+        return self._ema is not None
+
+    @property
+    def ema_model(self):
+        if self._ema is None:
+            return None
+        return self._ema.model
+
+    def ema_checkpoint_payload(self) -> dict[str, Any] | None:
+        if self._ema is None:
+            return None
+        return {
+            **self._ema.payload(),
+            "step_count": self.step_count,
+            "examples_seen": self.examples_seen,
+        }
+
     def step(self, batch):
         batch_size = self._batch_size(batch)
         if self.data_parallel is not None:
@@ -80,6 +108,8 @@ class ImageTrainer:
         start = time.perf_counter()
         self.state, values = self._step(self.state, batch, self.rngs)
         jax.block_until_ready(values)
+        if self._ema is not None:
+            self._ema.update(self.model, self.step_count + 1)
         self.wall_clock_train_s += time.perf_counter() - start
         self.step_count += 1
         self.examples_seen += batch_size
@@ -113,6 +143,7 @@ class ImageTrainer:
             "examples_seen": self.examples_seen,
             "wall_clock_train_s": self.wall_clock_train_s,
             "wall_clock_evaluation_s": self.wall_clock_evaluation_s,
+            "ema": self._ema.payload() if self._ema is not None else None,
         }
 
     def restore_checkpoint_payload(self, payload: dict[str, Any]) -> None:
@@ -124,6 +155,9 @@ class ImageTrainer:
         self.examples_seen = int(payload["examples_seen"])
         self.wall_clock_train_s = float(payload["wall_clock_train_s"])
         self.wall_clock_evaluation_s = float(payload["wall_clock_evaluation_s"])
+        ema_payload = payload.get("ema")
+        if self._ema is not None and ema_payload is not None:
+            self._ema.restore_payload(ema_payload)
 
     def accounting(self) -> dict[str, Any]:
         parameters = nnx.state(self.model, nnx.Param)
@@ -137,6 +171,11 @@ class ImageTrainer:
             "wall_clock_train_s": self.wall_clock_train_s,
             "wall_clock_evaluation_s": self.wall_clock_evaluation_s,
             "parameter_count": parameter_count,
+            "ema_enabled": self.ema_enabled,
+            "ema_decay": self._ema.decay if self._ema is not None else None,
+            "ema_start_step": (
+                self._ema.start_step if self._ema is not None else None
+            ),
             "peak_accelerator_memory_bytes": (
                 self.data_parallel.peak_memory_bytes()
                 if self.data_parallel is not None

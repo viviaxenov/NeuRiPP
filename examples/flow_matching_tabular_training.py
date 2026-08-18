@@ -19,6 +19,7 @@ from neuripp.methods.anderson import get_anderson
 from neuripp.methods.ngd import get_ngd, schedule_exp
 from neuripp.methods.optax_optimizer import get_optax
 from neuripp.parametric_pushforward.flow_matching import FlowMatching, flow_matching_loss
+from neuripp.utility.ema import EMA
 
 from rhs_architectures import MLP
 from tabular_datasets import (
@@ -40,6 +41,8 @@ DEFAULT_TRACE_ESTIMATOR = "exact"
 DEFAULT_LOSS_SMOOTHING_ALPHA = 0.05
 DEFAULT_SEED = 42
 DEFAULT_OUTPUT_ROOT = Path(__file__).parent / "flow_matching_tabular_results"
+DEFAULT_EMA_DECAY = 0.9999
+DEFAULT_EMA_START_STEP = 0
 
 N_PLOT_SAMPLES = 512
 N_PCA_FIT_SAMPLES = 10_000
@@ -112,6 +115,11 @@ def parse_args(argv=None):
         type=float,
         default=DEFAULT_LOSS_SMOOTHING_ALPHA,
     )
+    parser.add_argument("--ema-enabled", "--ema_enabled", action="store_true", default=False)
+    parser.add_argument("--ema-decay", "--ema_decay", type=float, default=DEFAULT_EMA_DECAY)
+    parser.add_argument(
+        "--ema-start-step", "--ema_start_step", type=int, default=DEFAULT_EMA_START_STEP
+    )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--output-dir", "--output_dir", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--data-dir", "--data_dir", type=Path, default=default_data_dir())
@@ -144,6 +152,10 @@ def validate_args(args):
         raise ValueError("--eval-every must be positive")
     if not 0.0 < args.loss_smoothing_alpha <= 1.0:
         raise ValueError("--loss-smoothing-alpha must be in (0, 1]")
+    if not 0.0 < args.ema_decay < 1.0:
+        raise ValueError("--ema-decay must be in (0, 1)")
+    if args.ema_start_step < 0:
+        raise ValueError("--ema-start-step must be non-negative")
     return methods, dict(zip(methods, n_epochs, strict=True))
 
 
@@ -290,6 +302,14 @@ def plot_diagnostics(method, epoch, samples, test_data, pca, metrics, output_pat
         metrics["test_flow_matching_loss"],
         label="Test flow-matching loss",
     )
+    if metrics["ema_test_flow_matching_loss"]:
+        axes[1].plot(
+            metrics["eval_epoch"],
+            metrics["ema_test_flow_matching_loss"],
+            linestyle="--",
+            color="tab:green",
+            label="EMA test flow-matching loss",
+        )
     nll_axis = axes[1].twinx()
     nll_axis.plot(
         metrics["eval_epoch"],
@@ -297,6 +317,14 @@ def plot_diagnostics(method, epoch, samples, test_data, pca, metrics, output_pat
         color="tab:orange",
         label="Test NLL",
     )
+    if metrics["ema_test_nll_standardized"]:
+        nll_axis.plot(
+            metrics["eval_epoch"],
+            metrics["ema_test_nll_standardized"],
+            linestyle="--",
+            color="tab:red",
+            label="EMA test NLL",
+        )
     axes[1].set_xlabel("Epoch")
     axes[1].set_title("Test metrics")
     lines = axes[1].lines + nll_axis.lines
@@ -377,6 +405,8 @@ def run_evaluation(
     all_metrics,
     method_dir,
     output_dir,
+    *,
+    ema_model=None,
 ):
     start = perf_counter()
     values = evaluate_test(
@@ -392,6 +422,16 @@ def run_evaluation(
     metrics["eval_sample_count"].append(len(evaluation_data))
     for name, value in values.items():
         metrics[name].append(value)
+    if ema_model is not None:
+        ema_values = evaluate_test(
+            ema_model,
+            evaluation_data,
+            train_std,
+            args.eval_batch_size,
+            args.seed + 60_000,
+        )
+        for name, value in ema_values.items():
+            metrics[f"ema_{name}"].append(value)
     metrics["eval_wall_time"].append(perf_counter() - start)
     save_arrays(method_dir, metrics)
     update_plots(
@@ -433,6 +473,11 @@ def train_method(
     jax.block_until_ready(state)
     initialization_wall_time = perf_counter() - initialization_start
     step_fn = nnx.jit(step_fn)
+    ema = (
+        EMA(state[0], decay=args.ema_decay, start_step=args.ema_start_step)
+        if args.ema_enabled
+        else None
+    )
     metrics = {
         "loss": [],
         "loss_smoothed": [],
@@ -449,6 +494,9 @@ def train_method(
         "test_flow_matching_loss": [],
         "test_nll_standardized": [],
         "test_nll_original": [],
+        "ema_test_flow_matching_loss": [],
+        "ema_test_nll_standardized": [],
+        "ema_test_nll_original": [],
         "eval_wall_time": [],
         "sampling_wall_time": [],
         "plot_io_wall_time": [],
@@ -473,6 +521,8 @@ def train_method(
             if global_step == 0:
                 metrics["first_step_wall_time"].append(perf_counter() - step_start)
             global_step += 1
+            if ema is not None:
+                ema.update(state[0], global_step)
             metrics["step"].append(global_step)
             metrics["step_epoch"].append(epoch - 1 + batch_index / n_batches)
             metrics["loss"].append(loss_value)
@@ -507,6 +557,7 @@ def train_method(
                 all_metrics,
                 method_dir,
                 output_dir,
+                ema_model=ema.model if ema is not None else None,
             )
 
     run_evaluation(
@@ -524,22 +575,28 @@ def train_method(
         all_metrics,
         method_dir,
         output_dir,
+        ema_model=ema.model if ema is not None else None,
     )
     metrics["total_wall_time"].append(perf_counter() - method_start)
     save_arrays(method_dir, metrics)
-    return state[0]
+    if ema is not None:
+        params = jax.tree.map(
+            lambda value: np.asarray(value), nnx.state(ema.model, nnx.Param)
+        )
+        np.savez(method_dir / "ema_params.npz", **params)
+    return state[0], ema.model if ema is not None else None
 
 
-def plot_joint_samples(models, test_data, pca, seed, output_path):
+def plot_joint_samples(model_rows, test_data, pca, seed, output_path):
     fig, axes = plt.subplots(
-        len(models),
+        len(model_rows),
         len(INFERENCE_ODE_CONFIGS),
-        figsize=(15, 5 * len(models)),
+        figsize=(15, 5 * len(model_rows)),
         squeeze=False,
         layout="constrained",
     )
     test_projection = project_pca(test_data[:N_PLOT_SAMPLES], pca)
-    for row, (method_name, model) in enumerate(models.items()):
+    for row, (method_name, model) in enumerate(model_rows):
         for col, (title, ode_method, n_steps, ode_kwargs) in enumerate(INFERENCE_ODE_CONFIGS):
             samples = sample_with_solver(
                 model, N_PLOT_SAMPLES, seed, ode_method, n_steps, ode_kwargs
@@ -566,6 +623,9 @@ def serializable_config(args, methods, n_epochs, dataset):
         "eval_batch_size": args.eval_batch_size,
         "trace_estimator": args.trace_estimator,
         "loss_smoothing_alpha": args.loss_smoothing_alpha,
+        "ema_enabled": args.ema_enabled,
+        "ema_decay": args.ema_decay,
+        "ema_start_step": args.ema_start_step,
         "seed": args.seed,
         "train_size": len(dataset.train),
         "test_size": len(dataset.test),
@@ -611,10 +671,10 @@ def main(argv=None):
     )
     test_subset = dataset.test[evaluation_indices]
     pca = fit_pca(dataset.test)
-    models = {}
+    model_rows = []
     all_metrics = {}
     for method in methods:
-        models[method] = train_method(
+        model, ema_model = train_method(
             method,
             n_epochs[method],
             args,
@@ -626,11 +686,14 @@ def main(argv=None):
             output_dir,
             all_metrics,
         )
+        model_rows.append((method, model))
+        if ema_model is not None:
+            model_rows.append((f"{method} (EMA)", ema_model))
 
     plot_loss(all_metrics, output_dir / "joint_loss.pdf")
     plot_loss(all_metrics, output_dir / "joint_loss_smoothed.pdf", smoothed=True)
     plot_joint_samples(
-        models,
+        model_rows,
         dataset.test,
         pca,
         args.seed + 100_000,

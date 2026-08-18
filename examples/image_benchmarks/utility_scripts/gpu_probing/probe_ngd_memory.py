@@ -479,6 +479,7 @@ def main() -> int:
                 str(args.gpu_index + offset) for offset in range(args.gpu_count))
             result = subprocess.run(
                 [sys.executable, str(Path(__file__).resolve()),
+                 "--config", str(config_path),
                  "--batch", str(batch_size), "--output", str(path),
                  "--warmup", str(args.warmup), "--measure", str(args.measure),
                  "--gpu-index", str(args.gpu_index),

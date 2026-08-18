@@ -167,3 +167,19 @@ cython_debug/
 *.gif
 *.pdf
 *.npz
+
+# Runtime / generated artifacts
+data/
+encoder/
+examples/encoder/
+examples/.opencode/
+results/
+tests/outputs/
+tests/results/
+examples/fashion_mnist_gen/
+examples/flow_matching_results/
+examples/flow_matching_tabular_results/
+tests/err.txt
+
+# Generated benchmark plan
+/examples/planned_runs.json

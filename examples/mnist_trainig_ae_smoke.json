@@ -1,0 +1,63 @@
+{
+  "output_root": "results/mnist_ffjord_ae_smoke",
+  "common_params": {
+    "max_iterations": 2,
+    "batch_size": 4,
+    "N_monte_carlo": 4,
+    "master_seed": 42,
+    "eval_every": 2
+  },
+  "problem": {
+    "functional": {
+      "kind": "CrossEntropy"
+    },
+    "distribution": {
+      "name": "mnist",
+      "resample_each": 1,
+      "seed": 3
+    }
+  },
+  "architectures": [
+    {
+      "rhs": {
+        "model": "MLP",
+        "n_hidden": 1,
+        "dim_hidden": 16,
+        "encoder_dim": 8,
+        "encoder_path": "./encoder",
+        "encoder_training": {
+          "epochs": 2,
+          "batch_size": 16,
+          "eval_batch_size": 32,
+          "plot_every": 1
+        }
+      },
+      "divergence_method": "hutchinson",
+      "ode_nstep_max": 2,
+      "ode_method": "euler",
+      "grad_checkpointing": false
+    }
+  ],
+  "methods": [
+    {
+      "method": "adam",
+      "n_restarts": 1,
+      "learning_rate": [0.001]
+    }
+  ],
+  "plotting": {
+    "nrows": 2,
+    "ncols": 2,
+    "style_channels": {
+      "colormap": ["Blues"],
+      "linestyle": ["-"],
+      "linewidth": [1.5]
+    }
+  },
+  "parallel": {
+    "gpu_ids": [0],
+    "max_parallel": {
+      "adam": 1
+    }
+  }
+}

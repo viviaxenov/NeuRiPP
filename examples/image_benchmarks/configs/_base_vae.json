@@ -3,7 +3,7 @@
   "experiment": {"name": "vae_base"},
   "problem": {
     "dataset": {"name": "flowers102", "resolution": 256, "horizontal_flip": false},
-    "encoder": {"type": "vae", "implementation": "diffuse_nnx", "checkpoint": "../../../artifacts/encoders/vae_trial1.pkl", "expected_sha256": "0000000000000000000000000000000000000000000000000000000000000000", "auto_download": true, "sample_posterior": true, "cache_latents": true, "latent_cache_dir": "../../../artifacts/latents"}
+    "encoder": {"type": "vae", "implementation": "diffusers", "checkpoint_id": "stabilityai/sd-vae-ft-mse", "sample_posterior": true, "cache_latents": true, "latent_cache_dir": "../../../artifacts/latents"}
   },
   "rhs": {"type": "unet", "variant": "small"},
   "training": {"batch_size": 128},

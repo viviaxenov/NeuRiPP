@@ -1,0 +1,59 @@
+{
+  "output_root": "results/ce_arch_search",
+  "common_params": {
+    "max_iterations": 3000,
+    "batch_size": 512,
+    "N_monte_carlo": 512,
+    "master_seed": 42,
+    "plot_every": 600
+  },
+  "problem": {
+    "functional": {
+      "kind": "CrossEntropy"
+    },
+    "distribution": {
+      "name": "checkerboard",
+      "resample_each": 32,
+      "seed": 3
+    }
+  },
+  "architectures": [
+    {
+      "rhs": {
+        "model": "MLP",
+        "dim_hidden": [16, 32, 64, 128],
+        "n_hidden": [1,2],
+        "activation": "tanh"
+      },
+      "divergence_method": "hutchinson",
+      "ode_nstep_max": [6, 12],
+      "ode_method": "rk45",
+      "adaptive": "true",
+      "h_max": 0.3
+    }
+  ],
+  "methods": [
+    {
+      "method": "ngd",
+      "n_restarts": 6,
+      "step_size": [1e-2, 1e-3, 1e-4, 1e-5],
+      "linear_solver_regularization": [1e-1, 1e-2, 1e-3, 1e-4],
+      "linear_solver_tolerance": 1e-6
+    }
+  ],
+  "plotting": {
+    "style_channels": {
+      "colormap": ["Blues", "Oranges"],
+      "linestyle": ["-", "--", ":"],
+      "linewidth": [1.5, 2.5]
+    }
+  },
+  "parallel": {
+    "gpu_ids": [0, 1, 2, 3, 4, 5],
+    "max_parallel": {
+      "anderson": 15,
+      "ngd": 96,
+      "adamw": 120
+    }
+  }
+}
