@@ -1,0 +1,5 @@
+{
+  "batch_size": 256,
+  "error": "JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 135.73GiB. [executable_name='jit__ngd_step'] [tf-allocator-allocation-error='']",
+  "failed": true
+}

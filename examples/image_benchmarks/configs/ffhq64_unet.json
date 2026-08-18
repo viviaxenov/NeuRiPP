@@ -3,5 +3,7 @@
   "experiment": {"name": "ffhq64_unet_reference"},
   "problem": {"dataset": {"name": "ffhq64", "resolution": 64}},
   "rhs": {"variant": "cifar_reference"},
-  "evaluation": {"kid": {"enabled": true}}
+  "evaluation": {"kid": {"enabled": true}},
+  "training": {"batch_size": 50},
+  "resources": {"gpus_per_run": 2}
 }

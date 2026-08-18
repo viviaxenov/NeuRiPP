@@ -1,0 +1,47 @@
+{
+  "allow_drop_last": true,
+  "candidates": [
+    32,
+    64,
+    128,
+    256,
+    512,
+    1024
+  ],
+  "gpu_count": 1,
+  "gpu_index": 1,
+  "measure_steps": 20,
+  "reports": [
+    {
+      "batch_size": 32,
+      "error": "JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 67.12GiB. [executable_name='jit__ngd_step'] [tf-allocator-allocation-error='']",
+      "failed": true
+    },
+    {
+      "batch_size": 64,
+      "error": "JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 141.36GiB. [tf-allocator-allocation-error=''] [executable_name='jit__ngd_step']",
+      "failed": true
+    },
+    {
+      "batch_size": 128,
+      "error": "JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 254.61GiB. [tf-allocator-allocation-error=''] [executable_name='jit__ngd_step']",
+      "failed": true
+    },
+    {
+      "batch_size": 256,
+      "error": "JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 508.86GiB. [executable_name='jit__ngd_step'] [tf-allocator-allocation-error='']",
+      "failed": true
+    },
+    {
+      "batch_size": 512,
+      "error": "JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 1014.00GiB. [tf-allocator-allocation-error=''] [executable_name='jit__ngd_step']",
+      "failed": true
+    },
+    {
+      "batch_size": 1024,
+      "error": "JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 1.98TiB. [executable_name='jit__ngd_step'] [tf-allocator-allocation-error='']",
+      "failed": true
+    }
+  ],
+  "warmup_steps": 8
+}

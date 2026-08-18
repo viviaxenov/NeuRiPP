@@ -1,0 +1,83 @@
+{
+  "allow_drop_last": true,
+  "candidates": [
+    50,
+    100,
+    300,
+    600,
+    1000,
+    2000,
+    3000
+  ],
+  "gpu_count": 1,
+  "gpu_index": 5,
+  "measure_steps": 20,
+  "reports": [
+    {
+      "batch_size": 50,
+      "device_memory_peak_seen_max": 19812909056,
+      "device_memory_used_first_third_mean": 19812909056.0,
+      "device_memory_used_last_third_mean": 19812909056.0,
+      "device_memory_used_steady_growth_in_window": false,
+      "device_total_bytes": 42949672960,
+      "gpu_count": 1,
+      "mean_step_seconds": 115.4842,
+      "median_step_seconds": 115.4809,
+      "optimizer_step": 28,
+      "parameter_count": 35746307,
+      "pprof_live_bytes": null,
+      "pprof_sample_types": null,
+      "pynvml_sm_percent_max": 100,
+      "pynvml_sm_percent_mean": 99.94,
+      "steps_per_epoch": 1000,
+      "time_per_sample_ms": 2309.6849,
+      "used_fraction_of_device_seen_max": 0.4613
+    },
+    {
+      "batch_size": 100,
+      "device_memory_peak_seen_max": 33368834048,
+      "device_memory_used_first_third_mean": 33368834048.0,
+      "device_memory_used_last_third_mean": 33368834048.0,
+      "device_memory_used_steady_growth_in_window": false,
+      "device_total_bytes": 42949672960,
+      "gpu_count": 1,
+      "mean_step_seconds": 228.7959,
+      "median_step_seconds": 228.7758,
+      "optimizer_step": 28,
+      "parameter_count": 35746307,
+      "pprof_live_bytes": null,
+      "pprof_sample_types": null,
+      "pynvml_sm_percent_max": 100,
+      "pynvml_sm_percent_mean": 99.96,
+      "steps_per_epoch": 500,
+      "time_per_sample_ms": 2287.9587,
+      "used_fraction_of_device_seen_max": 0.7769
+    },
+    {
+      "batch_size": 300,
+      "error": "JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 41.21GiB. [executable_name='jit__ngd_step'] [tf-allocator-allocation-error='']",
+      "failed": true
+    },
+    {
+      "batch_size": 600,
+      "error": "JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 82.54GiB. [tf-allocator-allocation-error=''] [executable_name='jit__ngd_step']",
+      "failed": true
+    },
+    {
+      "batch_size": 1000,
+      "error": "JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 141.19GiB. [tf-allocator-allocation-error=''] [executable_name='jit__ngd_step']",
+      "failed": true
+    },
+    {
+      "batch_size": 2000,
+      "error": "JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 291.37GiB. [tf-allocator-allocation-error=''] [executable_name='jit__ngd_step']",
+      "failed": true
+    },
+    {
+      "batch_size": 3000,
+      "error": "JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 386.67GiB. [tf-allocator-allocation-error=''] [executable_name='jit__ngd_step']",
+      "failed": true
+    }
+  ],
+  "warmup_steps": 8
+}

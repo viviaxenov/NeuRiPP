@@ -2,5 +2,7 @@
   "extends": "_base_pixel.json",
   "experiment": {"name": "flowers64_unet_small"},
   "problem": {"dataset": {"name": "flowers102", "resolution": 64}},
-  "evaluation": {"kid": {"enabled": true, "subsets": 100, "subset_size": 800}}
+  "evaluation": {"kid": {"enabled": true, "subsets": 100, "subset_size": 800}},
+  "training": {"batch_size": 128},
+  "resources": {"gpus_per_run": 2}
 }

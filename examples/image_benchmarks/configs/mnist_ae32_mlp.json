@@ -1,4 +1,5 @@
 {
   "extends": "_base_ae.json",
-  "experiment": {"name": "mnist_ae32_mlp"}
+  "experiment": {"name": "mnist_ae32_mlp"},
+  "training": {"batch_size": 3000}
 }

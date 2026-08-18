@@ -2,5 +2,7 @@
   "extends": "_base_vae.json",
   "experiment": {"name": "lsun256_vae_unet"},
   "problem": {"dataset": {"name": "lsun_church", "resolution": 256}},
-  "evaluation": {"kid": {"enabled": false}}
+  "evaluation": {"kid": {"enabled": false}},
+  "training": {"batch_size": 512},
+  "resources": {"gpus_per_run": 4}
 }

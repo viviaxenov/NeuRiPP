@@ -3,6 +3,6 @@
   "experiment": {"name": "mnist_pixels_mlp"},
   "problem": {"dataset": {"name": "mnist", "resolution": 28, "horizontal_flip": false}},
   "rhs": {"type": "mlp", "flatten": true, "hidden_dims": [512, 512, 512], "activation": "silu", "time_embedding": {"type": "sinusoidal", "dim": 128}},
-  "training": {"batch_size": 256},
+  "training": {"batch_size": 3000},
   "evaluation": {"kid": {"enabled": true}}
 }

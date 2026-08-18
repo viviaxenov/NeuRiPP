@@ -1,5 +1,7 @@
 {
   "extends": "_base_vae.json",
   "experiment": {"name": "afhqcat256_vae_unet"},
-  "problem": {"dataset": {"name": "afhq_cat", "resolution": 256}}
+  "problem": {"dataset": {"name": "afhq_cat", "resolution": 256}},
+  "training": {"batch_size": 512},
+  "resources": {"gpus_per_run": 4}
 }

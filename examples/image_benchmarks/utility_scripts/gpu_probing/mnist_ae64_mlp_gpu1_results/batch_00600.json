@@ -1,0 +1,20 @@
+{
+  "batch_size": 600,
+  "device_memory_peak_seen_max": 1567621120,
+  "device_memory_used_first_third_mean": 1567621120.0,
+  "device_memory_used_last_third_mean": 1567621120.0,
+  "device_memory_used_steady_growth_in_window": false,
+  "device_total_bytes": 42949672960,
+  "gpu_count": 1,
+  "mean_step_seconds": 0.0329,
+  "median_step_seconds": 0.0329,
+  "optimizer_step": 28,
+  "parameter_count": 656960,
+  "pprof_live_bytes": null,
+  "pprof_sample_types": null,
+  "pynvml_sm_percent_max": 86,
+  "pynvml_sm_percent_mean": 82.25,
+  "steps_per_epoch": 100,
+  "time_per_sample_ms": 0.0549,
+  "used_fraction_of_device_seen_max": 0.0365
+}

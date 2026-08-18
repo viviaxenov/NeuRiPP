@@ -1,4 +1,6 @@
 {
   "extends": "_base_vae.json",
-  "experiment": {"name": "flowers256_vae_unet"}
+  "experiment": {"name": "flowers256_vae_unet"},
+  "training": {"batch_size": 512},
+  "resources": {"gpus_per_run": 4}
 }

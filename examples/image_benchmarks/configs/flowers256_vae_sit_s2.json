@@ -1,5 +1,7 @@
 {
   "extends": "_base_vae.json",
   "experiment": {"name": "flowers256_vae_sit_s2"},
-  "rhs": {"type": "sit", "implementation": "diffuse_nnx", "variant": "S", "patch_size": 2, "class_conditioning": false}
+  "rhs": {"type": "sit", "implementation": "diffuse_nnx", "variant": "S", "patch_size": 2, "class_conditioning": false},
+  "training": {"batch_size": 64},
+  "resources": {"gpus_per_run": 4}
 }

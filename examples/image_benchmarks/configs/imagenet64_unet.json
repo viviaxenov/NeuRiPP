@@ -2,5 +2,7 @@
   "extends": "_base_pixel.json",
   "experiment": {"name": "imagenet64_unet"},
   "problem": {"dataset": {"name": "imagenet64", "resolution": 64}},
-  "evaluation": {"split": "validation"}
+  "evaluation": {"split": "validation"},
+  "training": {"batch_size": 128},
+  "resources": {"gpus_per_run": 2}
 }
