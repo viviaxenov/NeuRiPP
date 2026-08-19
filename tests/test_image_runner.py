@@ -213,8 +213,66 @@ def test_save_run_diagnostics_produces_pdf():
             "".join(json.dumps(record) + "\n" for record in records),
             encoding="utf-8",
         )
-        runner._save_run_diagnostics(run_dir, {"run_id": "run_0000"})
-        assert (run_dir / "plots" / "diagnostics.pdf").stat().st_size > 0
+        run = {"run_id": "run_0000", "run_index": 0, "method": {"name": "adamw", "kwargs": {}}}
+        diagnostic_dir = Path(directory) / "plots" / "diagnostic"
+        runner._save_run_diagnostics(diagnostic_dir, run_dir, run)
+        assert (diagnostic_dir / "diagnostics_run_0000.pdf").stat().st_size > 0
+
+
+def test_run_label_uses_shorthand_and_only_varied_keys():
+    runner = load_runner()
+    runs = [
+        {
+            "method": {
+                "name": "ngd",
+                "kwargs": {
+                    "step_size": 0.001,
+                    "linear_solver_regularization": 0.01,
+                    "natural_grad_clipping_threshold": 20.0,
+                    "linear_solver_tolerance": 1e-6,
+                    "linear_solver_maxiter": 50,
+                },
+            }
+        },
+        {
+            "method": {
+                "name": "ngd",
+                "kwargs": {
+                    "step_size": 0.01,
+                    "linear_solver_regularization": 0.001,
+                    "natural_grad_clipping_threshold": None,
+                    "linear_solver_tolerance": 1e-6,
+                    "linear_solver_maxiter": 50,
+                },
+            }
+        },
+    ]
+    varied = runner._varying_run_keys(runs)
+    assert "step_size" in varied
+    assert "natural_grad_clipping_threshold" in varied
+    assert "linear_solver_tolerance" not in varied
+    label = runner._run_label(runs[0], varied)
+    assert label.startswith("NGD")
+    assert r"$h$=0.001" in label
+    assert r"$\Lambda$=0.01" in label
+    assert r"$\|\mathrm{grad}E\|_{\max}$=20" in label
+
+
+def test_apply_log_ylim_anchors_to_step0_max():
+    runner = load_runner()
+    import matplotlib.pyplot as plt
+
+    figure, axis = plt.subplots()
+    curves = [
+        ([0, 1, 2], [10.0, 1.0, 0.1]),
+        ([0, 1, 2], [5.0, 2.0, 1000.0]),  # diverges late; must not set the top
+    ]
+    runner._apply_log_ylim(axis, curves)
+    bottom, top = axis.get_ylim()
+    assert bottom == runner.PLOT_Y_BOTTOM
+    assert top == 10.0
+    assert axis.get_yscale() == "log"
+    plt.close(figure)
 
 
 if __name__ == "__main__":
@@ -224,4 +282,6 @@ if __name__ == "__main__":
     test_plot_only_rejects_run_selection()
     test_plot_session_overlays_training_loss_by_step_and_time()
     test_save_run_diagnostics_produces_pdf()
+    test_run_label_uses_shorthand_and_only_varied_keys()
+    test_apply_log_ylim_anchors_to_step0_max()
     print("Image runner tests passed.")

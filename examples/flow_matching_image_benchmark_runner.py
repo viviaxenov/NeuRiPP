@@ -34,6 +34,37 @@ from image_benchmarks.config import gpu_groups, load_config, plan_runs
 from image_benchmarks.datasets.hf_loader import download_dataset
 from image_benchmarks.datasets.manifest import DatasetManifest
 
+# Reuse plotting/style-channel helpers from the tabular benchmark runner
+# (JAX-free at import time).
+from benchmark_runner import (
+    _assign_line_styles,
+    _display_param_key,
+    _normalize_style_channel_name,
+    _resolve_style_channel_keys,
+    _varying_keys_from_flattened,
+)
+
+
+# Shorthand notation for hyperparameters in legend labels.
+PARAM_SHORTHAND: dict[str, str] = {
+    "step_size": r"$h$",
+    "learning_rate": r"$\eta$",
+    "linear_solver_regularization": r"$\Lambda$",
+    "regularization_factor": r"$\lambda$",
+    "reg_factor": r"$\lambda$",
+    "weight_decay": r"$\lambda_{\mathrm{wd}}$",
+    "natural_grad_clipping_threshold": r"$\|\mathrm{grad}E\|_{\max}$",
+    "beta1": r"$\beta_1$",
+    "beta2": r"$\beta_2$",
+    "b1": r"$\beta_1$",
+    "b2": r"$\beta_2$",
+    "linear_solver_tolerance": r"$\varepsilon_{CG}$",
+    "linear_solver_maxiter": r"$n_{CG}$",
+    "relaxation": r"$\rho$",
+}
+
+PLOT_Y_BOTTOM = 1e-20
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -195,6 +226,10 @@ def _initialize_session(session_dir, config_path, config, runs, manifest, *, res
     session_dir.mkdir(parents=True, exist_ok=True)
     (session_dir / "runs").mkdir(exist_ok=True)
     (session_dir / "plots").mkdir(exist_ok=True)
+    (session_dir / "plots" / "diagnostic").mkdir(exist_ok=True)
+    (session_dir / "plots" / "samples").mkdir(exist_ok=True)
+    (session_dir / "plots" / "ema_samples").mkdir(exist_ok=True)
+    (session_dir / "checkpoints").mkdir(exist_ok=True)
     (session_dir / "input_config.json").write_text(
         Path(config_path).read_text(encoding="utf-8"), encoding="utf-8"
     )
@@ -202,6 +237,75 @@ def _initialize_session(session_dir, config_path, config, runs, manifest, *, res
     _write_json(session_dir / "planned_runs.json", runs)
     _write_json(session_dir / "dataset_manifest_summary.json", manifest.summary())
     _write_json(session_dir / "dataset_manifest.json", manifest.to_dict())
+
+
+def _run_index_label(run: dict[str, Any]) -> str:
+    """Zero-padded run index used for per-run plot and checkpoint folders."""
+    return f"run_{int(run['run_index']):04d}"
+
+
+def _run_checkpoint_root(session_dir, run: dict[str, Any]) -> Path:
+    return Path(session_dir) / "checkpoints" / _run_index_label(run)
+
+
+def _format_param_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, float):
+        return f"{value:g}"
+    if isinstance(value, int):
+        return str(value)
+    return str(value)
+
+
+def _run_line_params(run: dict[str, Any]) -> dict[str, Any]:
+    """Flattened parameters used for style-channel assignment and labels."""
+    params = {"method": run["method"]["name"]}
+    params.update(run["method"].get("kwargs", {}))
+    return params
+
+
+def _run_label(run: dict[str, Any], varied_keys: list[str]) -> str:
+    """Legend label: METHOD followed by varied hyperparameters in shorthand."""
+    params = _run_line_params(run)
+    method = str(params.get("method", "run")).upper()
+    parts = [
+        f"{PARAM_SHORTHAND.get(key, _display_param_key(key))}={_format_param_value(params[key])}"
+        for key in varied_keys
+        if key in params
+    ]
+    return method if not parts else f"{method}  " + ", ".join(parts)
+
+
+def _varying_run_keys(runs: list[dict[str, Any]]) -> list[str]:
+    flattened = [_run_line_params(run) for run in runs]
+    return _varying_keys_from_flattened(flattened)
+
+
+def _assign_run_styles(
+    runs: list[dict[str, Any]], plotting: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Per-run line styles reusing benchmark_runner's style-channel mapping."""
+    representatives = [{"_line_params": _run_line_params(run)} for run in runs]
+    return _assign_line_styles(
+        representatives,
+        plotting.get("style_channels", {}),
+        plotting.get("style_channel_map"),
+    )
+
+
+def _apply_log_ylim(axis, curves: list[tuple[list, list]]) -> None:
+    """Log-scale Y axis anchored at 1e-20 .. max(first point of each curve).
+
+    Anchoring the top at the step-0 (first recorded) values keeps a diverged
+    run from stretching the axis.
+    """
+    axis.set_yscale("log")
+    firsts = [
+        float(y[0]) for _, y in curves if y and y[0] is not None and float(y[0]) > 0
+    ]
+    if firsts:
+        axis.set_ylim(bottom=PLOT_Y_BOTTOM, top=max(firsts))
 
 
 def _collect_images(iterator, count: int) -> tuple[np.ndarray, list[str]]:
@@ -470,8 +574,7 @@ def _real_sample_metric_states(config, manifest, encoder, run, count):
     return np.concatenate(batches)
 
 
-def _checkpoint_dirs(run_dir):
-    checkpoint_root = run_dir / "checkpoints"
+def _checkpoint_dirs(checkpoint_root: Path):
     if not checkpoint_root.exists():
         return []
     return sorted(
@@ -479,11 +582,11 @@ def _checkpoint_dirs(run_dir):
     )
 
 
-def _save_checkpoint(run_dir, trainer, stream, keep):
+def _save_checkpoint(checkpoint_root, trainer, stream, keep):
     import orbax.checkpoint as ocp
 
     step = trainer.step_count
-    root = run_dir / "checkpoints"
+    root = checkpoint_root
     root.mkdir(parents=True, exist_ok=True)
     destination = root / f"step_{step:09d}"
     if destination.exists():
@@ -503,15 +606,15 @@ def _save_checkpoint(run_dir, trainer, stream, keep):
         {"step": step, "written_at": _utc_now(), "format": "orbax-standard"},
     )
     temporary.rename(destination)
-    for obsolete in _checkpoint_dirs(run_dir)[:-keep]:
+    for obsolete in _checkpoint_dirs(root)[:-keep]:
         shutil.rmtree(obsolete)
     return destination
 
 
-def _restore_latest(run_dir, trainer, stream):
+def _restore_latest(checkpoint_root, trainer, stream):
     import orbax.checkpoint as ocp
 
-    checkpoints = _checkpoint_dirs(run_dir)
+    checkpoints = _checkpoint_dirs(checkpoint_root)
     if not checkpoints:
         return None
     latest = checkpoints[-1]
@@ -525,14 +628,14 @@ def _restore_latest(run_dir, trainer, stream):
     return latest
 
 
-def _save_ema_checkpoint(run_dir, trainer, keep):
+def _save_ema_checkpoint(checkpoint_root, trainer, keep):
     """Persist the exponential moving average weights in their own directory."""
     if not trainer.ema_enabled:
         return None
     import orbax.checkpoint as ocp
 
     step = trainer.step_count
-    root = run_dir / "ema_checkpoint"
+    root = checkpoint_root / "ema"
     root.mkdir(parents=True, exist_ok=True)
     destination = root / f"step_{step:09d}"
     if destination.exists():
@@ -718,7 +821,7 @@ def _git_commit():
         return "unknown"
 
 
-def _save_sample_grid(run_dir, model, encoder, config, seed, *, filename="sample_grid.pdf"):
+def _save_sample_grid(samples_dir, model, encoder, config, seed, *, filename):
     from image_benchmarks.evaluation.sampling import generate_image_batches
     import matplotlib.pyplot as plt
 
@@ -744,16 +847,57 @@ def _save_sample_grid(run_dir, model, encoder, config, seed, *, filename="sample
         axis.imshow(np.squeeze(image), cmap="gray" if image.shape[-1] == 1 else None)
         axis.axis("off")
     figure.tight_layout()
-    figure.savefig(run_dir / filename, dpi=120, format="pdf")
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    figure.savefig(samples_dir / filename, dpi=120, format="pdf")
     plt.close(figure)
 
 
-def _save_run_diagnostics(run_dir: Path, run: dict[str, Any]) -> None:
-    """Per-run diagnostic: training loss, validation loss, sliced-Wasserstein.
+def _collect_metric_rows(records: list[dict[str, Any]]) -> list[tuple[str, str, list, list]]:
+    """Return (title, value_key, raw_records, ema_records) rows with data.
 
-    Plotted vs optimizer iteration and vs training wall-clock, with raw (solid)
-    and EMA (dashed) curves. Sliced-Wasserstein is only shown when periodic
-    validation_sw records exist. Saved as PDF in the run's plots directory.
+    Rows: training loss, validation loss, sliced Wasserstein, FID, KID.
+    Only rows with at least one raw record are included.
+    """
+
+    def series(record_type: str, value_key: str):
+        return [
+            record
+            for record in records
+            if record.get("type") == record_type
+            and record.get(value_key) is not None
+            and np.isfinite(record[value_key])
+        ]
+
+    rows: list[tuple[str, str, list, list]] = []
+    training = series("train", "loss")
+    if training:
+        rows.append(("Training loss", "loss", training, []))
+    validation = series("validation", "val_fm_loss")
+    if validation:
+        rows.append(
+            ("Validation loss", "val_fm_loss", validation, series("validation_ema", "val_fm_loss"))
+        )
+    sw = series("validation_sw", "sliced_wasserstein")
+    if sw:
+        rows.append(
+            ("Sliced Wasserstein", "sliced_wasserstein", sw, series("validation_sw_ema", "sliced_wasserstein"))
+        )
+    fid = series("evaluation", "fid")
+    if fid:
+        rows.append(("FID", "fid", fid, series("evaluation_ema", "fid")))
+    kid = series("evaluation", "kid_mean")
+    if kid:
+        rows.append(("KID", "kid_mean", kid, series("evaluation_ema", "kid_mean")))
+    return rows
+
+
+def _save_run_diagnostics(
+    diagnostic_dir: Path, run_dir: Path, run: dict[str, Any]
+) -> None:
+    """Per-run diagnostic plot: training loss, validation loss, SW, FID, KID.
+
+    Plotted vs optimizer iteration and vs training wall-clock, raw (solid) and
+    EMA (dashed). Log-scale Y axis anchored at 1e-20 .. max(first point).
     """
     import matplotlib.pyplot as plt
 
@@ -764,92 +908,58 @@ def _save_run_diagnostics(run_dir: Path, run: dict[str, Any]) -> None:
         json.loads(line)
         for line in metrics_path.read_text(encoding="utf-8").splitlines()
     ]
-    training = [
-        record
-        for record in records
-        if record.get("type") == "train"
-        and record.get("loss") is not None
-        and np.isfinite(record["loss"])
-    ]
-    validation = [
-        record
-        for record in records
-        if record.get("type") == "validation" and record.get("val_fm_loss") is not None
-    ]
-    validation_ema = [
-        record
-        for record in records
-        if record.get("type") == "validation_ema"
-        and record.get("val_fm_loss") is not None
-    ]
-    sw = [
-        record
-        for record in records
-        if record.get("type") == "validation_sw"
-        and record.get("sliced_wasserstein") is not None
-    ]
-    sw_ema = [
-        record
-        for record in records
-        if record.get("type") == "validation_sw_ema"
-        and record.get("sliced_wasserstein") is not None
-    ]
-    if not (training or validation or sw):
+    rows = _collect_metric_rows(records)
+    if not rows:
         return
 
+    method = str(run["method"]["name"]).upper()
     x_keys = ("optimizer_step", "wall_clock_train_s")
     x_labels = ("Optimizer iteration", "Training wall-clock (s)")
-    row_specs = []
-    val_row = None
-    sw_row = None
-    if training:
-        row_specs.append(("Training loss", "loss", training))
-    if validation:
-        val_row = len(row_specs)
-        row_specs.append(("Validation loss", "val_fm_loss", validation))
-    if sw:
-        sw_row = len(row_specs)
-        row_specs.append(("Sliced Wasserstein", "sliced_wasserstein", sw))
-
-    n_rows = len(row_specs)
     figure, axes = plt.subplots(
-        n_rows, 2, figsize=(12, 3.2 * n_rows), layout="constrained", squeeze=False
+        len(rows), 2, figsize=(12, 3.2 * len(rows)), layout="constrained", squeeze=False
     )
-    for row, (title, metric, series) in enumerate(row_specs):
+    for row_index, (title, value_key, raw_records, ema_records) in enumerate(rows):
         for col, (key, xlabel) in enumerate(zip(x_keys, x_labels, strict=True)):
-            axis = axes[row][col]
-            axis.plot(
-                [record[key] for record in series],
-                [record[metric] for record in series],
-                label="raw",
-                linewidth=1.2,
-            )
+            axis = axes[row_index][col]
+            curves = []
+            if raw_records:
+                axis.plot(
+                    [record[key] for record in raw_records],
+                    [record[value_key] for record in raw_records],
+                    label=method,
+                    linewidth=1.2,
+                )
+                curves.append(
+                    (
+                        [record[key] for record in raw_records],
+                        [record[value_key] for record in raw_records],
+                    )
+                )
+            if ema_records:
+                axis.plot(
+                    [record[key] for record in ema_records],
+                    [record[value_key] for record in ema_records],
+                    label=f"{method} EMA",
+                    linestyle="--",
+                    linewidth=1.2,
+                )
+                curves.append(
+                    (
+                        [record[key] for record in ema_records],
+                        [record[value_key] for record in ema_records],
+                    )
+                )
+            _apply_log_ylim(axis, curves)
             axis.set_xlabel(xlabel)
             axis.set_ylabel(title)
-            axis.set_yscale("log")
             axis.grid(True, alpha=0.25)
-            axis.legend()
-    if validation_ema and val_row is not None:
-        for col, _ in enumerate(x_keys):
-            axes[val_row][col].plot(
-                [record[x_keys[col]] for record in validation_ema],
-                [record["val_fm_loss"] for record in validation_ema],
-                label="EMA",
-                linestyle="--",
-                linewidth=1.2,
-            )
-    if sw_ema and sw_row is not None:
-        for col, _ in enumerate(x_keys):
-            axes[sw_row][col].plot(
-                [record[x_keys[col]] for record in sw_ema],
-                [record["sliced_wasserstein"] for record in sw_ema],
-                label="EMA",
-                linestyle="--",
-                linewidth=1.2,
-            )
-    plots_dir = run_dir / "plots"
-    plots_dir.mkdir(parents=True, exist_ok=True)
-    figure.savefig(plots_dir / "diagnostics.pdf", format="pdf")
+            if axis.lines:
+                axis.legend()
+    diagnostic_dir.mkdir(parents=True, exist_ok=True)
+    figure.savefig(
+        diagnostic_dir / f"diagnostics_run_{int(run['run_index']):04d}.pdf",
+        format="pdf",
+    )
     plt.close(figure)
 
 
@@ -870,6 +980,10 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
 
     run_dir = Path(session_dir) / "runs" / run["run_id"]
     run_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_root = _run_checkpoint_root(session_dir, run)
+    samples_dir = Path(session_dir) / "plots" / "samples"
+    ema_samples_dir = Path(session_dir) / "plots" / "ema_samples"
+    diagnostic_dir = Path(session_dir) / "plots" / "diagnostic"
     if resume and (run_dir / "status.json").is_file() and (
         run_dir / "final_summary.json"
     ).is_file():
@@ -934,7 +1048,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
     if trainer.method.initialization_updates == 0:
         # The first batch has not been consumed by Optax/NGD initialization.
         train_stream.load_state_dict({"epoch": 0, "batch_index": 0})
-    restored_checkpoint = _restore_latest(run_dir, trainer, train_stream) if resume else None
+    restored_checkpoint = _restore_latest(checkpoint_root, trainer, train_stream) if resume else None
 
     validation = _fixed_validation(config, manifest, encoder, run)
     sw_validation_config = config["evaluation"]["sw_validation"]
@@ -1037,6 +1151,35 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         float("inf"),
     )
     training = config["training"]
+    if trainer.step_count == 0 and not any(
+        record.get("type") == "train" and record.get("optimizer_step") == 0
+        for record in previous_records
+    ):
+        # Log the initial (pre-update) loss at step 0 so every optimizer curve
+        # starts from the same value. Uses a fresh RNG derived from the shared
+        # fm_noise seed, so the draw is identical across methods and the
+        # trainer's RNG stream is left untouched.
+        try:
+            step0_loss = float(
+                flow_matching_loss(
+                    model,
+                    jnp.asarray(initial_batch),
+                    nnx.Rngs(run["rng_seeds"]["fm_noise"]),
+                )
+            )
+        except Exception:
+            step0_loss = None
+        if step0_loss is not None and np.isfinite(step0_loss):
+            _append_jsonl(
+                metrics_path,
+                {
+                    "type": "train",
+                    **trainer.accounting(),
+                    "loss": step0_loss,
+                    "grad_norm": None,
+                    "natural_grad_norm": None,
+                },
+            )
     while trainer.step_count < training["max_steps"]:
         batch = train_stream.next_batch()
         values = trainer.step(batch)
@@ -1134,13 +1277,13 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
                     )
         if step % training["checkpoint_every"] == 0:
             _save_checkpoint(
-                run_dir, trainer, train_stream, training["keep_checkpoints"]
+                checkpoint_root, trainer, train_stream, training["keep_checkpoints"]
             )
-            _save_ema_checkpoint(run_dir, trainer, training["keep_checkpoints"])
+            _save_ema_checkpoint(checkpoint_root, trainer, training["keep_checkpoints"])
     checkpoint = _save_checkpoint(
-        run_dir, trainer, train_stream, training["keep_checkpoints"]
+        checkpoint_root, trainer, train_stream, training["keep_checkpoints"]
     )
-    ema_checkpoint = _save_ema_checkpoint(run_dir, trainer, training["keep_checkpoints"])
+    ema_checkpoint = _save_ema_checkpoint(checkpoint_root, trainer, training["keep_checkpoints"])
     if not np.isfinite(final_validation):
         from image_benchmarks.evaluation.validation import evaluate_fixed_fm_loss
 
@@ -1416,21 +1559,26 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         trainer.record_evaluation_time(time.perf_counter() - start)
     start = time.perf_counter()
     _save_sample_grid(
-        run_dir, trainer.model, encoder, config, run["rng_seeds"]["sampling"]
+        samples_dir,
+        trainer.model,
+        encoder,
+        config,
+        run["rng_seeds"]["sampling"],
+        filename=f"samples_run_{int(run['run_index']):04d}.pdf",
     )
     trainer.record_evaluation_time(time.perf_counter() - start)
     if trainer.ema_enabled:
         start = time.perf_counter()
         _save_sample_grid(
-            run_dir,
+            ema_samples_dir,
             trainer.ema_model,
             encoder,
             config,
             run["rng_seeds"]["sampling"],
-            filename="sample_grid_ema.pdf",
+            filename=f"ema_samples_run_{int(run['run_index']):04d}.pdf",
         )
         trainer.record_evaluation_time(time.perf_counter() - start)
-    _save_run_diagnostics(run_dir, run)
+    _save_run_diagnostics(diagnostic_dir, run_dir, run)
     final_summary.update(trainer.accounting())
     _write_json(run_dir / "final_summary.json", final_summary)
     _write_json(
@@ -1545,19 +1693,26 @@ def execute_runs(config, runs, manifest, session_dir, resume):
     return results
 
 
+_ROW_VALUE_KEYS = {
+    "Training loss": "loss",
+    "Validation loss": "val_fm_loss",
+    "Sliced Wasserstein": "sliced_wasserstein",
+    "FID": "fid",
+    "KID": "kid_mean",
+}
+
+
 def plot_session(session_dir: Path) -> None:
     import matplotlib.pyplot as plt
 
     planned = json.loads((session_dir / "planned_runs.json").read_text(encoding="utf-8"))
+    resolved = {}
+    resolved_path = session_dir / "resolved_config.json"
+    if resolved_path.is_file():
+        resolved = json.loads(resolved_path.read_text(encoding="utf-8"))
+    plotting_config = resolved.get("plotting", {})
 
-    # Per-method series keyed by metric: {"label": [(x_key, x_value), ...]}
-    series = {
-        "train_loss": [],  # (label, x_key, [(x, loss)])
-        "val_loss": [],  # (label, ema_flag, x_key, [(x, val_loss)])
-        "sw": [],  # (label, ema_flag, x_key, [(x, sw)])
-    }
-    x_keys = ("optimizer_step", "wall_clock_train_s")
-    x_labels = ("Optimizer iteration", "Training wall-clock (s)")
+    runs_data = []  # (run, records, metric_rows)
     for run in planned:
         metrics_path = session_dir / "runs" / run["run_id"] / "metrics.jsonl"
         if not metrics_path.is_file():
@@ -1566,117 +1721,67 @@ def plot_session(session_dir: Path) -> None:
             json.loads(line)
             for line in metrics_path.read_text(encoding="utf-8").splitlines()
         ]
-        label = f"{run['method']['name']} r{run['restart_index']}"
-        for key in x_keys:
-            training = [
-                record
-                for record in records
-                if record.get("type") == "train"
-                and record.get("loss") is not None
-                and np.isfinite(record["loss"])
-            ]
-            if training:
-                series["train_loss"].append(
-                    (
-                        label,
-                        False,
-                        key,
-                        [(record[key], record["loss"]) for record in training],
-                    )
-                )
-            val = [
-                record
-                for record in records
-                if record.get("type") == "validation"
-                and record.get("val_fm_loss") is not None
-            ]
-            if val:
-                series["val_loss"].append(
-                    (
-                        label,
-                        False,
-                        key,
-                        [(record[key], record["val_fm_loss"]) for record in val],
-                    )
-                )
-            val_ema = [
-                record
-                for record in records
-                if record.get("type") == "validation_ema"
-                and record.get("val_fm_loss") is not None
-            ]
-            if val_ema:
-                series["val_loss"].append(
-                    (
-                        label,
-                        True,
-                        key,
-                        [(record[key], record["val_fm_loss"]) for record in val_ema],
-                    )
-                )
-            sw = [
-                record
-                for record in records
-                if record.get("type") == "validation_sw"
-                and record.get("sliced_wasserstein") is not None
-            ]
-            if sw:
-                series["sw"].append(
-                    (
-                        label,
-                        False,
-                        key,
-                        [
-                            (record[key], record["sliced_wasserstein"])
-                            for record in sw
-                        ],
-                    )
-                )
-            sw_ema = [
-                record
-                for record in records
-                if record.get("type") == "validation_sw_ema"
-                and record.get("sliced_wasserstein") is not None
-            ]
-            if sw_ema:
-                series["sw"].append(
-                    (
-                        label,
-                        True,
-                        key,
-                        [
-                            (record[key], record["sliced_wasserstein"])
-                            for record in sw_ema
-                        ],
-                    )
-                )
+        rows = _collect_metric_rows(records)
+        if rows:
+            runs_data.append((run, records, rows))
+    if not runs_data:
+        return
 
-    row_specs = [
-        ("train_loss", "Training loss", True),
-        ("val_loss", "Validation loss", True),
-        ("sw", "Sliced Wasserstein", False),
-    ]
+    varied_keys = _varying_run_keys([run for run, _, _ in runs_data])
+    styles = _assign_run_styles([run for run, _, _ in runs_data], plotting_config)
+
+    row_titles: list[str] = []
+    for _, _, rows in runs_data:
+        for title, _, _, _ in rows:
+            if title not in row_titles:
+                row_titles.append(title)
+
+    x_keys = ("optimizer_step", "wall_clock_train_s")
+    x_labels = ("Optimizer iteration", "Training wall-clock (s)")
     figure, axes = plt.subplots(
-        len(row_specs), 2, figsize=(14, 3.6 * len(row_specs)), layout="constrained"
+        len(row_titles), 2, figsize=(14, 3.6 * len(row_titles)), layout="constrained", squeeze=False
     )
-    for row, (series_key, ylabel, log_scale) in enumerate(row_specs):
+    for row_index, title in enumerate(row_titles):
+        value_key = _ROW_VALUE_KEYS[title]
         for col, (key, xlabel) in enumerate(zip(x_keys, x_labels, strict=True)):
-            axis = axes[row][col] if len(row_specs) > 1 else axes[col]
-            for entry in series[series_key]:
-                label, ema_flag, entry_key, points = entry
-                if entry_key != key:
+            axis = axes[row_index][col]
+            curves = []
+            for style_index, (run, records, rows) in enumerate(runs_data):
+                raw = ema = None
+                for t, _, r, e in rows:
+                    if t == title:
+                        raw, ema = r, e
+                        break
+                if not raw:
                     continue
+                style = styles[style_index]
+                label = _run_label(run, varied_keys)
+                xs_raw = [record[key] for record in raw]
+                ys_raw = [record[value_key] for record in raw]
                 axis.plot(
-                    [p[0] for p in points],
-                    [p[1] for p in points],
-                    label=(label + " EMA") if ema_flag else label,
-                    linestyle="--" if ema_flag else "-",
-                    linewidth=1.2,
+                    xs_raw,
+                    ys_raw,
+                    label=label,
+                    color=style.get("color"),
+                    linestyle=style.get("linestyle", "-"),
+                    linewidth=style.get("linewidth", 1.2),
                 )
+                curves.append((xs_raw, ys_raw))
+                if ema:
+                    xs_ema = [record[key] for record in ema]
+                    ys_ema = [record[value_key] for record in ema]
+                    axis.plot(
+                        xs_ema,
+                        ys_ema,
+                        label=f"{label} EMA",
+                        color=style.get("color"),
+                        linestyle="--",
+                        linewidth=style.get("linewidth", 1.2),
+                    )
+                    curves.append((xs_ema, ys_ema))
+            _apply_log_ylim(axis, curves)
             axis.set_xlabel(xlabel)
-            axis.set_ylabel(ylabel)
-            if log_scale:
-                axis.set_yscale("log")
+            axis.set_ylabel(title)
             axis.grid(True, alpha=0.25)
             if axis.lines:
                 axis.legend(fontsize="small")

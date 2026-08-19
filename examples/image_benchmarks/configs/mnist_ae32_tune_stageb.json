@@ -45,5 +45,21 @@
     "data_parallel": true,
     "worker_env": {"XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9"}
   },
-  "plotting": {"sample_grid": {"enabled": true, "rows": 8, "columns": 8}}
+  "plotting": {
+    "sample_grid": {"enabled": true, "rows": 8, "columns": 8},
+    "style_channels": {
+      "colormap": ["tab10", "Set2"],
+      "linestyle": ["-", "--", ":"],
+      "linewidth": [1.0, 1.5, 2.0]
+    },
+    "style_channel_map": {
+      "method": "cmap",
+      "step_size": "linestyle",
+      "learning_rate": "linestyle",
+      "linear_solver_regularization": "color",
+      "natural_grad_clipping_threshold": "linewidth",
+      "weight_decay": "color",
+      "b1": "color"
+    }
+  }
 }
