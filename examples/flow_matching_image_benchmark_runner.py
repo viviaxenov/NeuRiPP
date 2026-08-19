@@ -63,8 +63,6 @@ PARAM_SHORTHAND: dict[str, str] = {
     "relaxation": r"$\rho$",
 }
 
-PLOT_Y_BOTTOM = 1e-20
-
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -295,17 +293,17 @@ def _assign_run_styles(
 
 
 def _apply_log_ylim(axis, curves: list[tuple[list, list]]) -> None:
-    """Log-scale Y axis anchored at 1e-20 .. max(first point of each curve).
+    """Log-scale Y axis with the top anchored at the step-0 max.
 
-    Anchoring the top at the step-0 (first recorded) values keeps a diverged
-    run from stretching the axis.
+    Anchoring the top at the max of the first (step-0) recorded values keeps a
+    diverged run from stretching the axis; the bottom is left to autoscale.
     """
     axis.set_yscale("log")
     firsts = [
         float(y[0]) for _, y in curves if y and y[0] is not None and float(y[0]) > 0
     ]
     if firsts:
-        axis.set_ylim(bottom=PLOT_Y_BOTTOM, top=max(firsts))
+        axis.set_ylim(top=max(firsts))
 
 
 def _collect_images(iterator, count: int) -> tuple[np.ndarray, list[str]]:

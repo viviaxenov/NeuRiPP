@@ -268,8 +268,7 @@ def test_apply_log_ylim_anchors_to_step0_max():
         ([0, 1, 2], [5.0, 2.0, 1000.0]),  # diverges late; must not set the top
     ]
     runner._apply_log_ylim(axis, curves)
-    bottom, top = axis.get_ylim()
-    assert bottom == runner.PLOT_Y_BOTTOM
+    _, top = axis.get_ylim()
     assert top == 10.0
     assert axis.get_yscale() == "log"
     plt.close(figure)
