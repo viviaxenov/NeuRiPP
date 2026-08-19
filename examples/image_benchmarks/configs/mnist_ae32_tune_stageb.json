@@ -12,7 +12,11 @@
     "keep_checkpoints": 3
   },
   "methods": [
-    {"name": "adamw", "n_restarts": 1, "kwargs": {"learning_rate": 0.001, "weight_decay": 0.0, "b1": 0.9}}
+    {"name": "adamw", "n_restarts": 1, "kwargs": {"learning_rate": 0.001, "weight_decay": 0.0, "b1": 0.9}},
+    {"name": "ngd", "n_restarts": 1, "kwargs": {"step_size": 0.001, "linear_solver_regularization": 0.01, "linear_solver_tolerance": 1e-6, "linear_solver_maxiter": 50}},
+    {"name": "ngd", "n_restarts": 1, "kwargs": {"step_size": 0.01, "linear_solver_regularization": 0.01, "linear_solver_tolerance": 1e-6, "linear_solver_maxiter": 50, "natural_grad_clipping_threshold": 20.0}},
+    {"name": "adamw", "n_restarts": 1, "kwargs": {"learning_rate": 0.003, "weight_decay": 0.0, "b1": 0.9}},
+    {"name": "adamw", "n_restarts": 1, "kwargs": {"learning_rate": 0.003, "weight_decay": 0.0, "b1": 0.95}}
   ],
   "evaluation": {
     "split": "test",
