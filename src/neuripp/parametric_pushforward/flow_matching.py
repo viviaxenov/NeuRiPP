@@ -14,13 +14,21 @@ ZERO_TOL = 1e-20
 class FlowMatching(ParametricPushforward):
 
     def sample_interpolant(
-        self, data_batch: jnp.ndarray, rngs: nnx.Rngs, return_x0=False
+        self,
+        data_batch: jnp.ndarray,
+        rngs: nnx.Rngs,
+        return_x0=False,
+        times: jnp.ndarray | None = None,
+        noise: jnp.ndarray | None = None,
     ):
         n_samples = data_batch.shape[0]
         x1 = data_batch
-        x0 = self._sample_latent(n_samples, rngs)
-        ts = rngs.uniform((n_samples,))
-        xts = x0 * (1.0 - ts[:, None]) + x1 * ts[:, None]
+        x0 = self._sample_latent(n_samples, rngs) if noise is None else noise
+        ts = rngs.uniform((n_samples,)) if times is None else times
+        # Broadcast time across leading state dims so both vector (N, D) and
+        # spatial NHWC (N, H, W, C) states interpolate correctly.
+        ts_b = ts.reshape((n_samples,) + (1,) * (x1.ndim - 1))
+        xts = x0 * (1.0 - ts_b) + x1 * ts_b
 
         if return_x0:
             return ts, xts, x0
@@ -91,10 +99,28 @@ class FlowMatching(ParametricPushforward):
         return _matvec_fn
 
 
-def flow_matching_loss(model: FlowMatching, data_batch: jnp.ndarray, rngs: nnx.Rngs):
-    ts, xts, x0 = model.sample_interpolant(data_batch, rngs, return_x0=True)
+def flow_matching_loss(
+    model: FlowMatching,
+    data_batch: jnp.ndarray,
+    rngs: nnx.Rngs,
+    times: jnp.ndarray | None = None,
+    noise: jnp.ndarray | None = None,
+):
+    """Flow Matching objective.
+
+    When ``times``/``noise`` are omitted they are drawn from the model's RNGs
+    (stochastic training loss). When provided, they define a fixed interpolant
+    (deterministic, suitable for a fixed held-out validation set).
+    """
+    if times is None and noise is None:
+        ts, xts, x0 = model.sample_interpolant(data_batch, rngs, return_x0=True)
+    else:
+        ts, xts, x0 = model.sample_interpolant(
+            data_batch, rngs, return_x0=True, times=times, noise=noise
+        )
     x1 = data_batch
     vs = nnx.vmap(model.rhs)(ts, xts)
     v_empirical = x1 - x0
 
-    return jnp.mean(jnp.sum((vs - v_empirical) ** 2, axis=-1))
+    reduce_axes = tuple(range(1, xts.ndim))
+    return jnp.mean(jnp.sum((vs - v_empirical) ** 2, axis=reduce_axes))

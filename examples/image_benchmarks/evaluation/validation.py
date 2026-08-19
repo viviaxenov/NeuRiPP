@@ -71,9 +71,8 @@ def evaluate_fixed_fm_loss(
             model,
             jnp.asarray(validation.states[start:stop]),
             None,
-            jnp.asarray(validation.times[start:stop]),
-            jnp.asarray(validation.noise[start:stop]),
-            jnp.asarray(validation.dropout_keys[start:stop]),
+            times=jnp.asarray(validation.times[start:stop]),
+            noise=jnp.asarray(validation.noise[start:stop]),
         )
         batch_count = stop - start
         weighted_loss += float(loss) * batch_count
