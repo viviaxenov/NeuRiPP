@@ -274,6 +274,95 @@ def test_apply_log_ylim_anchors_to_step0_max():
     plt.close(figure)
 
 
+def test_best_validation_loss_prefers_final_summary():
+    runner = load_runner()
+    with tempfile.TemporaryDirectory() as directory:
+        session = Path(directory)
+        run = {"run_id": "r0", "method": {"name": "ngd"}}
+        run_dir = session / "runs" / "r0"
+        run_dir.mkdir(parents=True)
+        (run_dir / "final_summary.json").write_text(
+            json.dumps({"best_val_fm_loss": 123.4}), encoding="utf-8"
+        )
+        # metrics.jsonl with a worse validation loss; final_summary should win
+        (run_dir / "metrics.jsonl").write_text(
+            json.dumps({"type": "validation", "val_fm_loss": 999.0}) + "\n",
+            encoding="utf-8",
+        )
+        assert runner._best_validation_loss(session, run) == 123.4
+
+
+def test_best_validation_loss_falls_back_to_min_validation_record():
+    runner = load_runner()
+    with tempfile.TemporaryDirectory() as directory:
+        session = Path(directory)
+        run = {"run_id": "r0", "method": {"name": "ngd"}}
+        run_dir = session / "runs" / "r0"
+        run_dir.mkdir(parents=True)
+        records = [
+            {"type": "validation", "val_fm_loss": 50.0},
+            {"type": "validation", "val_fm_loss": 30.0},
+        ]
+        (run_dir / "metrics.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8"
+        )
+        assert runner._best_validation_loss(session, run) == 30.0
+
+
+def test_select_topk_runs_per_method_by_best_validation():
+    runner = load_runner()
+    with tempfile.TemporaryDirectory() as directory:
+        session = Path(directory)
+        specs = [("ngd", 5.0), ("ngd", 3.0), ("ngd", 1.0), ("adamw", 4.0), ("adamw", 2.0)]
+        runs_data = []
+        for i, (method, bv) in enumerate(specs):
+            rid = f"r{i}"
+            run = {"run_id": rid, "method": {"name": method}}
+            run_dir = session / "runs" / rid
+            run_dir.mkdir(parents=True)
+            (run_dir / "final_summary.json").write_text(
+                json.dumps({"best_val_fm_loss": bv}), encoding="utf-8"
+            )
+            runs_data.append((run, [], []))
+        # k=2: ngd keeps 1.0 (idx 2) and 3.0 (idx 1); adamw keeps 2.0 (idx 4) and 4.0 (idx 3)
+        selected, order = runner._select_topk_runs(session, runs_data, k=2)
+        assert order == [1, 2, 3, 4]
+        assert [run["run_id"] for run, _, _ in selected] == ["r1", "r2", "r3", "r4"]
+        # k=1: only the best per method
+        _, order1 = runner._select_topk_runs(session, runs_data, k=1)
+        assert order1 == [2, 4]
+
+
+def test_plot_session_produces_topk_pdf():
+    runner = load_runner()
+    with tempfile.TemporaryDirectory() as directory:
+        session = Path(directory)
+        (session / "plots").mkdir(parents=True)
+        runs = [
+            {"run_id": "a1", "method": {"name": "adamw", "kwargs": {}}, "restart_index": 0},
+            {"run_id": "n1", "method": {"name": "ngd", "kwargs": {}}, "restart_index": 0},
+        ]
+        (session / "planned_runs.json").write_text(json.dumps(runs), encoding="utf-8")
+        (session / "resolved_config.json").write_text(
+            json.dumps({"plotting": {"top_runs_per_method": 1}}), encoding="utf-8"
+        )
+        for run in runs:
+            run_dir = session / "runs" / run["run_id"]
+            run_dir.mkdir(parents=True)
+            records = [
+                {"type": "train", "optimizer_step": 1, "wall_clock_train_s": 1, "loss": 10.0}
+            ]
+            (run_dir / "metrics.jsonl").write_text(
+                "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8"
+            )
+            (run_dir / "final_summary.json").write_text(
+                json.dumps({"best_val_fm_loss": 1.0}), encoding="utf-8"
+            )
+        runner.plot_session(session)
+        assert (session / "plots" / "diagnostics_comparison.pdf").stat().st_size > 0
+        assert (session / "plots" / "diagnostics_top1.pdf").stat().st_size > 0
+
+
 if __name__ == "__main__":
     test_runner_import_and_validation_do_not_import_jax()
     test_plot_only_does_not_prepare_dataset()
@@ -283,4 +372,8 @@ if __name__ == "__main__":
     test_save_run_diagnostics_produces_pdf()
     test_run_label_uses_shorthand_and_only_varied_keys()
     test_apply_log_ylim_anchors_to_step0_max()
+    test_best_validation_loss_prefers_final_summary()
+    test_best_validation_loss_falls_back_to_min_validation_record()
+    test_select_topk_runs_per_method_by_best_validation()
+    test_plot_session_produces_topk_pdf()
     print("Image runner tests passed.")

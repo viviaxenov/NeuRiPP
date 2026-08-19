@@ -1700,39 +1700,23 @@ _ROW_VALUE_KEYS = {
 }
 
 
-def plot_session(session_dir: Path) -> None:
+def _plot_combined(
+    session_dir: Path,
+    runs_data: list[tuple[dict[str, Any], list, list]],
+    varied_keys: list[str],
+    styles: list[dict[str, Any]],
+    filename: str,
+) -> None:
+    """Draw the joint diagnostic figure (one curve per run) and save as PDF."""
     import matplotlib.pyplot as plt
-
-    planned = json.loads((session_dir / "planned_runs.json").read_text(encoding="utf-8"))
-    resolved = {}
-    resolved_path = session_dir / "resolved_config.json"
-    if resolved_path.is_file():
-        resolved = json.loads(resolved_path.read_text(encoding="utf-8"))
-    plotting_config = resolved.get("plotting", {})
-
-    runs_data = []  # (run, records, metric_rows)
-    for run in planned:
-        metrics_path = session_dir / "runs" / run["run_id"] / "metrics.jsonl"
-        if not metrics_path.is_file():
-            continue
-        records = [
-            json.loads(line)
-            for line in metrics_path.read_text(encoding="utf-8").splitlines()
-        ]
-        rows = _collect_metric_rows(records)
-        if rows:
-            runs_data.append((run, records, rows))
-    if not runs_data:
-        return
-
-    varied_keys = _varying_run_keys([run for run, _, _ in runs_data])
-    styles = _assign_run_styles([run for run, _, _ in runs_data], plotting_config)
 
     row_titles: list[str] = []
     for _, _, rows in runs_data:
         for title, _, _, _ in rows:
             if title not in row_titles:
                 row_titles.append(title)
+    if not row_titles:
+        return
 
     x_keys = ("optimizer_step", "wall_clock_train_s")
     x_labels = ("Optimizer iteration", "Training wall-clock (s)")
@@ -1783,8 +1767,107 @@ def plot_session(session_dir: Path) -> None:
             axis.grid(True, alpha=0.25)
             if axis.lines:
                 axis.legend(fontsize="small")
-    figure.savefig(session_dir / "plots" / "diagnostics_comparison.pdf", format="pdf")
+    (session_dir / "plots").mkdir(parents=True, exist_ok=True)
+    figure.savefig(session_dir / "plots" / filename, format="pdf")
     plt.close(figure)
+
+
+def _best_validation_loss(session_dir: Path, run: dict[str, Any]) -> float:
+    """Best validation FM loss for a run (prefers final_summary.best_val_fm_loss)."""
+    run_dir = Path(session_dir) / "runs" / run["run_id"]
+    summary_path = run_dir / "final_summary.json"
+    if summary_path.is_file():
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            value = summary.get("best_val_fm_loss")
+            if isinstance(value, (int, float)) and np.isfinite(value):
+                return float(value)
+        except Exception:
+            pass
+    metrics_path = run_dir / "metrics.jsonl"
+    if metrics_path.is_file():
+        values = []
+        for line in metrics_path.read_text(encoding="utf-8").splitlines():
+            try:
+                record = json.loads(line)
+            except Exception:
+                continue
+            if (
+                record.get("type") in {"validation", "evaluation"}
+                and record.get("val_fm_loss") is not None
+            ):
+                value = float(record["val_fm_loss"])
+                if np.isfinite(value):
+                    values.append(value)
+        if values:
+            return min(values)
+    return float("inf")
+
+
+def _select_topk_runs(
+    session_dir: Path,
+    runs_data: list[tuple[dict[str, Any], list, list]],
+    k: int,
+) -> tuple[list[tuple[dict[str, Any], list, list]], list[int]]:
+    """Keep the top k runs per method by best validation loss.
+
+    Returns the filtered runs_data (in original order) and the indices of the
+    selected runs within the input runs_data, so styles stay consistent.
+    """
+    by_method: dict[str, list[int]] = {}
+    for index, (run, _, _) in enumerate(runs_data):
+        by_method.setdefault(run["method"]["name"], []).append(index)
+    selected: list[int] = []
+    for indices in by_method.values():
+        ranked = sorted(
+            indices,
+            key=lambda i: _best_validation_loss(session_dir, runs_data[i][0]),
+        )
+        selected.extend(ranked[:k])
+    order = sorted(selected)
+    return [runs_data[i] for i in order], order
+
+
+def plot_session(session_dir: Path) -> None:
+    planned = json.loads((session_dir / "planned_runs.json").read_text(encoding="utf-8"))
+    resolved = {}
+    resolved_path = session_dir / "resolved_config.json"
+    if resolved_path.is_file():
+        resolved = json.loads(resolved_path.read_text(encoding="utf-8"))
+    plotting_config = resolved.get("plotting", {})
+
+    runs_data = []  # (run, records, metric_rows)
+    for run in planned:
+        metrics_path = session_dir / "runs" / run["run_id"] / "metrics.jsonl"
+        if not metrics_path.is_file():
+            continue
+        records = [
+            json.loads(line)
+            for line in metrics_path.read_text(encoding="utf-8").splitlines()
+        ]
+        rows = _collect_metric_rows(records)
+        if rows:
+            runs_data.append((run, records, rows))
+    if not runs_data:
+        return
+
+    varied_keys = _varying_run_keys([run for run, _, _ in runs_data])
+    styles = _assign_run_styles([run for run, _, _ in runs_data], plotting_config)
+
+    _plot_combined(session_dir, runs_data, varied_keys, styles, "diagnostics_comparison.pdf")
+
+    k = int(plotting_config.get("top_runs_per_method", 5))
+    if k >= 1:
+        selected_data, selected_order = _select_topk_runs(session_dir, runs_data, k)
+        if selected_data:
+            selected_styles = [styles[i] for i in selected_order]
+            _plot_combined(
+                session_dir,
+                selected_data,
+                varied_keys,
+                selected_styles,
+                f"diagnostics_top{k}.pdf",
+            )
 
 
 def parse_args(argv=None):

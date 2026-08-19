@@ -144,6 +144,7 @@ def test_all_required_presets_resolve_and_plan():
         "mnist_ae64_mlp.json",
         "mnist_ae32_tune.json",
         "mnist_ae32_tune_stageb.json",
+        "mnist_ae32_ngd_sweep.json",
         "fashion_mnist_mlp.json",
         "fashion_mnist_ae64_mlp.json",
         "fashion_mnist_unet.json",

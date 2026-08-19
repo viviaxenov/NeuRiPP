@@ -47,6 +47,7 @@
   },
   "plotting": {
     "sample_grid": {"enabled": true, "rows": 8, "columns": 8},
+    "top_runs_per_method": 5,
     "style_channels": {
       "colormap": ["tab10", "Set2"],
       "linestyle": ["-", "--", ":"],
