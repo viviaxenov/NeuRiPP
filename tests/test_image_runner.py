@@ -166,11 +166,55 @@ def test_plot_session_overlays_training_loss_by_step_and_time():
             )
         runner.plot_session(session)
         for filename in (
-            "training_loss_vs_iteration.png",
-            "training_loss_vs_time.png",
-            "training_loss_comparison.png",
+            "diagnostics_comparison.pdf",
         ):
             assert (session / "plots" / filename).stat().st_size > 0
+
+
+def test_save_run_diagnostics_produces_pdf():
+    runner = load_runner()
+    with tempfile.TemporaryDirectory() as directory:
+        run_dir = Path(directory) / "runs" / "run_0000"
+        run_dir.mkdir(parents=True)
+        records = [
+            {
+                "type": "train",
+                "optimizer_step": step,
+                "wall_clock_train_s": step,
+                "loss": 10.0 / step,
+            }
+            for step in (1, 2, 3)
+        ] + [
+            {
+                "type": "validation",
+                "optimizer_step": step,
+                "wall_clock_train_s": step,
+                "val_fm_loss": 5.0 / step,
+            }
+            for step in (2, 3)
+        ] + [
+            {
+                "type": "validation_ema",
+                "optimizer_step": step,
+                "wall_clock_train_s": step,
+                "val_fm_loss": 4.0 / step,
+            }
+            for step in (2, 3)
+        ] + [
+            {
+                "type": "validation_sw",
+                "optimizer_step": step,
+                "wall_clock_train_s": step,
+                "sliced_wasserstein": 1.0 / step,
+            }
+            for step in (2, 3)
+        ]
+        (run_dir / "metrics.jsonl").write_text(
+            "".join(json.dumps(record) + "\n" for record in records),
+            encoding="utf-8",
+        )
+        runner._save_run_diagnostics(run_dir, {"run_id": "run_0000"})
+        assert (run_dir / "plots" / "diagnostics.pdf").stat().st_size > 0
 
 
 if __name__ == "__main__":
@@ -179,4 +223,5 @@ if __name__ == "__main__":
     test_worker_sets_environment_before_dispatch()
     test_plot_only_rejects_run_selection()
     test_plot_session_overlays_training_loss_by_step_and_time()
+    test_save_run_diagnostics_produces_pdf()
     print("Image runner tests passed.")

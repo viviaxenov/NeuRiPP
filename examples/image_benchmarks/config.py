@@ -516,6 +516,28 @@ def load_config(path: str | Path) -> dict[str, Any]:
             sliced.get("num_projections", 100),
             "evaluation.sample_metrics.sliced_wasserstein.num_projections",
         )
+    sw_validation = _object(
+        evaluation.setdefault("sw_validation", {"enabled": False}),
+        "evaluation.sw_validation",
+    )
+    sw_validation.setdefault("enabled", False)
+    _boolean(
+        sw_validation["enabled"], "evaluation.sw_validation.enabled"
+    )
+    if sw_validation["enabled"]:
+        sw_validation["num_samples"] = _integer_at_least(
+            sw_validation.get("num_samples", 3000),
+            2,
+            "evaluation.sw_validation.num_samples",
+        )
+        sw_validation["batch_size"] = _positive_integer(
+            sw_validation.get("batch_size", sampling["batch_size"]),
+            "evaluation.sw_validation.batch_size",
+        )
+        sw_validation["num_projections"] = _positive_integer(
+            sw_validation.get("num_projections", 100),
+            "evaluation.sw_validation.num_projections",
+        )
 
     resources = _object(config["resources"], "resources")
     gpu_ids = resources.get("gpu_ids", [])

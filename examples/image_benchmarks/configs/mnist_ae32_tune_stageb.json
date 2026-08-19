@@ -1,0 +1,45 @@
+{
+  "extends": "mnist_ae32_mlp.json",
+  "experiment": {"name": "mnist_ae32_tune_stageB", "seed": 42},
+  "ema": {"enabled": true, "decay": 0.9999, "start_step": 0},
+  "training": {
+    "max_steps": 23400,
+    "target_loader_epochs": 100,
+    "batch_size": 256,
+    "log_every": 10,
+    "validation_every": 300,
+    "checkpoint_every": 2340,
+    "keep_checkpoints": 3
+  },
+  "methods": [
+    {"name": "adam", "n_restarts": 1, "kwargs": {"learning_rate": 0.001, "weight_decay": 0.0, "b1": 0.9}}
+  ],
+  "evaluation": {
+    "split": "test",
+    "seed": 1042,
+    "val_fm_loss": {"enabled": true, "num_samples": 5000, "batch_size": 256},
+    "sampling": {"method": "heun", "steps": 50, "batch_size": 256},
+    "fid": {"enabled": false},
+    "kid": {"enabled": false},
+    "sw_validation": {
+      "enabled": true,
+      "num_samples": 3000,
+      "batch_size": 256,
+      "num_projections": 100
+    },
+    "sample_metrics": {
+      "num_samples": 3000,
+      "batch_size": 256,
+      "mmd": {"enabled": false},
+      "sliced_wasserstein": {"enabled": true, "num_projections": 100}
+    }
+  },
+  "resources": {
+    "gpu_ids": [0, 1, 2, 3, 4, 5, 6, 7],
+    "gpus_per_run": 1,
+    "max_concurrent_runs": 8,
+    "data_parallel": true,
+    "worker_env": {"XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9"}
+  },
+  "plotting": {"sample_grid": {"enabled": true, "rows": 8, "columns": 8}}
+}

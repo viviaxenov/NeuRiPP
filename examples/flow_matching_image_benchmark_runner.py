@@ -639,6 +639,64 @@ def _sample_metric_eval(
     return result
 
 
+def _periodic_sw_eval(
+    model,
+    *,
+    real_states,
+    num_samples,
+    batch_size,
+    num_projections,
+    config,
+    run,
+):
+    """Compute periodic sliced-Wasserstein validation for one model variant.
+
+    Returns a dict keyed by 'sliced_wasserstein' (and provenance) so it can be
+    logged as a validation_sw record. Unlike the final sample_metrics block,
+    MMD is not computed here.
+    """
+    from image_benchmarks.evaluation.sampling import generate_state_batches
+    from ott.tools.sliced import sliced_wasserstein
+    import jax
+    import jax.numpy as jnp
+
+    generated_states = np.concatenate(
+        list(
+            generate_state_batches(
+                model,
+                num_samples=num_samples,
+                batch_size=batch_size,
+                seed=run["rng_seeds"]["sampling"],
+                ode_method=config["evaluation"]["sampling"]["method"],
+                ode_steps=config["evaluation"]["sampling"]["steps"],
+                ode_kwargs=config["evaluation"]["sampling"].get("kwargs", {}),
+            )
+        )
+    )
+    real = np.asarray(real_states).reshape(len(real_states), -1)
+    generated = np.asarray(generated_states).reshape(len(generated_states), -1)
+    if real.shape != generated.shape:
+        raise ValueError(
+            "Sliced-Wasserstein validation requires real and generated states "
+            "of equal shape"
+        )
+    distance, _ = sliced_wasserstein(
+        jnp.asarray(real, dtype=jnp.float32),
+        jnp.asarray(generated, dtype=jnp.float32),
+        n_proj=num_projections,
+        rng=jax.random.key(config["evaluation"]["seed"]),
+    )
+    return {
+        "sliced_wasserstein": float(distance),
+        "sliced_wasserstein_num_projections": int(num_projections),
+        "sliced_wasserstein_num_samples": int(num_samples),
+        "sample_metrics_state_space": config["problem"]["encoder"]["type"],
+        "sample_metrics_split": config["evaluation"]["split"],
+        "sample_metrics_seed": config["evaluation"]["seed"],
+        "sample_metrics_sampling_seed": run["rng_seeds"]["sampling"],
+    }
+
+
 def _environment_snapshot():
     packages = {
         distribution.metadata["Name"]: distribution.version
@@ -660,7 +718,7 @@ def _git_commit():
         return "unknown"
 
 
-def _save_sample_grid(run_dir, model, encoder, config, seed, *, filename="sample_grid.png"):
+def _save_sample_grid(run_dir, model, encoder, config, seed, *, filename="sample_grid.pdf"):
     from image_benchmarks.evaluation.sampling import generate_image_batches
     import matplotlib.pyplot as plt
 
@@ -686,7 +744,112 @@ def _save_sample_grid(run_dir, model, encoder, config, seed, *, filename="sample
         axis.imshow(np.squeeze(image), cmap="gray" if image.shape[-1] == 1 else None)
         axis.axis("off")
     figure.tight_layout()
-    figure.savefig(run_dir / filename, dpi=120)
+    figure.savefig(run_dir / filename, dpi=120, format="pdf")
+    plt.close(figure)
+
+
+def _save_run_diagnostics(run_dir: Path, run: dict[str, Any]) -> None:
+    """Per-run diagnostic: training loss, validation loss, sliced-Wasserstein.
+
+    Plotted vs optimizer iteration and vs training wall-clock, with raw (solid)
+    and EMA (dashed) curves. Sliced-Wasserstein is only shown when periodic
+    validation_sw records exist. Saved as PDF in the run's plots directory.
+    """
+    import matplotlib.pyplot as plt
+
+    metrics_path = run_dir / "metrics.jsonl"
+    if not metrics_path.is_file():
+        return
+    records = [
+        json.loads(line)
+        for line in metrics_path.read_text(encoding="utf-8").splitlines()
+    ]
+    training = [
+        record
+        for record in records
+        if record.get("type") == "train"
+        and record.get("loss") is not None
+        and np.isfinite(record["loss"])
+    ]
+    validation = [
+        record
+        for record in records
+        if record.get("type") == "validation" and record.get("val_fm_loss") is not None
+    ]
+    validation_ema = [
+        record
+        for record in records
+        if record.get("type") == "validation_ema"
+        and record.get("val_fm_loss") is not None
+    ]
+    sw = [
+        record
+        for record in records
+        if record.get("type") == "validation_sw"
+        and record.get("sliced_wasserstein") is not None
+    ]
+    sw_ema = [
+        record
+        for record in records
+        if record.get("type") == "validation_sw_ema"
+        and record.get("sliced_wasserstein") is not None
+    ]
+    if not (training or validation or sw):
+        return
+
+    x_keys = ("optimizer_step", "wall_clock_train_s")
+    x_labels = ("Optimizer iteration", "Training wall-clock (s)")
+    row_specs = []
+    val_row = None
+    sw_row = None
+    if training:
+        row_specs.append(("Training loss", "loss", training))
+    if validation:
+        val_row = len(row_specs)
+        row_specs.append(("Validation loss", "val_fm_loss", validation))
+    if sw:
+        sw_row = len(row_specs)
+        row_specs.append(("Sliced Wasserstein", "sliced_wasserstein", sw))
+
+    n_rows = len(row_specs)
+    figure, axes = plt.subplots(
+        n_rows, 2, figsize=(12, 3.2 * n_rows), layout="constrained", squeeze=False
+    )
+    for row, (title, metric, series) in enumerate(row_specs):
+        for col, (key, xlabel) in enumerate(zip(x_keys, x_labels, strict=True)):
+            axis = axes[row][col]
+            axis.plot(
+                [record[key] for record in series],
+                [record[metric] for record in series],
+                label="raw",
+                linewidth=1.2,
+            )
+            axis.set_xlabel(xlabel)
+            axis.set_ylabel(title)
+            axis.set_yscale("log")
+            axis.grid(True, alpha=0.25)
+            axis.legend()
+    if validation_ema and val_row is not None:
+        for col, _ in enumerate(x_keys):
+            axes[val_row][col].plot(
+                [record[x_keys[col]] for record in validation_ema],
+                [record["val_fm_loss"] for record in validation_ema],
+                label="EMA",
+                linestyle="--",
+                linewidth=1.2,
+            )
+    if sw_ema and sw_row is not None:
+        for col, _ in enumerate(x_keys):
+            axes[sw_row][col].plot(
+                [record[x_keys[col]] for record in sw_ema],
+                [record["sliced_wasserstein"] for record in sw_ema],
+                label="EMA",
+                linestyle="--",
+                linewidth=1.2,
+            )
+    plots_dir = run_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    figure.savefig(plots_dir / "diagnostics.pdf", format="pdf")
     plt.close(figure)
 
 
@@ -774,6 +937,16 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
     restored_checkpoint = _restore_latest(run_dir, trainer, train_stream) if resume else None
 
     validation = _fixed_validation(config, manifest, encoder, run)
+    sw_validation_config = config["evaluation"]["sw_validation"]
+    sw_real_states = None
+    if sw_validation_config["enabled"]:
+        sw_real_states = _real_sample_metric_states(
+            config,
+            manifest,
+            encoder,
+            run,
+            sw_validation_config["num_samples"],
+        )
     metrics_path = run_dir / "metrics.jsonl"
     previous_records = (
         [json.loads(line) for line in metrics_path.read_text(encoding="utf-8").splitlines()]
@@ -831,6 +1004,38 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         ),
         float("inf"),
     )
+    sw_previous = [
+        float(record["sliced_wasserstein"])
+        for record in previous_records
+        if record.get("type") == "validation_sw"
+        and record.get("sliced_wasserstein") is not None
+    ]
+    ema_sw_previous = [
+        float(record["sliced_wasserstein"])
+        for record in previous_records
+        if record.get("type") == "validation_sw_ema"
+        and record.get("sliced_wasserstein") is not None
+    ]
+    best_sw = min(sw_previous, default=float("inf"))
+    ema_best_sw = min(ema_sw_previous, default=float("inf"))
+    final_sw = next(
+        (
+            float(record["sliced_wasserstein"])
+            for record in reversed(previous_records)
+            if record.get("type") == "validation_sw"
+            and record.get("sliced_wasserstein") is not None
+        ),
+        float("inf"),
+    )
+    ema_final_sw = next(
+        (
+            float(record["sliced_wasserstein"])
+            for record in reversed(previous_records)
+            if record.get("type") == "validation_sw_ema"
+            and record.get("sliced_wasserstein") is not None
+        ),
+        float("inf"),
+    )
     training = config["training"]
     while trainer.step_count < training["max_steps"]:
         batch = train_stream.next_batch()
@@ -883,6 +1088,50 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
                         "val_fm_loss": ema_val_loss,
                     },
                 )
+            if sw_validation_config["enabled"] and sw_real_states is not None:
+                sw_start = time.perf_counter()
+                sw_result = _periodic_sw_eval(
+                    trainer.model,
+                    real_states=sw_real_states,
+                    num_samples=sw_validation_config["num_samples"],
+                    batch_size=sw_validation_config["batch_size"],
+                    num_projections=sw_validation_config["num_projections"],
+                    config=config,
+                    run=run,
+                )
+                sw_value = sw_result["sliced_wasserstein"]
+                trainer.record_evaluation_time(time.perf_counter() - sw_start)
+                best_sw = min(best_sw, sw_value)
+                final_sw = sw_value
+                _append_jsonl(
+                    metrics_path,
+                    {"type": "validation_sw", **trainer.accounting(), **sw_result},
+                )
+                if trainer.ema_enabled:
+                    ema_sw_start = time.perf_counter()
+                    ema_sw_result = _periodic_sw_eval(
+                        trainer.ema_model,
+                        real_states=sw_real_states,
+                        num_samples=sw_validation_config["num_samples"],
+                        batch_size=sw_validation_config["batch_size"],
+                        num_projections=sw_validation_config["num_projections"],
+                        config=config,
+                        run=run,
+                    )
+                    ema_sw_value = ema_sw_result["sliced_wasserstein"]
+                    trainer.record_evaluation_time(
+                        time.perf_counter() - ema_sw_start
+                    )
+                    ema_best_sw = min(ema_best_sw, ema_sw_value)
+                    ema_final_sw = ema_sw_value
+                    _append_jsonl(
+                        metrics_path,
+                        {
+                            "type": "validation_sw_ema",
+                            **trainer.accounting(),
+                            **ema_sw_result,
+                        },
+                    )
         if step % training["checkpoint_every"] == 0:
             _save_checkpoint(
                 run_dir, trainer, train_stream, training["keep_checkpoints"]
@@ -922,6 +1171,19 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         "ema_best_val_fm_loss": ema_best_validation,
         "ema_checkpoint": str(ema_checkpoint) if ema_checkpoint is not None else None,
     }
+    if sw_validation_config["enabled"]:
+        final_summary["final_sw"] = (
+            final_sw if np.isfinite(final_sw) else None
+        )
+        final_summary["best_sw"] = (
+            best_sw if np.isfinite(best_sw) else None
+        )
+        final_summary["ema_final_sw"] = (
+            ema_final_sw if np.isfinite(ema_final_sw) else None
+        )
+        final_summary["ema_best_sw"] = (
+            ema_best_sw if np.isfinite(ema_best_sw) else None
+        )
     fid_config = config["evaluation"]["fid"]
     if fid_config["enabled"]:
         extractor = DiffuseInceptionFeatures(
@@ -1092,6 +1354,26 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             _append_jsonl(
                 metrics_path, {"type": "sample_metrics_ema", **ema_sample_log}
             )
+        if not sw_validation_config["enabled"]:
+            # Stage-A style: only a final sliced-Wasserstein exists. Surface it in
+            # the summary under the same keys used for periodic validation.
+            if sample_metric_result.get("sliced_wasserstein") is not None:
+                final_summary["final_sw"] = sample_metric_result[
+                    "sliced_wasserstein"
+                ]
+                final_summary["best_sw"] = sample_metric_result[
+                    "sliced_wasserstein"
+                ]
+            if (
+                trainer.ema_enabled
+                and ema_sample_metric_result.get("sliced_wasserstein") is not None
+            ):
+                final_summary["ema_final_sw"] = ema_sample_metric_result[
+                    "sliced_wasserstein"
+                ]
+                final_summary["ema_best_sw"] = ema_sample_metric_result[
+                    "sliced_wasserstein"
+                ]
 
     if encoder.__class__.__name__ != "IdentityEncoder":
         from image_benchmarks.datasets.hf_loader import load_split
@@ -1145,9 +1427,10 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             encoder,
             config,
             run["rng_seeds"]["sampling"],
-            filename="sample_grid_ema.png",
+            filename="sample_grid_ema.pdf",
         )
         trainer.record_evaluation_time(time.perf_counter() - start)
+    _save_run_diagnostics(run_dir, run)
     final_summary.update(trainer.accounting())
     _write_json(run_dir / "final_summary.json", final_summary)
     _write_json(
@@ -1266,169 +1549,139 @@ def plot_session(session_dir: Path) -> None:
     import matplotlib.pyplot as plt
 
     planned = json.loads((session_dir / "planned_runs.json").read_text(encoding="utf-8"))
-    figure, axes = plt.subplots(2, 2, figsize=(12, 10), layout="constrained")
-    plotted = False
-    training_series = []
+
+    # Per-method series keyed by metric: {"label": [(x_key, x_value), ...]}
+    series = {
+        "train_loss": [],  # (label, x_key, [(x, loss)])
+        "val_loss": [],  # (label, ema_flag, x_key, [(x, val_loss)])
+        "sw": [],  # (label, ema_flag, x_key, [(x, sw)])
+    }
+    x_keys = ("optimizer_step", "wall_clock_train_s")
+    x_labels = ("Optimizer iteration", "Training wall-clock (s)")
     for run in planned:
         metrics_path = session_dir / "runs" / run["run_id"] / "metrics.jsonl"
         if not metrics_path.is_file():
             continue
-        records = [json.loads(line) for line in metrics_path.read_text(encoding="utf-8").splitlines()]
-        training_records = [
-            record
-            for record in records
-            if record.get("type") == "train"
-            and record.get("loss") is not None
-            and np.isfinite(record["loss"])
+        records = [
+            json.loads(line)
+            for line in metrics_path.read_text(encoding="utf-8").splitlines()
         ]
-        if training_records:
-            training_series.append(
-                (
-                    f"{run['method']['name']} r{run['restart_index']}",
-                    training_records,
+        label = f"{run['method']['name']} r{run['restart_index']}"
+        for key in x_keys:
+            training = [
+                record
+                for record in records
+                if record.get("type") == "train"
+                and record.get("loss") is not None
+                and np.isfinite(record["loss"])
+            ]
+            if training:
+                series["train_loss"].append(
+                    (
+                        label,
+                        False,
+                        key,
+                        [(record[key], record["loss"]) for record in training],
+                    )
                 )
-            )
-        validation = [record for record in records if record.get("type") == "validation"]
-        if validation:
-            label = f"{run['method']['name']} r{run['restart_index']}"
-            axes[0, 0].plot(
-                [record["effective_epoch"] for record in validation],
-                [record["val_fm_loss"] for record in validation],
-                label=label,
-            )
-            axes[0, 1].plot(
-                [record["wall_clock_train_s"] for record in validation],
-                [record["val_fm_loss"] for record in validation],
-                label=label,
-            )
-            plotted = True
-        ema_validation = [
-            record for record in records if record.get("type") == "validation_ema"
-        ]
-        if ema_validation:
-            ema_label = f"{run['method']['name']} r{run['restart_index']} EMA"
-            axes[0, 0].plot(
-                [record["effective_epoch"] for record in ema_validation],
-                [record["val_fm_loss"] for record in ema_validation],
-                label=ema_label,
-                linestyle="--",
-                marker="D",
-                markersize=3,
-                alpha=0.8,
-            )
-            axes[0, 1].plot(
-                [record["wall_clock_train_s"] for record in ema_validation],
-                [record["val_fm_loss"] for record in ema_validation],
-                label=ema_label,
-                linestyle="--",
-                marker="D",
-                markersize=3,
-                alpha=0.8,
-            )
-            plotted = True
-        evaluations = [record for record in records if record.get("type") == "evaluation"]
-        if evaluations:
-            label = f"{run['method']['name']} r{run['restart_index']}"
-            for metric in ("fid", "kid_mean"):
-                points = [record for record in evaluations if record.get(metric) is not None]
-                if points:
-                    marker = "o" if metric == "fid" else "s"
-                    axes[1, 0].plot(
-                        [record["epoch"] for record in points],
-                        [record[metric] for record in points],
-                        marker=marker,
-                        label=f"{label} {metric}",
+            val = [
+                record
+                for record in records
+                if record.get("type") == "validation"
+                and record.get("val_fm_loss") is not None
+            ]
+            if val:
+                series["val_loss"].append(
+                    (
+                        label,
+                        False,
+                        key,
+                        [(record[key], record["val_fm_loss"]) for record in val],
                     )
-                    axes[1, 1].plot(
-                        [record["wall_clock_train_s"] for record in points],
-                        [record[metric] for record in points],
-                        marker=marker,
-                        label=f"{label} {metric}",
+                )
+            val_ema = [
+                record
+                for record in records
+                if record.get("type") == "validation_ema"
+                and record.get("val_fm_loss") is not None
+            ]
+            if val_ema:
+                series["val_loss"].append(
+                    (
+                        label,
+                        True,
+                        key,
+                        [(record[key], record["val_fm_loss"]) for record in val_ema],
                     )
-        ema_evaluations = [
-            record for record in records if record.get("type") == "evaluation_ema"
-        ]
-        if ema_evaluations:
-            ema_label = f"{run['method']['name']} r{run['restart_index']} EMA"
-            for metric in ("fid", "kid_mean"):
-                points = [
-                    record for record in ema_evaluations if record.get(metric) is not None
-                ]
-                if points:
-                    marker = "^" if metric == "fid" else "v"
-                    axes[1, 0].plot(
-                        [record["epoch"] for record in points],
-                        [record[metric] for record in points],
-                        marker=marker,
-                        linestyle="--",
-                        label=f"{ema_label} {metric}",
+                )
+            sw = [
+                record
+                for record in records
+                if record.get("type") == "validation_sw"
+                and record.get("sliced_wasserstein") is not None
+            ]
+            if sw:
+                series["sw"].append(
+                    (
+                        label,
+                        False,
+                        key,
+                        [
+                            (record[key], record["sliced_wasserstein"])
+                            for record in sw
+                        ],
                     )
-                    axes[1, 1].plot(
-                        [record["wall_clock_train_s"] for record in points],
-                        [record[metric] for record in points],
-                        marker=marker,
-                        linestyle="--",
-                        label=f"{ema_label} {metric}",
+                )
+            sw_ema = [
+                record
+                for record in records
+                if record.get("type") == "validation_sw_ema"
+                and record.get("sliced_wasserstein") is not None
+            ]
+            if sw_ema:
+                series["sw"].append(
+                    (
+                        label,
+                        True,
+                        key,
+                        [
+                            (record[key], record["sliced_wasserstein"])
+                            for record in sw_ema
+                        ],
                     )
-    for axis, xlabel in zip(
-        axes[0], ("Effective epoch", "Training wall-clock (s)"), strict=True
-    ):
-        axis.set_xlabel(xlabel)
-        axis.set_ylabel("Validation FM loss")
-        axis.set_yscale("log")
-        if plotted:
-            axis.legend()
-    for axis, xlabel in zip(
-        axes[1], ("Effective epoch", "Training wall-clock (s)"), strict=True
-    ):
-        axis.set_xlabel(xlabel)
-        axis.set_ylabel("FID / KID")
-        if axis.lines:
-            axis.legend()
-    figure.savefig(session_dir / "plots" / "validation_fm_loss.png", dpi=140)
+                )
+
+    row_specs = [
+        ("train_loss", "Training loss", True),
+        ("val_loss", "Validation loss", True),
+        ("sw", "Sliced Wasserstein", False),
+    ]
+    figure, axes = plt.subplots(
+        len(row_specs), 2, figsize=(14, 3.6 * len(row_specs)), layout="constrained"
+    )
+    for row, (series_key, ylabel, log_scale) in enumerate(row_specs):
+        for col, (key, xlabel) in enumerate(zip(x_keys, x_labels, strict=True)):
+            axis = axes[row][col] if len(row_specs) > 1 else axes[col]
+            for entry in series[series_key]:
+                label, ema_flag, entry_key, points = entry
+                if entry_key != key:
+                    continue
+                axis.plot(
+                    [p[0] for p in points],
+                    [p[1] for p in points],
+                    label=(label + " EMA") if ema_flag else label,
+                    linestyle="--" if ema_flag else "-",
+                    linewidth=1.2,
+                )
+            axis.set_xlabel(xlabel)
+            axis.set_ylabel(ylabel)
+            if log_scale:
+                axis.set_yscale("log")
+            axis.grid(True, alpha=0.25)
+            if axis.lines:
+                axis.legend(fontsize="small")
+    figure.savefig(session_dir / "plots" / "diagnostics_comparison.pdf", format="pdf")
     plt.close(figure)
-
-    plot_specs = (
-        ("optimizer_step", "Optimizer iteration", "training_loss_vs_iteration.png"),
-        ("wall_clock_train_s", "Training wall-clock (s)", "training_loss_vs_time.png"),
-    )
-    for key, xlabel, filename in plot_specs:
-        comparison, axis = plt.subplots(figsize=(8, 6), layout="constrained")
-        for label, records in training_series:
-            axis.plot(
-                [record[key] for record in records],
-                [record["loss"] for record in records],
-                label=label,
-                linewidth=1.2,
-            )
-        axis.set_xlabel(xlabel)
-        axis.set_ylabel("Training Flow-Matching loss")
-        axis.set_yscale("log")
-        axis.grid(True, alpha=0.25)
-        if training_series:
-            axis.legend()
-        comparison.savefig(session_dir / "plots" / filename, dpi=160)
-        plt.close(comparison)
-
-    combined, combined_axes = plt.subplots(
-        1, 2, figsize=(14, 5.5), layout="constrained"
-    )
-    for axis, (key, xlabel, _) in zip(combined_axes, plot_specs, strict=True):
-        for label, records in training_series:
-            axis.plot(
-                [record[key] for record in records],
-                [record["loss"] for record in records],
-                label=label,
-                linewidth=1.2,
-            )
-        axis.set_xlabel(xlabel)
-        axis.set_ylabel("Training Flow-Matching loss")
-        axis.set_yscale("log")
-        axis.grid(True, alpha=0.25)
-        if training_series:
-            axis.legend()
-    combined.savefig(session_dir / "plots" / "training_loss_comparison.png", dpi=160)
-    plt.close(combined)
 
 
 def parse_args(argv=None):

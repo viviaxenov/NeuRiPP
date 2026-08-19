@@ -142,6 +142,8 @@ def test_all_required_presets_resolve_and_plan():
         "mnist_mlp.json",
         "mnist_ae32_mlp.json",
         "mnist_ae64_mlp.json",
+        "mnist_ae32_tune.json",
+        "mnist_ae32_tune_stageb.json",
         "fashion_mnist_mlp.json",
         "fashion_mnist_ae64_mlp.json",
         "fashion_mnist_unet.json",
@@ -302,6 +304,37 @@ def test_obsolete_diffuse_source_checkout_fields_are_rejected():
                 raise AssertionError(f"Expected obsolete {field} rejection")
 
 
+def test_sw_validation_config_defaults_and_validation():
+    with tempfile.TemporaryDirectory() as directory:
+        config = load_config(write_config(directory, base_config(directory)))
+        sw = config["evaluation"]["sw_validation"]
+        assert sw["enabled"] is False
+
+    with tempfile.TemporaryDirectory() as directory:
+        payload = base_config(directory)
+        payload["evaluation"]["sw_validation"] = {
+            "enabled": True,
+            "num_samples": 3000,
+            "batch_size": 2,
+            "num_projections": 64,
+        }
+        config = load_config(write_config(directory, payload))
+        sw = config["evaluation"]["sw_validation"]
+        assert sw["enabled"] is True
+        assert sw["num_samples"] == 3000
+        assert sw["num_projections"] == 64
+
+    with tempfile.TemporaryDirectory() as directory:
+        payload = base_config(directory)
+        payload["evaluation"]["sw_validation"] = {"enabled": True, "num_samples": 1}
+        try:
+            load_config(write_config(directory, payload))
+        except ValueError as error:
+            assert "num_samples" in str(error)
+        else:
+            raise AssertionError("Expected sw_validation num_samples < 2 rejection")
+
+
 if __name__ == "__main__":
     test_lists_are_literal_and_only_methods_restarts_expand()
     test_resource_groups_reserve_disjoint_devices()
@@ -312,4 +345,5 @@ if __name__ == "__main__":
     test_runtime_defaults_are_persisted_for_run_planning()
     test_fid_requires_at_least_two_fake_samples()
     test_obsolete_diffuse_source_checkout_fields_are_rejected()
+    test_sw_validation_config_defaults_and_validation()
     print("Image config tests passed.")
