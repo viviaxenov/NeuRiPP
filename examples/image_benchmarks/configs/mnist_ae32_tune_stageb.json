@@ -12,7 +12,7 @@
     "keep_checkpoints": 3
   },
   "methods": [
-    {"name": "adam", "n_restarts": 1, "kwargs": {"learning_rate": 0.001, "weight_decay": 0.0, "b1": 0.9}}
+    {"name": "adamw", "n_restarts": 1, "kwargs": {"learning_rate": 0.001, "weight_decay": 0.0, "b1": 0.9}}
   ],
   "evaluation": {
     "split": "test",
