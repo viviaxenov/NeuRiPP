@@ -819,7 +819,48 @@ def _git_commit():
         return "unknown"
 
 
-def _save_sample_grid(samples_dir, model, encoder, config, seed, *, filename):
+def _nearest_train_images(images, manifest, config, *, batch_size=512):
+    """Exact nearest training-split image for each generated sample.
+
+    ``images`` is a uint8 NHWC batch (evaluation convention). The full train
+    split is scanned lazily in chunks; distances are squared L2 in flattened
+    pixel space. Returns a uint8 NHWC array aligned with ``images``.
+    """
+    from image_benchmarks.datasets.hf_loader import load_split
+    from image_benchmarks.datasets.transforms import model_to_evaluation
+
+    iterator = load_split(
+        manifest,
+        "train",
+        batch_size,
+        config["evaluation"]["seed"],
+        shuffle=False,
+        offline=config["problem"]["dataset"].get("offline", False),
+    )
+    samples = np.asarray(images).reshape(len(images), -1).astype(np.float32)
+    sample_norms = np.einsum("ij,ij->i", samples, samples)
+    best_distances = np.full(len(samples), np.inf, dtype=np.float32)
+    best_images = np.empty_like(np.asarray(images))
+    for batch in iterator:
+        train = model_to_evaluation(np.asarray(batch["image"]))
+        flat = train.reshape(len(train), -1).astype(np.float32)
+        train_norms = np.einsum("ij,ij->i", flat, flat)
+        # (S, T) squared distances via |a|^2 + |b|^2 - 2 a.b, avoiding an
+        # (S, T, d) intermediate.
+        distances = (
+            sample_norms[:, None] + train_norms[None, :] - 2.0 * (samples @ flat.T)
+        )
+        nearest = np.argmin(distances, axis=1)
+        row_distances = distances[np.arange(len(samples)), nearest]
+        improved = row_distances < best_distances
+        best_distances[improved] = row_distances[improved]
+        best_images[improved] = train[nearest[improved]]
+    if not np.isfinite(best_distances).all():
+        raise ValueError("Nearest-neighbour scan found no training images")
+    return best_images
+
+
+def _save_sample_grid(samples_dir, model, encoder, config, seed, *, filename, manifest=None):
     from image_benchmarks.evaluation.sampling import generate_image_batches
     import matplotlib.pyplot as plt
 
@@ -840,11 +881,29 @@ def _save_sample_grid(samples_dir, model, encoder, config, seed, *, filename):
             ode_kwargs=sampling.get("kwargs", {}),
         )
     )
-    figure, axes = plt.subplots(rows, columns, figsize=(2 * columns, 2 * rows), squeeze=False)
-    for axis, image in zip(axes.flat, images, strict=True):
-        axis.imshow(np.squeeze(image), cmap="gray" if image.shape[-1] == 1 else None)
-        axis.axis("off")
-    figure.tight_layout()
+    neighbors = None
+    if bool(grid.get("nearest_neighbor", True)) and manifest is not None:
+        neighbors = _nearest_train_images(images, manifest, config)
+
+    def draw(panel, panel_images):
+        axes = panel.subplots(rows, columns, squeeze=False)
+        for axis, image in zip(axes.flat, panel_images, strict=True):
+            axis.imshow(np.squeeze(image), cmap="gray" if image.shape[-1] == 1 else None)
+            axis.axis("off")
+
+    if neighbors is None:
+        figure, axes = plt.subplots(rows, columns, figsize=(2 * columns, 2 * rows), squeeze=False)
+        for axis, image in zip(axes.flat, images, strict=True):
+            axis.imshow(np.squeeze(image), cmap="gray" if image.shape[-1] == 1 else None)
+            axis.axis("off")
+        figure.tight_layout()
+    else:
+        figure = plt.figure(figsize=(4 * columns, 2 * rows), layout="constrained")
+        sample_panel, neighbor_panel = figure.subfigures(1, 2)
+        sample_panel.suptitle("Model samples")
+        neighbor_panel.suptitle("Nearest train images")
+        draw(sample_panel, images)
+        draw(neighbor_panel, neighbors)
     samples_dir.mkdir(parents=True, exist_ok=True)
     figure.savefig(samples_dir / filename, dpi=120, format="pdf")
     plt.close(figure)
@@ -1563,6 +1622,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         config,
         run["rng_seeds"]["sampling"],
         filename=f"samples_run_{int(run['run_index']):04d}.pdf",
+        manifest=manifest,
     )
     trainer.record_evaluation_time(time.perf_counter() - start)
     if trainer.ema_enabled:
@@ -1574,6 +1634,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             config,
             run["rng_seeds"]["sampling"],
             filename=f"ema_samples_run_{int(run['run_index']):04d}.pdf",
+            manifest=manifest,
         )
         trainer.record_evaluation_time(time.perf_counter() - start)
     _save_run_diagnostics(diagnostic_dir, run_dir, run)
