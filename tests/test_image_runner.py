@@ -219,6 +219,41 @@ def test_save_run_diagnostics_produces_pdf():
         assert (diagnostic_dir / "diagnostics_run_0000.pdf").stat().st_size > 0
 
 
+def test_npz_history_uses_dense_train_steps_and_explicit_eval_steps():
+    runner = load_runner()
+    with tempfile.TemporaryDirectory() as directory:
+        run_dir = Path(directory) / "run"
+        train = {
+            "loss": [10.0, 5.0, 2.5],
+            "grad_norm": [float("nan"), 1.0, 0.5],
+            "natural_grad_norm": [float("nan"), 0.8, 0.4],
+            "effective_epoch": [0.0, 1.0, 2.0],
+            "examples_seen": [0, 8, 16],
+            "wall_clock_train_s": [0.0, 1.0, 2.0],
+        }
+        evaluation = {
+            "eval_step": [0, 2],
+            "eval_wall_clock_train_s": [0.0, 2.0],
+            "val_fm_loss": [12.0, 2.0],
+            "ema_val_fm_loss": [13.0, 2.1],
+            "sliced_wasserstein": [0.8, 0.2],
+            "ema_sliced_wasserstein": [0.9, 0.3],
+            "fid": [float("nan"), float("nan")],
+            "ema_fid": [float("nan"), float("nan")],
+            "kid_mean": [float("nan"), float("nan")],
+            "ema_kid_mean": [float("nan"), float("nan")],
+        }
+        runner._save_run_arrays(run_dir, train, evaluation)
+        records = runner._load_run_records(run_dir)
+        train_records = [record for record in records if record["type"] == "train"]
+        validation_records = [
+            record for record in records if record["type"] == "validation"
+        ]
+        assert [record["optimizer_step"] for record in train_records] == [0, 1, 2]
+        assert [record["optimizer_step"] for record in validation_records] == [0, 2]
+        assert not (run_dir / "metrics.jsonl").exists()
+
+
 def test_run_label_uses_shorthand_and_only_varied_keys():
     runner = load_runner()
     runs = [

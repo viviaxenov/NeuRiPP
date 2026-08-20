@@ -99,7 +99,7 @@ exactly one positive list, either explicit `bandwidths` or `bw_multipliers` of
 the real-state median heuristic. Sliced Wasserstein uses OTT-JAX and accepts
 `num_projections`. `num_samples`, `batch_size`, evaluation seed, and split are
 explicitly configurable; results and resolved metric provenance are written to
-`sample_metrics.json`, `metrics.jsonl`, and `final_summary.json`.
+`arrays.npz`, `sample_metrics.json`, and `final_summary.json`.
 
 ## External assets
 

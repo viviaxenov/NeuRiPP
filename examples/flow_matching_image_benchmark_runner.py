@@ -909,6 +909,135 @@ def _save_sample_grid(samples_dir, model, encoder, config, seed, *, filename, ma
     plt.close(figure)
 
 
+_TRAIN_ARRAY_KEYS = (
+    "loss",
+    "grad_norm",
+    "natural_grad_norm",
+    "effective_epoch",
+    "examples_seen",
+    "wall_clock_train_s",
+)
+_EVAL_ARRAY_KEYS = (
+    "eval_step",
+    "eval_wall_clock_train_s",
+    "val_fm_loss",
+    "ema_val_fm_loss",
+    "sliced_wasserstein",
+    "ema_sliced_wasserstein",
+    "fid",
+    "ema_fid",
+    "kid_mean",
+    "ema_kid_mean",
+)
+
+
+def _save_run_arrays(run_dir: Path, train: dict[str, list], evaluation: dict[str, list]) -> None:
+    payload = {
+        key: np.asarray(values)
+        for key, values in {**train, **evaluation}.items()
+        if values
+    }
+    if payload:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        np.savez(run_dir / "arrays.npz", **payload)
+
+
+def _load_run_arrays(run_dir: Path) -> tuple[dict[str, list], dict[str, list]]:
+    train = {key: [] for key in _TRAIN_ARRAY_KEYS}
+    evaluation = {key: [] for key in _EVAL_ARRAY_KEYS}
+    arrays_path = run_dir / "arrays.npz"
+    if not arrays_path.is_file():
+        return train, evaluation
+    with np.load(arrays_path, allow_pickle=False) as arrays:
+        for key in train:
+            if key in arrays:
+                train[key] = arrays[key].tolist()
+        for key in evaluation:
+            if key in arrays:
+                evaluation[key] = arrays[key].tolist()
+    return train, evaluation
+
+
+def _truncate_run_arrays(
+    train: dict[str, list], evaluation: dict[str, list], step: int
+) -> None:
+    for key in train:
+        train[key] = train[key][: step + 1]
+    eval_steps = evaluation["eval_step"]
+    keep = [index for index, value in enumerate(eval_steps) if int(value) <= step]
+    for key in evaluation:
+        evaluation[key] = [evaluation[key][index] for index in keep]
+
+
+def _records_from_arrays(
+    train: dict[str, list], evaluation: dict[str, list]
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for step, loss in enumerate(train["loss"]):
+        record = {
+            "type": "train",
+            "optimizer_step": step,
+            "loss": float(loss),
+            "grad_norm": float(train["grad_norm"][step]),
+            "natural_grad_norm": float(train["natural_grad_norm"][step]),
+            "effective_epoch": float(train["effective_epoch"][step]),
+            "examples_seen": int(train["examples_seen"][step]),
+            "wall_clock_train_s": float(train["wall_clock_train_s"][step]),
+        }
+        records.append(record)
+    for index, step in enumerate(evaluation["eval_step"]):
+        base = {
+            "optimizer_step": int(step),
+            "wall_clock_train_s": float(evaluation["eval_wall_clock_train_s"][index]),
+        }
+        for key, record_type, value_key in (
+            ("val_fm_loss", "validation", "val_fm_loss"),
+            ("ema_val_fm_loss", "validation_ema", "val_fm_loss"),
+            ("sliced_wasserstein", "validation_sw", "sliced_wasserstein"),
+            ("ema_sliced_wasserstein", "validation_sw_ema", "sliced_wasserstein"),
+        ):
+            value = float(evaluation[key][index])
+            if np.isfinite(value):
+                records.append({"type": record_type, value_key: value, **base})
+        fid = float(evaluation["fid"][index])
+        kid = float(evaluation["kid_mean"][index])
+        if np.isfinite(fid) or np.isfinite(kid):
+            records.append(
+                {
+                    "type": "evaluation",
+                    "fid": fid,
+                    "kid_mean": kid,
+                    **base,
+                }
+            )
+        ema_fid = float(evaluation["ema_fid"][index])
+        ema_kid = float(evaluation["ema_kid_mean"][index])
+        if np.isfinite(ema_fid) or np.isfinite(ema_kid):
+            records.append(
+                {
+                    "type": "evaluation_ema",
+                    "fid": ema_fid,
+                    "kid_mean": ema_kid,
+                    **base,
+                }
+            )
+    return records
+
+
+def _load_run_records(run_dir: Path) -> list[dict[str, Any]]:
+    arrays_path = run_dir / "arrays.npz"
+    if arrays_path.is_file():
+        train, evaluation = _load_run_arrays(run_dir)
+        return _records_from_arrays(train, evaluation)
+    metrics_path = run_dir / "metrics.jsonl"
+    if not metrics_path.is_file():
+        return []
+    return [
+        json.loads(line)
+        for line in metrics_path.read_text(encoding="utf-8").splitlines()
+    ]
+
+
 def _collect_metric_rows(records: list[dict[str, Any]]) -> list[tuple[str, str, list, list]]:
     """Return (title, value_key, raw_records, ema_records) rows with data.
 
@@ -958,13 +1087,9 @@ def _save_run_diagnostics(
     """
     import matplotlib.pyplot as plt
 
-    metrics_path = run_dir / "metrics.jsonl"
-    if not metrics_path.is_file():
+    records = _load_run_records(run_dir)
+    if not records:
         return
-    records = [
-        json.loads(line)
-        for line in metrics_path.read_text(encoding="utf-8").splitlines()
-    ]
     rows = _collect_metric_rows(records)
     if not rows:
         return
@@ -1118,31 +1243,11 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             run,
             sw_validation_config["num_samples"],
         )
-    metrics_path = run_dir / "metrics.jsonl"
-    previous_records = (
-        [json.loads(line) for line in metrics_path.read_text(encoding="utf-8").splitlines()]
-        if metrics_path.is_file()
-        else []
-    )
-    if resume:
-        retained_records = [
-            record
-            for record in previous_records
-            if restored_checkpoint is not None
-            and int(record.get("optimizer_step", record.get("step", -1)))
-            <= trainer.step_count
-        ]
-        if retained_records != previous_records:
-            temporary = metrics_path.with_suffix(".jsonl.tmp")
-            temporary.write_text(
-                "".join(
-                    json.dumps(record, sort_keys=True, default=_json_default) + "\n"
-                    for record in retained_records
-                ),
-                encoding="utf-8",
-            )
-            temporary.replace(metrics_path)
-            previous_records = retained_records
+    train_arrays, evaluation_arrays = _load_run_arrays(run_dir)
+    if resume and restored_checkpoint is not None:
+        _truncate_run_arrays(train_arrays, evaluation_arrays, trainer.step_count)
+        _save_run_arrays(run_dir, train_arrays, evaluation_arrays)
+    previous_records = _load_run_records(run_dir)
     previous_validation = [
         float(record["val_fm_loss"])
         for record in previous_records
@@ -1227,34 +1332,114 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         except Exception:
             step0_loss = None
         if step0_loss is not None and np.isfinite(step0_loss):
-            _append_jsonl(
-                metrics_path,
-                {
-                    "type": "train",
-                    **trainer.accounting(),
-                    "loss": step0_loss,
-                    "grad_norm": None,
-                    "natural_grad_norm": None,
-                },
+            accounting = trainer.accounting()
+            train_arrays["loss"].append(step0_loss)
+            train_arrays["grad_norm"].append(float("nan"))
+            train_arrays["natural_grad_norm"].append(float("nan"))
+            train_arrays["effective_epoch"].append(
+                float(accounting["effective_epoch"] or 0.0)
             )
+            train_arrays["examples_seen"].append(int(accounting["examples_seen"]))
+            train_arrays["wall_clock_train_s"].append(
+                float(accounting["wall_clock_train_s"])
+            )
+
+        from image_benchmarks.evaluation.validation import evaluate_fixed_fm_loss
+
+        start = time.perf_counter()
+        val_loss = evaluate_fixed_fm_loss(
+            trainer.model,
+            validation,
+            batch_size=config["evaluation"]["val_fm_loss"]["batch_size"],
+        )
+        trainer.record_evaluation_time(time.perf_counter() - start)
+        best_validation = min(best_validation, val_loss)
+        final_validation = val_loss
+        accounting = trainer.accounting()
+        evaluation_arrays["eval_step"].append(0)
+        evaluation_arrays["eval_wall_clock_train_s"].append(
+            float(accounting["wall_clock_train_s"])
+        )
+        evaluation_arrays["val_fm_loss"].append(float(val_loss))
+        if trainer.ema_enabled:
+            start = time.perf_counter()
+            ema_val_loss = evaluate_fixed_fm_loss(
+                trainer.ema_model,
+                validation,
+                batch_size=config["evaluation"]["val_fm_loss"]["batch_size"],
+            )
+            trainer.record_evaluation_time(time.perf_counter() - start)
+            ema_best_validation = min(ema_best_validation, ema_val_loss)
+            ema_final_validation = ema_val_loss
+            evaluation_arrays["ema_val_fm_loss"].append(float(ema_val_loss))
+        else:
+            evaluation_arrays["ema_val_fm_loss"].append(float("nan"))
+        if sw_validation_config["enabled"] and sw_real_states is not None:
+            start = time.perf_counter()
+            sw_result = _periodic_sw_eval(
+                trainer.model,
+                real_states=sw_real_states,
+                num_samples=sw_validation_config["num_samples"],
+                batch_size=sw_validation_config["batch_size"],
+                num_projections=sw_validation_config["num_projections"],
+                config=config,
+                run=run,
+            )
+            trainer.record_evaluation_time(time.perf_counter() - start)
+            sw_value = sw_result["sliced_wasserstein"]
+            best_sw = min(best_sw, sw_value)
+            final_sw = sw_value
+            evaluation_arrays["sliced_wasserstein"].append(float(sw_value))
+            if trainer.ema_enabled:
+                start = time.perf_counter()
+                ema_sw_result = _periodic_sw_eval(
+                    trainer.ema_model,
+                    real_states=sw_real_states,
+                    num_samples=sw_validation_config["num_samples"],
+                    batch_size=sw_validation_config["batch_size"],
+                    num_projections=sw_validation_config["num_projections"],
+                    config=config,
+                    run=run,
+                )
+                trainer.record_evaluation_time(time.perf_counter() - start)
+                ema_sw_value = ema_sw_result["sliced_wasserstein"]
+                ema_best_sw = min(ema_best_sw, ema_sw_value)
+                ema_final_sw = ema_sw_value
+                evaluation_arrays["ema_sliced_wasserstein"].append(
+                    float(ema_sw_value)
+                )
+            else:
+                evaluation_arrays["ema_sliced_wasserstein"].append(float("nan"))
+        else:
+            evaluation_arrays["sliced_wasserstein"].append(float("nan"))
+            evaluation_arrays["ema_sliced_wasserstein"].append(float("nan"))
+        evaluation_arrays["fid"].append(float("nan"))
+        evaluation_arrays["ema_fid"].append(float("nan"))
+        evaluation_arrays["kid_mean"].append(float("nan"))
+        evaluation_arrays["ema_kid_mean"].append(float("nan"))
+        _save_run_arrays(run_dir, train_arrays, evaluation_arrays)
     while trainer.step_count < training["max_steps"]:
         batch = train_stream.next_batch()
         values = trainer.step(batch)
         step = trainer.step_count
-        if step % training["log_every"] == 0 or step == training["max_steps"]:
-            record = {
-                "type": "train",
-                **trainer.accounting(),
-                "loss": float(values[0]),
-                "grad_norm": float(jnp.sqrt(jnp.maximum(values[1], 0.0))),
-                "natural_grad_norm": (
-                    float(jnp.sqrt(jnp.maximum(values[2], 0.0)))
-                    if len(values) > 2
-                    else None
-                ),
-            }
-            _append_jsonl(metrics_path, record)
-        if step % training["validation_every"] == 0 or step == training["max_steps"]:
+        accounting = trainer.accounting()
+        train_arrays["loss"].append(float(values[0]))
+        train_arrays["grad_norm"].append(
+            float(jnp.sqrt(jnp.maximum(values[1], 0.0)))
+        )
+        train_arrays["natural_grad_norm"].append(
+            float(jnp.sqrt(jnp.maximum(values[2], 0.0)))
+            if len(values) > 2
+            else float("nan")
+        )
+        train_arrays["effective_epoch"].append(
+            float(accounting["effective_epoch"] or 0.0)
+        )
+        train_arrays["examples_seen"].append(int(accounting["examples_seen"]))
+        train_arrays["wall_clock_train_s"].append(
+            float(accounting["wall_clock_train_s"])
+        )
+        if step % training["eval_every"] == 0 or step == training["max_steps"]:
             from image_benchmarks.evaluation.validation import evaluate_fixed_fm_loss
 
             start = time.perf_counter()
@@ -1266,10 +1451,11 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             trainer.record_evaluation_time(time.perf_counter() - start)
             best_validation = min(best_validation, val_loss)
             final_validation = val_loss
-            _append_jsonl(
-                metrics_path,
-                {"type": "validation", **trainer.accounting(), "val_fm_loss": val_loss},
+            evaluation_arrays["eval_step"].append(int(step))
+            evaluation_arrays["eval_wall_clock_train_s"].append(
+                float(trainer.wall_clock_train_s)
             )
+            evaluation_arrays["val_fm_loss"].append(float(val_loss))
             if trainer.ema_enabled:
                 ema_start = time.perf_counter()
                 ema_val_loss = evaluate_fixed_fm_loss(
@@ -1280,14 +1466,9 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
                 trainer.record_evaluation_time(time.perf_counter() - ema_start)
                 ema_best_validation = min(ema_best_validation, ema_val_loss)
                 ema_final_validation = ema_val_loss
-                _append_jsonl(
-                    metrics_path,
-                    {
-                        "type": "validation_ema",
-                        **trainer.accounting(),
-                        "val_fm_loss": ema_val_loss,
-                    },
-                )
+                evaluation_arrays["ema_val_fm_loss"].append(float(ema_val_loss))
+            else:
+                evaluation_arrays["ema_val_fm_loss"].append(float("nan"))
             if sw_validation_config["enabled"] and sw_real_states is not None:
                 sw_start = time.perf_counter()
                 sw_result = _periodic_sw_eval(
@@ -1303,10 +1484,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
                 trainer.record_evaluation_time(time.perf_counter() - sw_start)
                 best_sw = min(best_sw, sw_value)
                 final_sw = sw_value
-                _append_jsonl(
-                    metrics_path,
-                    {"type": "validation_sw", **trainer.accounting(), **sw_result},
-                )
+                evaluation_arrays["sliced_wasserstein"].append(float(sw_value))
                 if trainer.ema_enabled:
                     ema_sw_start = time.perf_counter()
                     ema_sw_result = _periodic_sw_eval(
@@ -1324,14 +1502,19 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
                     )
                     ema_best_sw = min(ema_best_sw, ema_sw_value)
                     ema_final_sw = ema_sw_value
-                    _append_jsonl(
-                        metrics_path,
-                        {
-                            "type": "validation_sw_ema",
-                            **trainer.accounting(),
-                            **ema_sw_result,
-                        },
+                    evaluation_arrays["ema_sliced_wasserstein"].append(
+                        float(ema_sw_value)
                     )
+                else:
+                    evaluation_arrays["ema_sliced_wasserstein"].append(float("nan"))
+            else:
+                evaluation_arrays["sliced_wasserstein"].append(float("nan"))
+                evaluation_arrays["ema_sliced_wasserstein"].append(float("nan"))
+            evaluation_arrays["fid"].append(float("nan"))
+            evaluation_arrays["ema_fid"].append(float("nan"))
+            evaluation_arrays["kid_mean"].append(float("nan"))
+            evaluation_arrays["ema_kid_mean"].append(float("nan"))
+            _save_run_arrays(run_dir, train_arrays, evaluation_arrays)
         if step % training["checkpoint_every"] == 0:
             _save_checkpoint(
                 checkpoint_root, trainer, train_stream, training["keep_checkpoints"]
@@ -1444,7 +1627,20 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         final_summary["best_val_fm_loss"] = min(
             best_validation, result["val_fm_loss"]
         )
-        _append_jsonl(metrics_path, {"type": "evaluation", **result})
+        evaluation_arrays["eval_step"].append(int(result["step"]))
+        evaluation_arrays["eval_wall_clock_train_s"].append(
+            float(result["wall_clock_train_s"])
+        )
+        evaluation_arrays["val_fm_loss"].append(float(result["val_fm_loss"]))
+        evaluation_arrays["ema_val_fm_loss"].append(float("nan"))
+        evaluation_arrays["sliced_wasserstein"].append(float("nan"))
+        evaluation_arrays["ema_sliced_wasserstein"].append(float("nan"))
+        evaluation_arrays["fid"].append(float(result.get("fid", float("nan"))))
+        evaluation_arrays["ema_fid"].append(float("nan"))
+        evaluation_arrays["kid_mean"].append(
+            float(result.get("kid_mean", float("nan")))
+        )
+        evaluation_arrays["ema_kid_mean"].append(float("nan"))
         if trainer.ema_enabled:
             ema_result = _fid_kid_eval(
                 trainer.ema_model,
@@ -1492,7 +1688,24 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             final_summary["ema_best_val_fm_loss"] = min(
                 ema_best_validation, ema_result["val_fm_loss"]
             )
-            _append_jsonl(metrics_path, {"type": "evaluation_ema", **ema_result})
+            evaluation_arrays["eval_step"].append(int(ema_result["step"]))
+            evaluation_arrays["eval_wall_clock_train_s"].append(
+                float(ema_result["wall_clock_train_s"])
+            )
+            evaluation_arrays["val_fm_loss"].append(float("nan"))
+            evaluation_arrays["ema_val_fm_loss"].append(
+                float(ema_result["val_fm_loss"])
+            )
+            evaluation_arrays["sliced_wasserstein"].append(float("nan"))
+            evaluation_arrays["ema_sliced_wasserstein"].append(float("nan"))
+            evaluation_arrays["fid"].append(float("nan"))
+            evaluation_arrays["ema_fid"].append(
+                float(ema_result.get("fid", float("nan")))
+            )
+            evaluation_arrays["kid_mean"].append(float("nan"))
+            evaluation_arrays["ema_kid_mean"].append(
+                float(ema_result.get("kid_mean", float("nan")))
+            )
 
     sample_metric_config = config["evaluation"]["sample_metrics"]
     if any(
@@ -1523,9 +1736,6 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         sample_metric_result["sample_metrics_duration_s"] = duration
         final_summary.update(sample_metric_result)
         _write_json(run_dir / "sample_metrics.json", sample_metric_result)
-        _append_jsonl(
-            metrics_path, {"type": "sample_metrics", **sample_metric_result}
-        )
         if trainer.ema_enabled:
             ema_sample_start = time.perf_counter()
             ema_sample_metric_result = _sample_metric_eval(
@@ -1551,9 +1761,6 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
                 **ema_sample_metric_result,
             }
             _write_json(run_dir / "sample_metrics_ema.json", ema_sample_log)
-            _append_jsonl(
-                metrics_path, {"type": "sample_metrics_ema", **ema_sample_log}
-            )
         if not sw_validation_config["enabled"]:
             # Stage-A style: only a final sliced-Wasserstein exists. Surface it in
             # the summary under the same keys used for periodic validation.
@@ -1637,6 +1844,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             manifest=manifest,
         )
         trainer.record_evaluation_time(time.perf_counter() - start)
+    _save_run_arrays(run_dir, train_arrays, evaluation_arrays)
     _save_run_diagnostics(diagnostic_dir, run_dir, run)
     final_summary.update(trainer.accounting())
     _write_json(run_dir / "final_summary.json", final_summary)
@@ -1659,7 +1867,14 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             "environment": _environment_snapshot(),
         },
     )
-    _write_json(run_dir / "status.json", {"status": "completed", "updated_at": _utc_now()})
+    _write_json(
+        run_dir / "status.json",
+        {
+            "status": "completed",
+            "updated_at": _utc_now(),
+            "arrays_path": "arrays.npz",
+        },
+    )
     return {"run_id": run["run_id"], "status": "completed"}
 
 
@@ -1845,23 +2060,17 @@ def _best_validation_loss(session_dir: Path, run: dict[str, Any]) -> float:
                 return float(value)
         except Exception:
             pass
-    metrics_path = run_dir / "metrics.jsonl"
-    if metrics_path.is_file():
-        values = []
-        for line in metrics_path.read_text(encoding="utf-8").splitlines():
-            try:
-                record = json.loads(line)
-            except Exception:
-                continue
-            if (
-                record.get("type") in {"validation", "evaluation"}
-                and record.get("val_fm_loss") is not None
-            ):
-                value = float(record["val_fm_loss"])
-                if np.isfinite(value):
-                    values.append(value)
-        if values:
-            return min(values)
+    values = []
+    for record in _load_run_records(run_dir):
+        if (
+            record.get("type") in {"validation", "evaluation"}
+            and record.get("val_fm_loss") is not None
+        ):
+            value = float(record["val_fm_loss"])
+            if np.isfinite(value):
+                values.append(value)
+    if values:
+        return min(values)
     return float("inf")
 
 
@@ -1899,13 +2108,9 @@ def plot_session(session_dir: Path) -> None:
 
     runs_data = []  # (run, records, metric_rows)
     for run in planned:
-        metrics_path = session_dir / "runs" / run["run_id"] / "metrics.jsonl"
-        if not metrics_path.is_file():
+        records = _load_run_records(session_dir / "runs" / run["run_id"])
+        if not records:
             continue
-        records = [
-            json.loads(line)
-            for line in metrics_path.read_text(encoding="utf-8").splitlines()
-        ]
         rows = _collect_metric_rows(records)
         if rows:
             runs_data.append((run, records, rows))

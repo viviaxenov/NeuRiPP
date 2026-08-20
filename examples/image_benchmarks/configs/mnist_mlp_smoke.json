@@ -28,8 +28,7 @@
   "training": {
     "max_steps": 2,
     "batch_size": 4,
-    "log_every": 1,
-    "validation_every": 1,
+    "eval_every": 1,
     "checkpoint_every": 1,
     "keep_checkpoints": 2
   },

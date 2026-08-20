@@ -342,7 +342,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
         training["target_loader_epochs"] = _positive_integer(
             training["target_loader_epochs"], "training.target_loader_epochs"
         )
-    for name in ("log_every", "checkpoint_every", "validation_every"):
+    for name in ("eval_every", "checkpoint_every"):
         training[name] = _positive_integer(training.get(name, 1000), f"training.{name}")
     training["keep_checkpoints"] = _positive_integer(
         training.get("keep_checkpoints", 3), "training.keep_checkpoints"

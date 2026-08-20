@@ -6,8 +6,7 @@
     "max_steps": 2340,
     "target_loader_epochs": 10,
     "batch_size": 256,
-    "log_every": 10,
-    "validation_every": 117,
+    "eval_every": 117,
     "checkpoint_every": 1170,
     "keep_checkpoints": 2
   },

@@ -257,8 +257,7 @@ def test_fashion_300epoch_comparison_has_exact_method_settings():
         "max_steps": 9000,
         "target_loader_epochs": 300,
         "batch_size": 2000,
-        "log_every": 10,
-        "validation_every": 300,
+        "eval_every": 300,
         "checkpoint_every": 300,
         "keep_checkpoints": 3,
     }
