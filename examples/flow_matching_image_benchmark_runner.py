@@ -267,12 +267,18 @@ def _run_label(run: dict[str, Any], varied_keys: list[str]) -> str:
     """Legend label: METHOD followed by varied hyperparameters in shorthand."""
     params = _run_line_params(run)
     method = str(params.get("method", "run")).upper()
+    method_varied = "method" in varied_keys
     parts = [
-        f"{PARAM_SHORTHAND.get(key, _display_param_key(key))}={_format_param_value(params[key])}"
+        method
+        if key == "method"
+        else f"{PARAM_SHORTHAND.get(key, _display_param_key(key))}={_format_param_value(params[key])}"
         for key in varied_keys
         if key in params
     ]
-    return method if not parts else f"{method}  " + ", ".join(parts)
+    if not parts:
+        return method
+    prefix = "" if method_varied else f"{method}  "
+    return prefix + ", ".join(parts)
 
 
 def _varying_run_keys(runs: list[dict[str, Any]]) -> list[str]:

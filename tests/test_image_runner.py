@@ -293,6 +293,19 @@ def test_run_label_uses_shorthand_and_only_varied_keys():
     assert r"$\|\mathrm{grad}E\|_{\max}$=20" in label
 
 
+def test_run_label_does_not_duplicate_varied_method():
+    runner = load_runner()
+    runs = [
+        {"method": {"name": "adam", "kwargs": {"learning_rate": 1e-3}}},
+        {"method": {"name": "ngd", "kwargs": {"learning_rate": 1e-3}}},
+    ]
+    varied = runner._varying_run_keys(runs)
+    label = runner._run_label(runs[0], varied)
+    assert label.startswith("ADAM")
+    assert "method=" not in label
+    assert label.count("ADAM") == 1
+
+
 def test_apply_log_ylim_anchors_to_step0_max():
     runner = load_runner()
     import matplotlib.pyplot as plt

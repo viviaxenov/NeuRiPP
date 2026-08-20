@@ -1,0 +1,11 @@
+{
+  "extends": "mnist_ae32_ngd_sweep.json",
+  "experiment": {
+    "name": "mnist_ae32_ngd_sweep_15k"
+  },
+  "training": {
+    "max_steps": 15000,
+    "eval_every": 100,
+    "checkpoint_every": 25000
+  }
+}
