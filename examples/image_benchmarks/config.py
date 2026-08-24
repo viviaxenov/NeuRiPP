@@ -373,6 +373,10 @@ def load_config(path: str | Path) -> dict[str, Any]:
         method["n_restarts"] = _positive_integer(
             method.get("n_restarts", 1), f"methods[{index}].n_restarts"
         )
+        if "max_steps" in method:
+            method["max_steps"] = _positive_integer(
+                method["max_steps"], f"methods[{index}].max_steps"
+            )
         kwargs = _object(method.get("kwargs", {}), f"methods[{index}].kwargs")
         if method["name"] in {"ngd", "anderson"}:
             if "step_size" not in kwargs:

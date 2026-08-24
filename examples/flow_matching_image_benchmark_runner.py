@@ -1319,6 +1319,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         float("inf"),
     )
     training = config["training"]
+    max_steps = int(run["method"].get("max_steps", training["max_steps"]))
     if trainer.step_count == 0 and not any(
         record.get("type") == "train" and record.get("optimizer_step") == 0
         for record in previous_records
@@ -1424,7 +1425,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         evaluation_arrays["kid_mean"].append(float("nan"))
         evaluation_arrays["ema_kid_mean"].append(float("nan"))
         _save_run_arrays(run_dir, train_arrays, evaluation_arrays)
-    while trainer.step_count < training["max_steps"]:
+    while trainer.step_count < max_steps:
         batch = train_stream.next_batch()
         values = trainer.step(batch)
         step = trainer.step_count
@@ -1445,7 +1446,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         train_arrays["wall_clock_train_s"].append(
             float(accounting["wall_clock_train_s"])
         )
-        if step % training["eval_every"] == 0 or step == training["max_steps"]:
+        if step % training["eval_every"] == 0 or step == max_steps:
             from image_benchmarks.evaluation.validation import evaluate_fixed_fm_loss
 
             start = time.perf_counter()
