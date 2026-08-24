@@ -16,5 +16,5 @@
     "kid": {"enabled": false}
   },
   "resources": {"gpu_ids": [0, 1, 2, 3, 4, 5, 6], "gpus_per_run": 1, "max_concurrent_runs": 7, "data_parallel": true, "worker_env": {"XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9"}},
-  "plotting": {"sample_grid": {"enabled": true, "rows": 8, "columns": 8}}
+  "plotting": {"sample_grid": {"enabled": true, "rows": 8, "columns": 8}, "validation_metric": "auto", "validation_loss_epsilon": 0.03}
 }

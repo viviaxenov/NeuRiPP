@@ -408,7 +408,9 @@ def test_plot_session_produces_topk_pdf():
             )
         runner.plot_session(session)
         assert (session / "plots" / "diagnostics_comparison.pdf").stat().st_size > 0
-        assert (session / "plots" / "diagnostics_top1.pdf").stat().st_size > 0
+        assert (
+            session / "plots" / "top_1" / "diagnostics_best_validation_loss.pdf"
+        ).stat().st_size > 0
 
 
 if __name__ == "__main__":

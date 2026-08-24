@@ -2049,8 +2049,9 @@ def _plot_combined(
             axis.grid(True, alpha=0.25)
             if axis.lines:
                 axis.legend(fontsize="small")
-    (session_dir / "plots").mkdir(parents=True, exist_ok=True)
-    figure.savefig(session_dir / "plots" / filename, format="pdf")
+    output_path = session_dir / "plots" / filename
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output_path, format="pdf")
     plt.close(figure)
 
 
@@ -2084,21 +2085,114 @@ def _select_topk_runs(
     session_dir: Path,
     runs_data: list[tuple[dict[str, Any], list, list]],
     k: int,
+    *,
+    criterion: str = "best_validation_loss",
+    validation_metric: str | None = None,
+    validation_loss_epsilon: float = 0.03,
 ) -> tuple[list[tuple[dict[str, Any], list, list]], list[int]]:
-    """Keep the top k runs per method by best validation loss.
+    """Select the top k runs per method by a validation criterion.
 
     Returns the filtered runs_data (in original order) and the indices of the
     selected runs within the input runs_data, so styles stay consistent.
     """
+    if criterion not in {
+        "best_validation_loss",
+        "best_validation_metric",
+        "fastest_iteration",
+        "fastest_wall_clock",
+    }:
+        raise ValueError(f"Unknown top-k criterion: {criterion}")
+
+    def validation_records(records):
+        return [
+            record
+            for record in records
+            if record.get("type") == "validation"
+            and record.get("val_fm_loss") is not None
+            and np.isfinite(record["val_fm_loss"])
+        ]
+
+    def metric_records(records, metric_key):
+        if metric_key == "val_fm_loss":
+            record_type = "validation"
+        else:
+            record_type = {
+                "sliced_wasserstein": "validation_sw",
+                "fid": "evaluation",
+                "kid_mean": "evaluation",
+            }[metric_key]
+        return [
+            record
+            for record in records
+            if record.get("type") == record_type
+            and record.get(metric_key) is not None
+            and np.isfinite(record[metric_key])
+        ]
+
+    if validation_metric is None or validation_metric == "auto":
+        for candidate in ("sliced_wasserstein", "fid", "kid_mean"):
+            if any(metric_records(records, candidate) for _, records, _ in runs_data):
+                validation_metric = candidate
+                break
+        if validation_metric is None or validation_metric == "auto":
+            validation_metric = "val_fm_loss"
+    if criterion == "best_validation_metric" and validation_metric is None:
+        raise ValueError("No validation metric is available for top-k selection")
+
+    global_validation_minimum = min(
+        (
+            float(record["val_fm_loss"])
+            for _, records, _ in runs_data
+            for record in validation_records(records)
+        ),
+        default=float("inf"),
+    )
+    threshold = global_validation_minimum * (1.0 + validation_loss_epsilon)
+
+    def sort_key(index: int):
+        run, records, _ = runs_data[index]
+        if criterion == "best_validation_loss":
+            value = _best_validation_loss(session_dir, run)
+            return (value, run["run_id"])
+        if criterion == "best_validation_metric":
+            values = [
+                float(record[validation_metric])
+                for record in metric_records(records, validation_metric)
+            ]
+            return (min(values, default=float("inf")), run["run_id"])
+
+        reached = sorted(
+            (
+                record
+                for record in validation_records(records)
+                if float(record["val_fm_loss"]) <= threshold
+            ),
+            key=lambda record: (
+                int(record.get("optimizer_step", 0)),
+                float(record.get("wall_clock_train_s", float("inf"))),
+            ),
+        )
+        if not reached:
+            return (float("inf"), float("inf"), run["run_id"])
+        first = reached[0]
+        if criterion == "fastest_iteration":
+            return (
+                float(first.get("optimizer_step", float("inf"))),
+                float(first.get("wall_clock_train_s", float("inf"))),
+                run["run_id"],
+            )
+        return (
+            float(first.get("wall_clock_train_s", float("inf"))),
+            float(first.get("optimizer_step", float("inf"))),
+            run["run_id"],
+        )
+
     by_method: dict[str, list[int]] = {}
     for index, (run, _, _) in enumerate(runs_data):
         by_method.setdefault(run["method"]["name"], []).append(index)
     selected: list[int] = []
     for indices in by_method.values():
-        ranked = sorted(
-            indices,
-            key=lambda i: _best_validation_loss(session_dir, runs_data[i][0]),
-        )
+        ranked = sorted(indices, key=sort_key)
         selected.extend(ranked[:k])
     order = sorted(selected)
     return [runs_data[i] for i in order], order
@@ -2130,16 +2224,35 @@ def plot_session(session_dir: Path) -> None:
 
     k = int(plotting_config.get("top_runs_per_method", 5))
     if k >= 1:
-        selected_data, selected_order = _select_topk_runs(session_dir, runs_data, k)
-        if selected_data:
-            selected_styles = [styles[i] for i in selected_order]
-            _plot_combined(
+        top_dir = f"top_{k}"
+        validation_metric = plotting_config.get("validation_metric", "auto")
+        validation_loss_epsilon = float(
+            plotting_config.get("validation_loss_epsilon", 0.03)
+        )
+        criteria = (
+            ("best_validation_loss", "diagnostics_best_validation_loss.pdf"),
+            ("best_validation_metric", "diagnostics_best_validation_metric.pdf"),
+            ("fastest_iteration", "diagnostics_fastest_iteration.pdf"),
+            ("fastest_wall_clock", "diagnostics_fastest_wall_clock.pdf"),
+        )
+        for criterion, filename in criteria:
+            selected_data, selected_order = _select_topk_runs(
                 session_dir,
-                selected_data,
-                varied_keys,
-                selected_styles,
-                f"diagnostics_top{k}.pdf",
+                runs_data,
+                k,
+                criterion=criterion,
+                validation_metric=validation_metric,
+                validation_loss_epsilon=validation_loss_epsilon,
             )
+            if selected_data:
+                selected_styles = [styles[i] for i in selected_order]
+                _plot_combined(
+                    session_dir,
+                    selected_data,
+                    varied_keys,
+                    selected_styles,
+                    f"{top_dir}/{filename}",
+                )
 
 
 def parse_args(argv=None):
