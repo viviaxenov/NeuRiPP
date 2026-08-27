@@ -53,7 +53,7 @@ def _run_ten_steps(method_config, seed):
     for _ in range(10):
         values = trainer.step(batch)
         assert all(jnp.all(jnp.isfinite(value)) for value in jax.tree.leaves(values))
-    assert trainer.step_count == 10
+    assert trainer.step_count == 10 + trainer.method.initialization_updates
     assert (
         trainer.model.rhs.down_stages[0].blocks[0].residual.dropout.deterministic
         is False
