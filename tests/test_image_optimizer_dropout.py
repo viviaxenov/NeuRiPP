@@ -70,7 +70,6 @@ def test_unet_dropout_runs_for_adam_ngd_and_anderson():
                 "linear_solver_regularization": 1e-3,
                 "linear_solver_tolerance": 1e-6,
                 "linear_solver_maxiter": 3,
-                "regularization_factor": 1e-3,
             },
         },
         {
@@ -80,6 +79,7 @@ def test_unet_dropout_runs_for_adam_ngd_and_anderson():
                 "linear_solver_regularization": 1e-3,
                 "linear_solver_tolerance": 1e-6,
                 "linear_solver_maxiter": 3,
+                "regularization_factor": 1e-3,
             },
         },
     ]
