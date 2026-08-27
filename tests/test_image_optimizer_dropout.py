@@ -15,6 +15,13 @@ from image_benchmarks.training.trainer import ImageTrainer
 from neuripp.parametric_pushforward.flow_matching import FlowMatching, flow_matching_loss
 
 
+class _SpatialFlowMatching(FlowMatching):
+    """Use spatial reference noise so the tiny RHS matches image batches."""
+
+    def _sample_latent(self, n_samples, rngs):
+        return rngs.normal((n_samples, *self.dim))
+
+
 def _tiny_flow_matching(seed: int):
     rngs = nnx.Rngs(seed)
     rhs = build_rhs(
@@ -30,7 +37,7 @@ def _tiny_flow_matching(seed: int):
         (4, 4, 1),
         rngs=rngs,
     )
-    return FlowMatching(rhs, rngs, 2, ode_method="euler", ode_nstep_max=1)
+    return _SpatialFlowMatching(rhs, rngs, 2, ode_method="euler", ode_nstep_max=1)
 
 
 def _run_ten_steps(method_config, seed):
