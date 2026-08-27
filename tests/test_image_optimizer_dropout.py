@@ -54,7 +54,10 @@ def _run_ten_steps(method_config, seed):
         values = trainer.step(batch)
         assert all(jnp.all(jnp.isfinite(value)) for value in jax.tree.leaves(values))
     assert trainer.step_count == 10
-    assert model.rhs.down_stages[0].blocks[0].residual.dropout.deterministic is False
+    assert (
+        trainer.model.rhs.down_stages[0].blocks[0].residual.dropout.deterministic
+        is False
+    )
 
 
 def test_unet_dropout_runs_for_adam_ngd_and_anderson():
