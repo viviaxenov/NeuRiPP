@@ -90,6 +90,7 @@ def get_anderson(
             step_size = stepsize_schedule_fn(step_size, i, **kwargs)
 
         f, grad = vg_fn(model, batch, rngs)
+        model.eval()
         natural_grad = _compute_natural_grad(
             model,
             rngs,
@@ -168,6 +169,7 @@ def get_anderson(
         # update params
         params_new = jax.tree.map(lambda _x, _dx: _x + _dx, params, delta_x)
         model = nnx.merge(gd, params_new, rest)
+        model.train()
 
         args = (step_size, *args[1:])
 
