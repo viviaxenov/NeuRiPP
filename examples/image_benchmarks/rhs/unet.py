@@ -69,7 +69,7 @@ class ResBlock(nnx.Module):
             dtype=dtype,
             rngs=rngs,
         )
-        self.dropout = StatelessDropout(dropout)
+        self.dropout = nnx.Dropout(dropout, rngs=rngs)
         self.conv2 = nnx.Conv(
             output_channels,
             output_channels,
@@ -97,26 +97,13 @@ class ResBlock(nnx.Module):
         hidden = self.conv1(jax.nn.silu(self.norm1(features)))
         hidden = hidden + self.time_projection(jax.nn.silu(time_embedding))[None, None, :]
         hidden = self.conv2(
-            self.dropout(jax.nn.silu(self.norm2(hidden)), dropout_key)
+            self.dropout(
+                jax.nn.silu(self.norm2(hidden)),
+                deterministic=dropout_key is None,
+                rngs=dropout_key,
+            )
         )
         return residual + hidden
-
-
-class StatelessDropout(nnx.Module):
-    """Dropout controlled by an explicit key, safe inside JVP linearization."""
-
-    def __init__(self, rate: float):
-        if not 0.0 <= rate < 1.0:
-            raise ValueError("dropout rate must be in [0, 1)")
-        self.rate = float(rate)
-        self.deterministic = False
-
-    def __call__(self, features, key=None):
-        if self.rate == 0.0 or self.deterministic or key is None:
-            return features
-        keep_probability = 1.0 - self.rate
-        mask = jax.random.bernoulli(key, keep_probability, features.shape)
-        return jnp.where(mask, features / keep_probability, 0).astype(features.dtype)
 
 
 class AttentionBlock(nnx.Module):
