@@ -53,8 +53,9 @@ class TimeMLP(nnx.Module):
             ]
         )
 
-    def __call__(self, time, state, *args):
+    def __call__(self, time, state, *args, rngs=None):
         del args
+        del rngs
         if state.shape != (self.dim,):
             raise ValueError(f"MLP expected state shape ({self.dim},), got {state.shape}")
         time_embedding = sinusoidal_time_embedding(
@@ -77,6 +78,6 @@ class FlattenedRHS(nnx.Module):
         self.rhs = rhs
         self.dim = tuple(state_shape)
 
-    def __call__(self, time, state, *args):
-        prediction = self.rhs(time, state.reshape(-1), *args)
+    def __call__(self, time, state, *args, rngs=None):
+        prediction = self.rhs(time, state.reshape(-1), *args, rngs=rngs)
         return prediction.reshape(self.dim)

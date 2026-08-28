@@ -77,6 +77,7 @@ def get_ngd(
         state,
         batch,
         rngs,
+        matvec_batch=None,
     ):
         model, prev_grad, i, args, kwargs = state
         step_size = args[0]
@@ -87,6 +88,7 @@ def get_ngd(
         # compute loss and Euclidean grad
         f, grad = vg_fn(model, batch, rngs)
 
+        model.eval()
         # compute natural grad
         # natural_grad_norm_alt = tree_dot_product(grad, natural_grad)
         natural_grad = _compute_natural_grad(
@@ -94,13 +96,16 @@ def get_ngd(
             rngs,
             grad,
             prev_grad,
-            data_batch=batch,
+            data_batch=batch if matvec_batch is None else matvec_batch,
             **kwargs,
         )
         grad_norm_sq = tree_dot_product(grad, grad)
 
         natural_grad_norm_sq = model.scalar_product(
-            natural_grad, natural_grad, rngs, data_batch=batch
+            natural_grad,
+            natural_grad,
+            rngs,
+            data_batch=batch if matvec_batch is None else matvec_batch,
         )
         norm = jnp.maximum(natural_grad_norm_sq, 0.0) ** 0.5
         # Gradient clipping
@@ -113,6 +118,7 @@ def get_ngd(
         # update params
         params_new = jax.tree.map(lambda x, y: x - y * step_size, params, natural_grad)
         model = nnx.merge(gd, params_new, rest)
+        model.train()
         args = (step_size, *args[1:])
 
         return (model, natural_grad, i+ 1, args, kwargs), (

@@ -40,7 +40,8 @@ def test_nll_adds_gaussian_constant_and_normalization_jacobian():
         def __init__(self):
             self.dim = 2
 
-        def __call__(self, time, x):
+        def __call__(self, time, x, *, rngs=None):
+            del rngs
             return jnp.zeros_like(x)
 
     rngs = nnx.Rngs(0)

@@ -23,8 +23,9 @@ class TinyRHS(nnx.Module):
         self.dim = 2
         self.linear = nnx.Linear(3, 2, rngs=rngs)
 
-    def __call__(self, time, state, *args):
+    def __call__(self, time, state, *args, rngs=None):
         del args
+        del rngs
         return self.linear(jnp.concatenate((state, jnp.atleast_1d(time))))
 
 

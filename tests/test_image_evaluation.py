@@ -43,8 +43,8 @@ class ZeroRHS(nnx.Module):
     def __init__(self, shape):
         self.dim = shape
 
-    def __call__(self, time, state, *args):
-        del time, args
+    def __call__(self, time, state, *args, rngs=None):
+        del time, args, rngs
         return jnp.zeros_like(state)
 
 

@@ -12,9 +12,10 @@ class ZeroImageRHS(nnx.Module):
     def __init__(self, shape):
         self.dim = shape
 
-    def __call__(self, time, state, *args):
+    def __call__(self, time, state, *args, rngs=None):
         del time
         del args
+        del rngs
         return jnp.zeros_like(state)
 
 

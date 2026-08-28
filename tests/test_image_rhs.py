@@ -164,13 +164,15 @@ def test_unet_pullback_metric_supports_stateless_dropout():
     data = jnp.zeros((1, 4, 4, 1))
     _, parameters, _ = nnx.split(model, nnx.Param, ...)
     tangent = jax.tree.map(jnp.zeros_like, parameters)
+    model.eval()
     scalar = model.scalar_product(tangent, tangent, nnx.Rngs(21), data_batch=data)
     matvec = model.get_matvec_fn(nnx.Rngs(22), data_batch=data)(tangent)
+    model.train()
     assert jnp.isfinite(scalar)
     assert all(jnp.all(jnp.isfinite(value)) for value in jax.tree.leaves(matvec))
 
 
-def test_unet_sampling_is_deterministic_without_dropout_key():
+def test_unet_sampling_is_deterministic_in_eval_mode():
     rngs = nnx.Rngs(30)
     rhs = build_rhs(
         {

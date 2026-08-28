@@ -17,7 +17,8 @@ class TinyMLP(nnx.Module):
             nnx.Linear(4, 2, rngs=rngs),
         )
 
-    def __call__(self, time, x):
+    def __call__(self, time, x, *, rngs=None):
+        del rngs
         return self.layers(jnp.concatenate((x, jnp.atleast_1d(time))))
 
 
@@ -41,7 +42,8 @@ def test_interpolant_and_loss_shapes():
 
 def test_loss_is_vector_mean_squared_error():
     class ZeroRHS(nnx.Module):
-        def __call__(self, time, x):
+        def __call__(self, time, x, *, rngs=None):
+            del rngs
             return jnp.zeros_like(x)
 
     class FixedModel(nnx.Module):

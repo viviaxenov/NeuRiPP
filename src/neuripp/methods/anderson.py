@@ -57,6 +57,7 @@ def get_anderson(
         gd, par, rest = nnx.split(model, nnx.Param, ...)
         zero_vector = jax.tree.map(jnp.zeros_like, par)
         f, grad = vg_fn(model, batch, rngs)
+        model.eval()
         natural_grad = _compute_natural_grad(
             model,
             rngs,
@@ -73,6 +74,7 @@ def get_anderson(
 
         par = jax.tree.map(lambda _p, _dp: _p + _dp, par, residual)
         model = nnx.merge(gd, par, rest)
+        model.train()
 
         history = jax.tree.map(
             lambda _l: jnp.zeros((2 * history_length, *_l.shape)), residual
@@ -90,6 +92,7 @@ def get_anderson(
             step_size = stepsize_schedule_fn(step_size, i, **kwargs)
 
         f, grad = vg_fn(model, batch, rngs)
+        model.eval()
         natural_grad = _compute_natural_grad(
             model,
             rngs,
@@ -168,6 +171,7 @@ def get_anderson(
         # update params
         params_new = jax.tree.map(lambda _x, _dx: _x + _dx, params, delta_x)
         model = nnx.merge(gd, params_new, rest)
+        model.train()
 
         args = (step_size, *args[1:])
 
