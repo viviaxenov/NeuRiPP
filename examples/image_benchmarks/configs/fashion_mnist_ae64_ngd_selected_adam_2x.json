@@ -1,0 +1,59 @@
+{
+  "extends": "fashion_mnist_ae64_ngd_sweep.json",
+  "experiment": {
+    "name": "fashion_mnist_ae64_ngd_selected_adam_2x",
+    "seed": 42
+  },
+  "training": {
+    "max_steps": 18000,
+    "batch_size": 3000,
+    "eval_every": 500,
+    "checkpoint_every": 7500,
+    "keep_checkpoints": 3
+  },
+  "plotting": {
+    "style_channels": {
+      "colormap": ["Blues", "Reds", "Greens"]
+    }
+  },
+  "methods": [
+    {
+      "name": "ngd",
+      "max_steps": 18000,
+      "eval_every": 500,
+      "n_restarts": 1,
+      "kwargs": {
+        "step_size": 0.01,
+        "linear_solver_regularization": 0.1,
+        "linear_solver_tolerance": 1e-6,
+        "linear_solver_maxiter": 50,
+        "natural_grad_clipping_threshold": 10.0,
+        "matvec_batch_size": 300
+      }
+    },
+    {
+      "name": "ngd",
+      "max_steps": 18000,
+      "eval_every": 500,
+      "n_restarts": 1,
+      "kwargs": {
+        "step_size": 0.01,
+        "linear_solver_regularization": 0.1,
+        "linear_solver_tolerance": 1e-6,
+        "linear_solver_maxiter": 50,
+        "natural_grad_clipping_threshold": 10.0,
+        "matvec_batch_size": 3000
+      }
+    },
+    {
+      "name": "adamw",
+      "max_steps": 96000,
+      "eval_every": 3000,
+      "n_restarts": 1,
+      "kwargs": {
+        "learning_rate": 0.001,
+        "weight_decay": 0.01
+      }
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "extends": "fashion_mnist_ae64_ngd_sweep.json",
+  "experiment": {
+    "name": "fashion_mnist_ae64_ngd_sweep_matvec_adam_comparison"
+  },
+  "training": {
+    "max_steps": 18000,
+    "batch_size": 3000,
+    "eval_every": 500,
+    "checkpoint_every": 7500,
+    "keep_checkpoints": 3
+  },
+  "plotting": {
+    "style_channels": {
+      "colormap": ["Blues", "Reds", "Greens"]
+    }
+  },
+  "method_expansion": {
+    "method": "ngd",
+    "include_methods": ["ngd"],
+    "field": "matvec_batch_size",
+    "values": [3000, 300],
+    "max_steps": 18000,
+    "eval_every": 500
+  },
+  "additional_methods": [
+    {
+      "name": "adamw",
+      "max_steps": 48000,
+      "eval_every": 1500,
+      "n_restarts": 1,
+      "kwargs": {
+        "learning_rate": 0.001,
+        "weight_decay": 0.01
+      }
+    }
+  ]
+}
