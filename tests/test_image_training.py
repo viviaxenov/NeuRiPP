@@ -51,6 +51,7 @@ METHOD_CONFIGS = {
             "step_size": 1e-3,
             "linear_solver_regularization": 1e-2,
             "linear_solver_maxiter": 2,
+            "matvec_batch_size": 2,
         },
     },
     "anderson": {
@@ -79,7 +80,7 @@ def _worker(device_count):
             config,
             flow_matching_loss,
             data,
-            nnx.Rngs(200 + method_index),
+            nnx.Rngs(default=200 + method_index, matvec=300 + method_index),
             data_parallel=context,
         )
         values = None

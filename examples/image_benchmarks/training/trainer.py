@@ -51,6 +51,13 @@ class ImageTrainer:
             rngs = data_parallel.replicate_graph_node(rngs)
             initial_batch = data_parallel.shard_batch(initial_batch)
         self.rngs = rngs
+        method_kwargs = method_config.get("kwargs", {})
+        self.matvec_batch_size = (
+            int(method_kwargs["matvec_batch_size"])
+            if method_config.get("name") == "ngd"
+            and "matvec_batch_size" in method_kwargs
+            else None
+        )
         self.method: ResolvedMethod = resolve_method(method_config, loss)
         initialization_start = time.perf_counter()
         self.state = self.method.init_fn(
@@ -103,10 +110,33 @@ class ImageTrainer:
 
     def step(self, batch):
         batch_size = self._batch_size(batch)
+        matvec_batch = None
         if self.data_parallel is not None:
             batch = self.data_parallel.shard_batch(batch)
+        if self.matvec_batch_size is not None:
+            if self.matvec_batch_size > batch_size:
+                raise ValueError(
+                    "matvec_batch_size cannot exceed the current gradient batch size"
+                )
+            local_batch_size = self._batch_size(batch)
+            local_matvec_size = max(
+                1,
+                round(self.matvec_batch_size * local_batch_size / batch_size),
+            )
+            indices = jax.random.choice(
+                self.rngs.matvec(),
+                local_batch_size,
+                shape=(local_matvec_size,),
+                replace=False,
+            )
+            matvec_batch = jax.tree.map(lambda value: value[indices], batch)
         start = time.perf_counter()
-        self.state, values = self._step(self.state, batch, self.rngs)
+        if matvec_batch is None:
+            self.state, values = self._step(self.state, batch, self.rngs)
+        else:
+            self.state, values = self._step(
+                self.state, batch, self.rngs, matvec_batch
+            )
         jax.block_until_ready(values)
         if self._ema is not None:
             self._ema.update(self.model, self.step_count + 1)

@@ -21,7 +21,7 @@ REQUIRED_TOP_LEVEL = {
     "evaluation",
     "resources",
 }
-OPTIONAL_TOP_LEVEL = {"plotting", "ema"}
+OPTIONAL_TOP_LEVEL = {"plotting", "ema", "method_expansion", "additional_methods"}
 METHOD_NAMES = {
     "adagrad",
     "adam",
@@ -44,6 +44,7 @@ RNG_STREAMS = (
     "encoder_sampling",
     "fm_noise",
     "fm_time",
+    "matvec",
     "model_dropout",
     "sampling",
     "evaluation",
@@ -66,6 +67,33 @@ def _integer_at_least(value: Any, minimum: int, name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
         raise ValueError(f"{name} must be an integer at least {minimum}")
     return value
+
+
+def _set_nested(mapping: dict[str, Any], path: str, value: Any, name: str) -> None:
+    parts = path.split(".")
+    if any(not part for part in parts):
+        raise ValueError(f"{name} must contain non-empty path components")
+    target = mapping
+    for part in parts[:-1]:
+        child = target.setdefault(part, {})
+        if not isinstance(child, dict):
+            raise ValueError(f"{name} cannot descend through non-object {part!r}")
+        target = child
+    target[parts[-1]] = copy.deepcopy(value)
+
+
+def _validate_ema_override(value: Any, name: str) -> None:
+    ema = _object(value, name)
+    if "enabled" in ema and not isinstance(ema["enabled"], bool):
+        raise ValueError(f"{name}.enabled must be a boolean")
+    if "decay" in ema:
+        decay = ema["decay"]
+        if not isinstance(decay, (int, float)) or not 0.0 < float(decay) < 1.0:
+            raise ValueError(f"{name}.decay must be a number in (0, 1)")
+    if "start_step" in ema:
+        start_step = ema["start_step"]
+        if not isinstance(start_step, int) or isinstance(start_step, bool) or start_step < 0:
+            raise ValueError(f"{name}.start_step must be a non-negative integer")
 
 
 def _boolean(value: Any, name: str) -> bool:
@@ -282,6 +310,51 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if unknown:
         raise ValueError(f"Unknown top-level config keys: {', '.join(sorted(unknown))}")
     config = copy.deepcopy(config)
+    expansion = config.pop("method_expansion", None)
+    if expansion is not None:
+        expansion = _object(expansion, "method_expansion")
+        field = expansion.get("field")
+        values = expansion.get("values")
+        if not isinstance(field, str) or not field:
+            raise ValueError("method_expansion.field must be a non-empty string")
+        if not isinstance(values, list) or not values:
+            raise ValueError("method_expansion.values must be a non-empty array")
+        include_methods = expansion.get("include_methods")
+        if include_methods is not None:
+            if not isinstance(include_methods, list) or not all(
+                isinstance(name, str) for name in include_methods
+            ):
+                raise ValueError("method_expansion.include_methods must be an array of strings")
+            include_methods = set(include_methods)
+        expanded_methods = []
+        for method in config["methods"]:
+            if include_methods is not None and method.get("name") not in include_methods:
+                expanded_methods.append(method)
+                continue
+            if method.get("name") != expansion.get("method", "ngd"):
+                expanded_methods.append(method)
+                continue
+            for value in values:
+                variant = copy.deepcopy(method)
+                if "." in field:
+                    root, nested = field.split(".", 1)
+                    if root not in {"ema", "kwargs"}:
+                        raise ValueError(
+                            "method_expansion dotted fields must start with 'ema' or 'kwargs'"
+                        )
+                    _set_nested(variant, field, value, "method_expansion.field")
+                else:
+                    variant.setdefault("kwargs", {})[field] = value
+                for key in ("max_steps", "eval_every"):
+                    if key in expansion:
+                        variant[key] = expansion[key]
+                expanded_methods.append(variant)
+        config["methods"] = expanded_methods
+    if "additional_methods" in config:
+        additional = config.pop("additional_methods")
+        if not isinstance(additional, list):
+            raise ValueError("additional_methods must be an array")
+        config["methods"].extend(copy.deepcopy(additional))
     base = path.parent
 
     experiment = _object(config["experiment"], "experiment")
@@ -377,7 +450,13 @@ def load_config(path: str | Path) -> dict[str, Any]:
             method["max_steps"] = _positive_integer(
                 method["max_steps"], f"methods[{index}].max_steps"
             )
+        if "eval_every" in method:
+            method["eval_every"] = _positive_integer(
+                method["eval_every"], f"methods[{index}].eval_every"
+            )
         kwargs = _object(method.get("kwargs", {}), f"methods[{index}].kwargs")
+        if "ema" in method:
+            _validate_ema_override(method["ema"], f"methods[{index}].ema")
         if method["name"] in {"ngd", "anderson"}:
             if "step_size" not in kwargs:
                 raise ValueError(f"methods[{index}].kwargs.step_size is required")
@@ -389,6 +468,20 @@ def load_config(path: str | Path) -> dict[str, Any]:
             raise ValueError(
                 f"methods[{index}].kwargs.regularization_factor is required"
             )
+        if "matvec_batch_size" in kwargs:
+            if method["name"] != "ngd":
+                raise ValueError(
+                    "matvec_batch_size is only supported for methods[].name='ngd'"
+                )
+            kwargs["matvec_batch_size"] = _positive_integer(
+                kwargs["matvec_batch_size"],
+                f"methods[{index}].kwargs.matvec_batch_size",
+            )
+            if kwargs["matvec_batch_size"] > batch_size:
+                raise ValueError(
+                    f"methods[{index}].kwargs.matvec_batch_size cannot exceed "
+                    "training.batch_size"
+                )
         schedule = kwargs.get("stepsize_schedule", kwargs.get("stepsize_schedule_name"))
         if schedule not in {None, "schedule_exp"}:
             raise ValueError("Only stepsize_schedule='schedule_exp' is supported")
