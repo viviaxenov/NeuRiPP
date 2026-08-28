@@ -58,18 +58,6 @@ class CountingDecoder(IdentityEncoder):
         return latent
 
 
-class DropoutAwareRHS(nnx.Module):
-    def __init__(self):
-        self.dim = (2,)
-        self.uses_explicit_dropout_rng = True
-
-    def __call__(self, time, state, key=None):
-        del time
-        if key is None:
-            return jnp.zeros_like(state)
-        return jnp.ones_like(state) * jnp.sum(key.astype(jnp.float32)) * 1e-9
-
-
 class FakeExtractor:
     provenance = "fake_inception_for_tests"
 
@@ -86,15 +74,6 @@ def test_fixed_fm_validation_is_repeatable():
     validation = make_fixed_fm_validation(states, ["a", "b", "c", "d"], 9)
     first = evaluate_fixed_fm_loss(model, validation, batch_size=2)
     second = evaluate_fixed_fm_loss(model, validation, batch_size=3)
-    np.testing.assert_allclose(first, second, rtol=1e-6)
-
-
-def test_fixed_fm_validation_keeps_dropout_rng_across_batch_sizes():
-    model = FlowMatching(DropoutAwareRHS(), nnx.Rngs(1), 2)
-    states = np.ones((5, 2), dtype=np.float32)
-    validation = make_fixed_fm_validation(states, list("abcde"), 11)
-    first = evaluate_fixed_fm_loss(model, validation, batch_size=2)
-    second = evaluate_fixed_fm_loss(model, validation, batch_size=5)
     np.testing.assert_allclose(first, second, rtol=1e-6)
 
 

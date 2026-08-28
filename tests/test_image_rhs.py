@@ -188,6 +188,7 @@ def test_unet_sampling_is_deterministic_in_eval_mode():
         rngs=rngs,
     )
     model = FlowMatching(rhs, rngs, 1, ode_method="euler", ode_nstep_max=1)
+    model.eval()
     assert model.sample(1, nnx.Rngs(31)).shape == (1, 4, 4, 1)
 
 
@@ -200,5 +201,5 @@ if __name__ == "__main__":
     test_architecture_compatibility_errors_are_preflighted()
     test_unet_dropout_runs_inside_flow_matching_vmap()
     test_unet_pullback_metric_supports_stateless_dropout()
-    test_unet_sampling_is_deterministic_without_dropout_key()
+    test_unet_sampling_is_deterministic_in_eval_mode()
     print("Image RHS tests passed.")

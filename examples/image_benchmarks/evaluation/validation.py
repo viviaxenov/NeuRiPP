@@ -17,7 +17,6 @@ class FixedFMValidationSet:
     states: np.ndarray
     times: np.ndarray
     noise: np.ndarray
-    dropout_keys: np.ndarray
     identifiers: tuple[str, ...]
     seed: int
 
@@ -26,7 +25,6 @@ class FixedFMValidationSet:
         if (
             self.noise.shape != self.states.shape
             or self.times.shape != (count,)
-            or self.dropout_keys.shape != (count, 2)
         ):
             raise ValueError("Fixed FM states, noise, and times have incompatible shapes")
         if len(self.identifiers) != count:
@@ -39,17 +37,13 @@ def make_fixed_fm_validation(
     seed: int,
 ) -> FixedFMValidationSet:
     states = np.asarray(states, dtype=np.float32)
-    time_key, noise_key, dropout_key = jax.random.split(jax.random.key(seed), 3)
+    time_key, noise_key = jax.random.split(jax.random.key(seed), 2)
     times = np.asarray(jax.random.uniform(time_key, (states.shape[0],)))
     noise = np.asarray(jax.random.normal(noise_key, states.shape), dtype=np.float32)
-    dropout_keys = np.asarray(
-        jax.random.key_data(jax.random.split(dropout_key, states.shape[0]))
-    )
     return FixedFMValidationSet(
         states=states,
         times=times,
         noise=noise,
-        dropout_keys=dropout_keys,
         identifiers=tuple(str(identifier) for identifier in identifiers),
         seed=int(seed),
     )

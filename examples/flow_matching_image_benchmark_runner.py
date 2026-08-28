@@ -1221,6 +1221,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         default=run["rng_seeds"]["fm_noise"],
         fm_noise=run["rng_seeds"]["fm_noise"],
         fm_time=run["rng_seeds"]["fm_time"],
+        matvec=run["rng_seeds"]["matvec"],
         model_dropout=run["rng_seeds"]["model_dropout"],
     )
     trainer = ImageTrainer(
@@ -1231,7 +1232,14 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         training_rngs,
         data_parallel=context,
         dataset_size=manifest.splits["train"].count,
-        ema_config=config.get("ema"),
+        ema_config=(
+            {
+                **(config.get("ema") or {}),
+                **(run["method"].get("ema") or {}),
+            }
+            if config.get("ema") is not None or run["method"].get("ema") is not None
+            else None
+        ),
     )
     if trainer.method.initialization_updates == 0:
         # The first batch has not been consumed by Optax/NGD initialization.
@@ -1320,6 +1328,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
     )
     training = config["training"]
     max_steps = int(run["method"].get("max_steps", training["max_steps"]))
+    eval_every = int(run["method"].get("eval_every", training["eval_every"]))
     if trainer.step_count == 0 and not any(
         record.get("type") == "train" and record.get("optimizer_step") == 0
         for record in previous_records
@@ -1446,7 +1455,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         train_arrays["wall_clock_train_s"].append(
             float(accounting["wall_clock_train_s"])
         )
-        if step % training["eval_every"] == 0 or step == max_steps:
+        if step % eval_every == 0 or step == max_steps:
             from image_benchmarks.evaluation.validation import evaluate_fixed_fm_loss
 
             start = time.perf_counter()
@@ -2199,6 +2208,164 @@ def _select_topk_runs(
     return [runs_data[i] for i in order], order
 
 
+_THRESHOLD_REPORT_EPSILONS = (0.01, 0.05, 0.10)
+
+
+def _final_summary(session_dir: Path, run: dict[str, Any]) -> dict[str, Any]:
+    summary_path = Path(session_dir) / "runs" / run["run_id"] / "final_summary.json"
+    if not summary_path.is_file():
+        return {}
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _report_run_id(run: dict[str, Any]) -> int | str:
+    if "run_index" in run:
+        return int(run["run_index"])
+    try:
+        return int(str(run["run_id"]).split("_")[1])
+    except (IndexError, ValueError):
+        return run["run_id"]
+
+
+def _report_parameters(run: dict[str, Any]) -> str:
+    parameters = run["method"].get("kwargs", {})
+    return ", ".join(
+        f"{key}={_format_param_value(value)}"
+        for key, value in parameters.items()
+    ) or "-"
+
+
+def _report_number(value: Any, digits: int = 6) -> str:
+    if value is None:
+        return "Not available"
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return "Not available"
+    return f"{value:.{digits}f}" if np.isfinite(value) else "Not available"
+
+
+def _threshold_report(session_dir: Path, runs_data: list[tuple[dict[str, Any], list, list]]) -> str:
+    """Build a Markdown report of validation-loss threshold crossing times."""
+    validation_by_run = []
+    for run, records, _ in runs_data:
+        validation = [
+            record
+            for record in records
+            if record.get("type") == "validation"
+            and record.get("val_fm_loss") is not None
+            and np.isfinite(record["val_fm_loss"])
+        ]
+        if validation:
+            validation_by_run.append((run, validation))
+    if not validation_by_run:
+        return "# Validation-Loss Threshold Analysis\n\nNo validation-loss records are available.\n"
+
+    best_values = {
+        run["run_id"]: _best_validation_loss(session_dir, run)
+        for run, _ in validation_by_run
+    }
+    global_best = min(best_values.values())
+    lines = [
+        "# Validation-Loss Threshold Analysis",
+        "",
+        f"Global best validation loss: `{global_best:.6f}`",
+        "",
+        "Threshold crossings use the first recorded raw validation evaluation at or below the threshold.",
+        "Training time is the recorded training wall-clock time at that evaluation.",
+        "",
+    ]
+    for epsilon in _THRESHOLD_REPORT_EPSILONS:
+        threshold = global_best * (1.0 + epsilon)
+        lines.extend(
+            [
+                f"## {epsilon:.0%} Threshold",
+                "",
+                f"Threshold value: `{threshold:.6f}`",
+                "",
+                "| Global ID | Method | Parameters | Best val | EMA best | Best SW | Threshold iteration | Training time to threshold (s) |",
+                "|---:|---|---|---:|---:|---:|---:|---:|",
+            ]
+        )
+        report_rows = []
+        for run, validation in validation_by_run:
+            summary = _final_summary(session_dir, run)
+            reached = sorted(
+                (
+                    record
+                    for record in validation
+                    if float(record["val_fm_loss"]) <= threshold
+                ),
+                key=lambda record: (
+                    int(record.get("optimizer_step", 0)),
+                    float(record.get("wall_clock_train_s", float("inf"))),
+                ),
+            )
+            if reached:
+                first = reached[0]
+                iteration = f"{int(first['optimizer_step']):,}"
+                train_time = _report_number(first.get("wall_clock_train_s"), 3)
+            else:
+                iteration = "Not reached"
+                train_time = "Not reached"
+            report_rows.append(
+                (
+                    run,
+                    summary,
+                    iteration,
+                    train_time,
+                    float(reached[0].get("wall_clock_train_s", float("inf")))
+                    if reached
+                    else float("inf"),
+                    bool(reached),
+                )
+            )
+        method_order = []
+        for run, _, _, _, _, _ in report_rows:
+            method = run["method"]["name"]
+            if method not in method_order:
+                method_order.append(method)
+        for method in method_order:
+            method_rows = [row for row in report_rows if row[0]["method"]["name"] == method]
+            for run, summary, iteration, train_time, threshold_time, reached in sorted(
+                method_rows,
+                key=lambda row: (
+                    not row[5],
+                    row[4],
+                    _report_run_id(row[0]),
+                ),
+            ):
+                lines.append(
+                    "| "
+                    + " | ".join(
+                        (
+                            str(_report_run_id(run)),
+                            str(run["method"]["name"]),
+                            _report_parameters(run),
+                            _report_number(best_values[run["run_id"]]),
+                            _report_number(summary.get("ema_best_val_fm_loss")),
+                            _report_number(summary.get("best_sw")),
+                            iteration,
+                            train_time,
+                        )
+                    )
+                    + " |"
+                )
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _write_threshold_report(
+    session_dir: Path, runs_data: list[tuple[dict[str, Any], list, list]]
+) -> None:
+    report = _threshold_report(session_dir, runs_data)
+    (Path(session_dir) / "threshold_analysis.md").write_text(report, encoding="utf-8")
+
+
 def plot_session(session_dir: Path) -> None:
     planned = json.loads((session_dir / "planned_runs.json").read_text(encoding="utf-8"))
     resolved = {}
@@ -2217,6 +2384,8 @@ def plot_session(session_dir: Path) -> None:
             runs_data.append((run, records, rows))
     if not runs_data:
         return
+
+    _write_threshold_report(session_dir, runs_data)
 
     varied_keys = _varying_run_keys([run for run, _, _ in runs_data])
     styles = _assign_run_styles([run for run, _, _ in runs_data], plotting_config)

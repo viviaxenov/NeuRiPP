@@ -113,6 +113,37 @@ def test_config_inheritance_deep_merges_objects_and_replaces_arrays():
         assert len(plan_runs(config)) == 1
 
 
+def test_method_ema_override_and_expansion():
+    with tempfile.TemporaryDirectory() as directory:
+        payload = base_config(directory)
+        payload["ema"] = {"enabled": True, "decay": 0.9999}
+        payload["methods"] = [
+            {
+                "name": "ngd",
+                "kwargs": {"step_size": 1e-3},
+            },
+            {
+                "name": "adamw",
+                "kwargs": {"learning_rate": 1e-3},
+            },
+        ]
+        payload["method_expansion"] = {
+            "method": "ngd",
+            "include_methods": ["ngd"],
+            "field": "ema.decay",
+            "values": [0.99, 0.999],
+        }
+        config = load_config(write_config(directory, payload))
+        runs = plan_runs(config)
+        assert len(runs) == 3
+        assert [run["method"].get("ema", {}).get("decay") for run in runs] == [
+            0.99,
+            0.999,
+            None,
+        ]
+        assert runs[-1]["method"]["name"] == "adamw"
+
+
 def test_runtime_choices_fail_during_jax_free_preflight():
     cases = [
         ("rhs", {"type": "unet", "variant": "typo"}, "rhs.variant"),
@@ -274,6 +305,32 @@ def test_fashion_300epoch_comparison_has_exact_method_settings():
     assert config["rhs"]["base_channels"] == 16
     assert config["rhs"]["channel_mult"] == [1, 2]
     assert config["rhs"]["num_res_blocks"] == 1
+
+
+def test_ngd_matvec_batch_size_is_validated():
+    with tempfile.TemporaryDirectory() as directory:
+        payload = base_config(directory)
+        payload["training"]["batch_size"] = 8
+        payload["methods"][0] = {
+            "name": "ngd",
+            "kwargs": {"step_size": 1e-3, "matvec_batch_size": 4},
+        }
+        config = load_config(write_config(directory, payload))
+        assert config["methods"][0]["kwargs"]["matvec_batch_size"] == 4
+
+    with tempfile.TemporaryDirectory() as directory:
+        payload = base_config(directory)
+        payload["training"]["batch_size"] = 8
+        payload["methods"][0] = {
+            "name": "ngd",
+            "kwargs": {"step_size": 1e-3, "matvec_batch_size": 9},
+        }
+        try:
+            load_config(write_config(directory, payload))
+        except ValueError as error:
+            assert "cannot exceed" in str(error)
+        else:
+            raise AssertionError("Expected oversized matvec batch rejection")
 
 
 def test_obsolete_diffuse_source_checkout_fields_are_rejected():

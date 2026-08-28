@@ -413,6 +413,102 @@ def test_plot_session_produces_topk_pdf():
         ).stat().st_size > 0
 
 
+def test_plot_session_writes_threshold_analysis_report():
+    runner = load_runner()
+    with tempfile.TemporaryDirectory() as directory:
+        session = Path(directory)
+        (session / "plots").mkdir(parents=True)
+        runs = [
+            {
+                "run_id": "run_0007_adamw",
+                "run_index": 7,
+                "method": {"name": "adamw", "kwargs": {"learning_rate": 1e-3}},
+            },
+            {
+                "run_id": "run_0000_ngd",
+                "run_index": 0,
+                "method": {"name": "ngd", "kwargs": {"step_size": 1e-2}},
+            },
+        ]
+        (session / "planned_runs.json").write_text(json.dumps(runs), encoding="utf-8")
+        records = {
+            "run_0007_adamw": [
+                {"type": "validation", "optimizer_step": 0, "wall_clock_train_s": 0.0, "val_fm_loss": 100.0},
+                {"type": "validation", "optimizer_step": 20, "wall_clock_train_s": 2.0, "val_fm_loss": 80.0},
+            ],
+            "run_0000_ngd": [
+                {"type": "validation", "optimizer_step": 0, "wall_clock_train_s": 0.0, "val_fm_loss": 100.0},
+                {"type": "validation", "optimizer_step": 10, "wall_clock_train_s": 3.0, "val_fm_loss": 80.5},
+            ],
+        }
+        summaries = {
+            "run_0007_adamw": {"best_val_fm_loss": 80.0, "ema_best_val_fm_loss": 81.0, "best_sw": 0.1},
+            "run_0000_ngd": {"best_val_fm_loss": 80.5, "ema_best_val_fm_loss": 82.0, "best_sw": 0.2},
+        }
+        for run in runs:
+            run_dir = session / "runs" / run["run_id"]
+            run_dir.mkdir(parents=True)
+            (run_dir / "metrics.jsonl").write_text(
+                "".join(json.dumps(record) + "\n" for record in records[run["run_id"]]),
+                encoding="utf-8",
+            )
+            (run_dir / "final_summary.json").write_text(
+                json.dumps(summaries[run["run_id"]]), encoding="utf-8"
+            )
+        runner.plot_session(session)
+        report = (session / "threshold_analysis.md").read_text(encoding="utf-8")
+        assert "Global best validation loss: `80.000000`" in report
+        assert "Threshold value: `80.800000`" in report
+        assert "| 7 | adamw |" in report
+        assert "| 0 | ngd |" in report
+        assert "| 7 | adamw | learning_rate=0.001 |" in report
+        assert "| 20 | 2.000 |" in report
+        assert "| 10 | 3.000 |" in report
+
+
+def test_threshold_analysis_sorts_each_method_by_crossing_time():
+    runner = load_runner()
+    with tempfile.TemporaryDirectory() as directory:
+        session = Path(directory)
+        runs_data = []
+        for run_index, crossing_time in ((1, 5.0), (2, 2.0), (0, 1.0)):
+            method = "ngd" if run_index == 0 else "adamw"
+            run = {
+                "run_id": f"run_{run_index:04d}_{method}",
+                "run_index": run_index,
+                "method": {"name": method, "kwargs": {}},
+            }
+            run_dir = session / "runs" / run["run_id"]
+            run_dir.mkdir(parents=True)
+            (run_dir / "metrics.jsonl").write_text(
+                json.dumps(
+                    {
+                        "type": "validation",
+                        "optimizer_step": 10,
+                        "wall_clock_train_s": crossing_time,
+                        "val_fm_loss": 80.0,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "final_summary.json").write_text(
+                json.dumps(
+                    {
+                        "best_val_fm_loss": 80.0,
+                        "ema_best_val_fm_loss": 80.0,
+                        "best_sw": 0.1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runs_data.append((run, runner._load_run_records(run_dir), []))
+
+        report = runner._threshold_report(session, runs_data)
+        first_threshold = report.split("## 1% Threshold", 1)[1].split("## 5% Threshold", 1)[0]
+        assert first_threshold.index("| 2 | adamw |") < first_threshold.index("| 1 | adamw |")
+
+
 if __name__ == "__main__":
     test_runner_import_and_validation_do_not_import_jax()
     test_plot_only_does_not_prepare_dataset()
