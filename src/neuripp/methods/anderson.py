@@ -57,6 +57,7 @@ def get_anderson(
         gd, par, rest = nnx.split(model, nnx.Param, ...)
         zero_vector = jax.tree.map(jnp.zeros_like, par)
         f, grad = vg_fn(model, batch, rngs)
+        model.eval()
         natural_grad = _compute_natural_grad(
             model,
             rngs,
@@ -73,6 +74,7 @@ def get_anderson(
 
         par = jax.tree.map(lambda _p, _dp: _p + _dp, par, residual)
         model = nnx.merge(gd, par, rest)
+        model.train()
 
         history = jax.tree.map(
             lambda _l: jnp.zeros((2 * history_length, *_l.shape)), residual

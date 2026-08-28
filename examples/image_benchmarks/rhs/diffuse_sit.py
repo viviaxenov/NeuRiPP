@@ -23,8 +23,9 @@ class DiffuseSiTRHS(nnx.Module):
         self.model = model
         self.dim = tuple(state_shape)
 
-    def __call__(self, time, state, *args):
+    def __call__(self, time, state, *args, rngs=None):
         del args
+        del rngs
         prediction = self.model(
             state[None, ...], jnp.asarray(time, dtype=state.dtype).reshape(1), y=None
         )
@@ -64,11 +65,8 @@ def _strip_rng_state(module: nnx.Module) -> None:
     the nodes is exact.
 
     Caveat: if class conditioning or block dropout is ever enabled in a DiT
-    RHS, this stripping must be removed/reworked.  RNG streams then have to
-    be threaded through ``nnx.vmap`` (e.g. via the explicit-dropout-key path
-    ``uses_explicit_dropout_rng`` in
-    ``neuripp/parametric_pushforward/flow_matching.py``) instead of being
-    dropped from the graph.
+    RHS, this stripping must be removed/reworked so that the relevant NNX
+    module state and RNG streams remain available to the transformed call.
     """
 
     from flax.nnx import rnglib

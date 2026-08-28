@@ -42,7 +42,8 @@ class LinearRHS(nnx.Module):
     def mat(self):
         return self.lin.kernel.value.T
 
-    def __call__(self, t, x, *args):
+    def __call__(self, t, x, *args, rngs=None):
+        del rngs
         if self.counter is not None:
             jax.debug.callback(lambda: self.counter.increment())
 
@@ -85,7 +86,8 @@ class MLP(nnx.Module):
 
         self.mlp = nnx.Sequential(*list_of_modules)
 
-    def __call__(self, t, x, *args):
+    def __call__(self, t, x, *args, rngs=None):
+        del rngs
         y = jnp.concat((x, jnp.atleast_1d(t)), axis=-1)
         return self.mlp(y)
 
@@ -116,7 +118,8 @@ class FFJORDConv2D(nnx.Module):
                 (activation_fn,) * n_layers + (lambda _x: _x,)
         )
 
-    def __call__(self, t, x, *args):
+    def __call__(self, t, x, *args, rngs=None):
+        del rngs
         # reshape from flat (needed for ODE)
         # and add channel dimension
         x = x.reshape( *self.dim, 1)

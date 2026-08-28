@@ -24,6 +24,7 @@ class FlowMatching(ParametricPushforward):
         n_samples = data_batch.shape[0]
         x1 = data_batch
         x0 = self._sample_latent(n_samples, rngs) if noise is None else noise
+        x0 = x0.reshape(x1.shape)
         ts = rngs.uniform((n_samples,)) if times is None else times
         # Broadcast time across leading state dims so both vector (N, D) and
         # spatial NHWC (N, H, W, C) states interpolate correctly.
@@ -61,7 +62,11 @@ class FlowMatching(ParametricPushforward):
 
         def _T(_par):
             _model = nnx.merge(gd, _par, rest)
-            return nnx.vmap(_model.rhs)(ts, xts)
+            @nnx.vmap(in_axes=(None, 0, 0, None))
+            def v(m, t, xt, _rngs):
+                return m.rhs(t, xt, rngs=_rngs)
+
+            return v(_model, ts, xts, None)
 
         _, dT_dtheta = jax.linearize(_T, params)
 
@@ -87,7 +92,11 @@ class FlowMatching(ParametricPushforward):
 
         def _T(_par):
             _model = nnx.merge(gd, _par, rest)
-            return nnx.vmap(_model.rhs)(ts, xts) / jnp.sqrt(ts.shape[0])
+            @nnx.vmap(in_axes=(None, 0, 0, None))
+            def v(m, t, xt, _rngs):
+                return m.rhs(t, xt, rngs=_rngs)
+
+            return v(_model, ts, xts, None) / jnp.sqrt(ts.shape[0])
 
         _, dT_dtheta = jax.linearize(_T, params)
         dT_transpose_dtheta = jax.linear_transpose(dT_dtheta, params)
@@ -119,7 +128,12 @@ def flow_matching_loss(
             data_batch, rngs, return_x0=True, times=times, noise=noise
         )
     x1 = data_batch
-    vs = nnx.vmap(model.rhs)(ts, xts)
+
+    @nnx.vmap(in_axes=(None, 0, 0, None))
+    def v(m, t, xt, _rngs):
+        return m.rhs(t, xt, rngs=_rngs)
+
+    vs = v(model, ts, xts, rngs)
     v_empirical = x1 - x0
 
     reduce_axes = tuple(range(1, xts.ndim))

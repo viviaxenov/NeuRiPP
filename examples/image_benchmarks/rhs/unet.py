@@ -69,7 +69,7 @@ class ResBlock(nnx.Module):
             dtype=dtype,
             rngs=rngs,
         )
-        self.dropout = nnx.Dropout(dropout, rngs=rngs)
+        self.dropout = nnx.Dropout(dropout)
         self.conv2 = nnx.Conv(
             output_channels,
             output_channels,
@@ -92,16 +92,12 @@ class ResBlock(nnx.Module):
             else None
         )
 
-    def __call__(self, features, time_embedding, dropout_key=None):
+    def __call__(self, features, time_embedding, *, rngs=None):
         residual = features if self.shortcut is None else self.shortcut(features)
         hidden = self.conv1(jax.nn.silu(self.norm1(features)))
         hidden = hidden + self.time_projection(jax.nn.silu(time_embedding))[None, None, :]
         hidden = self.conv2(
-            self.dropout(
-                jax.nn.silu(self.norm2(hidden)),
-                deterministic=dropout_key is None,
-                rngs=dropout_key,
-            )
+            self.dropout(jax.nn.silu(self.norm2(hidden)), rngs=rngs)
         )
         return residual + hidden
 
@@ -154,8 +150,8 @@ class SpatialBlock(nnx.Module):
         self.residual = residual
         self.attention = attention
 
-    def __call__(self, features, time_embedding, dropout_key=None):
-        features = self.residual(features, time_embedding, dropout_key)
+    def __call__(self, features, time_embedding, *, rngs=None):
+        features = self.residual(features, time_embedding, rngs=rngs)
         if self.attention is not None:
             features = self.attention(features)
         return features
@@ -233,7 +229,6 @@ class ImageUNet(nnx.Module):
         if not channel_mult or num_res_blocks < 1 or base_channels < 1:
             raise ValueError("Invalid U-Net channel or residual-block configuration")
         self.dim = tuple(state_shape)
-        self.uses_explicit_dropout_rng = True
         self.time_frequency_dim = base_channels
         time_dim = time_embedding_dim or base_channels * 4
         self.time_mlp = nnx.Sequential(
@@ -361,8 +356,7 @@ class ImageUNet(nnx.Module):
             method="nearest",
         )
 
-    def __call__(self, time, state, *args):
-        dropout_key = args[0] if args else None
+    def __call__(self, time, state, *args, rngs=None):
         if state.shape != self.dim:
             raise ValueError(f"U-Net expected state shape {self.dim}, got {state.shape}")
         time_embedding = self.time_mlp(
@@ -372,31 +366,22 @@ class ImageUNet(nnx.Module):
         skips = [features]
         for stage in self.down_stages:
             for block in stage.blocks:
-                block_key = None
-                if dropout_key is not None:
-                    dropout_key, block_key = jax.random.split(dropout_key)
-                features = block(features, time_embedding, block_key)
+                features = block(features, time_embedding, rngs=rngs)
                 skips.append(features)
             if stage.downsample is not None:
                 features = stage.downsample(features)
                 skips.append(features)
-        middle_key1 = middle_key2 = None
-        if dropout_key is not None:
-            dropout_key, middle_key1, middle_key2 = jax.random.split(dropout_key, 3)
-        features = self.middle1(features, time_embedding, middle_key1)
+        features = self.middle1(features, time_embedding, rngs=rngs)
         features = self.middle_attention(features)
-        features = self.middle2(features, time_embedding, middle_key2)
+        features = self.middle2(features, time_embedding, rngs=rngs)
         for stage in self.up_stages:
             for block in stage.blocks:
                 skip = skips.pop()
                 features = self._resize_like(features, skip)
-                block_key = None
-                if dropout_key is not None:
-                    dropout_key, block_key = jax.random.split(dropout_key)
                 features = block(
                     jnp.concatenate((features, skip), axis=-1),
                     time_embedding,
-                    block_key,
+                    rngs=rngs,
                 )
             if stage.upsample is not None:
                 features = stage.upsample(features)
