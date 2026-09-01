@@ -45,32 +45,14 @@ from benchmark_runner import (
 )
 
 
-@contextmanager
-def _evaluation_mode(*models):
-    """Keep stochastic/module state in evaluation mode only during metrics."""
-    active = [model for model in models if model is not None]
-    for model in active:
-        model.eval()
-    try:
-        yield
-    finally:
-        for model in active:
-            model.train()
-
-
 def _fixed_fm_eval(model, validation, batch_size):
     from image_benchmarks.evaluation.validation import evaluate_fixed_fm_loss
 
-    with _evaluation_mode(model):
+    model.eval()
+    try:
         return evaluate_fixed_fm_loss(model, validation, batch_size=batch_size)
-
-
-def _evaluation_function(function):
-    def wrapped(model, *args, **kwargs):
-        with _evaluation_mode(model):
-            return function(model, *args, **kwargs)
-
-    return wrapped
+    finally:
+        model.train()
 
 
 # Shorthand notation for hyperparameters in legend labels.
@@ -712,27 +694,29 @@ def _fid_kid_eval(
     """Run FM-loss + FID/KID checkpoint evaluation for one model variant."""
     from image_benchmarks.evaluation.evaluator import evaluate_checkpoint
 
-    with _evaluation_mode(model):
-        return evaluate_checkpoint(
-            model=model,
-            encoder=encoder,
-            validation=validation,
-            real_feature_cache=real_cache,
-            real_fid_key=real_fid_key,
-            fid_cache_root=fid_config["cache_dir"],
-            fake_cache_root=run_dir / "fake_features",
-            extractor=extractor,
-            step=step,
-            epoch=epoch,
-            wall_clock_train_s=wall_clock_train_s,
-            fm_batch_size=config["evaluation"]["val_fm_loss"]["batch_size"],
-            num_fake=fid_config["num_samples_final"],
-            sampling_batch_size=sampling["batch_size"],
-            sampling_seed=run["rng_seeds"]["sampling"],
-            sampling_config=sampling,
-            kid_config=config["evaluation"]["kid"],
-            run_identity=run_identity,
-        )
+    model.eval()
+    result = evaluate_checkpoint(
+        model=model,
+        encoder=encoder,
+        validation=validation,
+        real_feature_cache=real_cache,
+        real_fid_key=real_fid_key,
+        fid_cache_root=fid_config["cache_dir"],
+        fake_cache_root=run_dir / "fake_features",
+        extractor=extractor,
+        step=step,
+        epoch=epoch,
+        wall_clock_train_s=wall_clock_train_s,
+        fm_batch_size=config["evaluation"]["val_fm_loss"]["batch_size"],
+        num_fake=fid_config["num_samples_final"],
+        sampling_batch_size=sampling["batch_size"],
+        sampling_seed=run["rng_seeds"]["sampling"],
+        sampling_config=sampling,
+        kid_config=config["evaluation"]["kid"],
+        run_identity=run_identity,
+    )
+    model.train()
+    return result
 
 
 def _prepare_fid_context(config, manifest, run):
@@ -793,7 +777,6 @@ def _run_fid_at_eval(model, fid_context, *, config, run, encoder, validation,
     )
 
 
-@_evaluation_function
 def _sample_metric_eval(
     model,
     *,
@@ -805,6 +788,7 @@ def _sample_metric_eval(
     sample_metric_config,
 ):
     """Compute MMD / sliced-Wasserstein for one model variant."""
+    model.eval()
     from image_benchmarks.evaluation.sample_metrics import evaluate_sample_metrics
     from image_benchmarks.evaluation.sampling import generate_state_batches
 
@@ -831,10 +815,10 @@ def _sample_metric_eval(
     result["sample_metrics_split"] = config["evaluation"]["split"]
     result["sample_metrics_seed"] = config["evaluation"]["seed"]
     result["sample_metrics_sampling_seed"] = run["rng_seeds"]["sampling"]
+    model.train()
     return result
 
 
-@_evaluation_function
 def _periodic_sw_eval(
     model,
     *,
@@ -851,6 +835,7 @@ def _periodic_sw_eval(
     logged as a validation_sw record. Unlike the final sample_metrics block,
     MMD is not computed here.
     """
+    model.eval()
     from image_benchmarks.evaluation.sampling import generate_state_batches
     from ott.tools.sliced import sliced_wasserstein
     import jax
@@ -882,7 +867,7 @@ def _periodic_sw_eval(
         n_proj=num_projections,
         rng=jax.random.key(config["evaluation"]["seed"]),
     )
-    return {
+    result = {
         "sliced_wasserstein": float(distance),
         "sliced_wasserstein_num_projections": int(num_projections),
         "sliced_wasserstein_num_samples": int(num_samples),
@@ -891,6 +876,8 @@ def _periodic_sw_eval(
         "sample_metrics_seed": config["evaluation"]["seed"],
         "sample_metrics_sampling_seed": run["rng_seeds"]["sampling"],
     }
+    model.train()
+    return result
 
 
 def _environment_snapshot():
@@ -964,19 +951,20 @@ def _save_sample_grid(samples_dir, model, encoder, config, seed, *, filename, ma
         return
     rows, columns = int(grid.get("rows", 4)), int(grid.get("columns", 4))
     sampling = config["evaluation"]["sampling"]
-    with _evaluation_mode(model):
-        images = next(
-            generate_image_batches(
-                model,
-                encoder,
-                num_samples=rows * columns,
-                batch_size=rows * columns,
-                seed=seed,
-                ode_method=sampling["method"],
-                ode_steps=sampling["steps"],
-                ode_kwargs=sampling.get("kwargs", {}),
-            )
+    model.eval()
+    images = next(
+        generate_image_batches(
+            model,
+            encoder,
+            num_samples=rows * columns,
+            batch_size=rows * columns,
+            seed=seed,
+            ode_method=sampling["method"],
+            ode_steps=sampling["steps"],
+            ode_kwargs=sampling.get("kwargs", {}),
         )
+    )
+    model.train()
     neighbors = None
     if bool(grid.get("nearest_neighbor", True)) and manifest is not None:
         neighbors = _nearest_train_images(images, manifest, config)
@@ -1429,15 +1417,17 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         # fm_noise seed, so the draw is identical across methods and the
         # trainer's RNG stream is left untouched.
         try:
-            with _evaluation_mode(trainer.model):
-                step0_loss = float(
-                    flow_matching_loss(
-                        trainer.model,
-                        jnp.asarray(initial_batch),
-                        nnx.Rngs(run["rng_seeds"]["fm_noise"]),
-                    )
+            trainer.model.train()
+            step0_loss = float(
+                flow_matching_loss(
+                    trainer.model,
+                    jnp.asarray(initial_batch),
+                    nnx.Rngs(run["rng_seeds"]["fm_noise"]),
                 )
+            )
+            trainer.model.eval()
         except Exception:
+            trainer.model.train()
             step0_loss = None
         if step0_loss is not None and np.isfinite(step0_loss):
             accounting = trainer.accounting()
