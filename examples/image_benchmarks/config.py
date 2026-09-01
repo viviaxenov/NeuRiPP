@@ -21,7 +21,9 @@ REQUIRED_TOP_LEVEL = {
     "evaluation",
     "resources",
 }
-OPTIONAL_TOP_LEVEL = {"plotting", "ema", "method_expansion", "additional_methods"}
+OPTIONAL_TOP_LEVEL = {
+    "plotting", "ema", "method_expansion", "method_grid", "additional_methods"
+}
 METHOD_NAMES = {
     "adagrad",
     "adam",
@@ -350,6 +352,32 @@ def load_config(path: str | Path) -> dict[str, Any]:
                         variant[key] = expansion[key]
                 expanded_methods.append(variant)
         config["methods"] = expanded_methods
+    grid = config.pop("method_grid", None)
+    if grid is not None:
+        if not isinstance(grid, list) or not grid:
+            raise ValueError("method_grid must be a non-empty array")
+        grid_methods = []
+        for index, template in enumerate(grid):
+            template = _object(template, f"method_grid[{index}]")
+            kwargs = _object(template.get("kwargs", {}), f"method_grid[{index}].kwargs")
+            fields = list(kwargs)
+            variants = [{}]
+            for field in fields:
+                values = kwargs[field]
+                if not isinstance(values, list) or not values:
+                    raise ValueError(
+                        f"method_grid[{index}].kwargs.{field} must be a non-empty array"
+                    )
+                variants = [
+                    {**variant, field: copy.deepcopy(value)}
+                    for variant in variants
+                    for value in values
+                ]
+            for variant_kwargs in variants:
+                method = {key: copy.deepcopy(value) for key, value in template.items() if key != "kwargs"}
+                method["kwargs"] = variant_kwargs
+                grid_methods.append(method)
+        config["methods"].extend(grid_methods)
     if "additional_methods" in config:
         additional = config.pop("additional_methods")
         if not isinstance(additional, list):

@@ -1,5 +1,45 @@
 {
   "extends": "_base_pixel.json",
   "experiment": {"name": "cifar10_unet_small"},
-  "training": {"batch_size": 100}
+  "training": {
+    "batch_size": 250,
+    "max_steps": 40000,
+    "eval_every": 400,
+    "checkpoint_every": 5000
+  },
+  "methods": [],
+  "method_grid": [
+    {
+      "name": "ngd",
+      "n_restarts": 1,
+      "max_steps": 10000,
+      "eval_every": 400,
+      "kwargs": {
+        "matvec_batch_size": [25, 125, 250],
+        "step_size": [0.0001, 0.001, 0.01],
+        "natural_grad_clipping_threshold": [null, 20],
+        "linear_solver_regularization": [0.01, 0.001, 0.0001],
+        "linear_solver_tolerance": [0.000001],
+        "linear_solver_maxiter": [50]
+      }
+    },
+    {
+      "name": "adamw",
+      "n_restarts": 1,
+      "max_steps": 40000,
+      "eval_every": 400,
+      "kwargs": {
+        "learning_rate": [0.0001, 0.001],
+        "weight_decay": [0, 0.0001]
+      }
+    }
+  ],
+  "evaluation": {
+    "fid": {"enabled": true},
+    "kid": {"enabled": true}
+  },
+  "resources": {
+    "gpu_ids": [0, 1, 2, 3, 4, 5, 6, 7],
+    "max_concurrent_runs": 8
+  }
 }

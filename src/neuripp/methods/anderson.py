@@ -56,6 +56,7 @@ def get_anderson(
 
         gd, par, rest = nnx.split(model, nnx.Param, ...)
         zero_vector = jax.tree.map(jnp.zeros_like, par)
+        model.train()
         f, grad = vg_fn(model, batch, rngs)
         model.eval()
         natural_grad = _compute_natural_grad(
@@ -91,6 +92,7 @@ def get_anderson(
         if stepsize_schedule_fn is not None:
             step_size = stepsize_schedule_fn(step_size, i, **kwargs)
 
+        model.train()
         f, grad = vg_fn(model, batch, rngs)
         model.eval()
         natural_grad = _compute_natural_grad(

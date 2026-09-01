@@ -85,7 +85,8 @@ def get_ngd(
         if stepsize_schedule_fn is not None:
             step_size = stepsize_schedule_fn(step_size, i, **kwargs)
 
-        # compute loss and Euclidean grad
+        # Compute the gradient in training mode, then the metric in eval mode.
+        model.train()
         f, grad = vg_fn(model, batch, rngs)
 
         model.eval()

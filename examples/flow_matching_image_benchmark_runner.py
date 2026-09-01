@@ -45,6 +45,34 @@ from benchmark_runner import (
 )
 
 
+@contextmanager
+def _evaluation_mode(*models):
+    """Keep stochastic/module state in evaluation mode only during metrics."""
+    active = [model for model in models if model is not None]
+    for model in active:
+        model.eval()
+    try:
+        yield
+    finally:
+        for model in active:
+            model.train()
+
+
+def _fixed_fm_eval(model, validation, batch_size):
+    from image_benchmarks.evaluation.validation import evaluate_fixed_fm_loss
+
+    with _evaluation_mode(model):
+        return evaluate_fixed_fm_loss(model, validation, batch_size=batch_size)
+
+
+def _evaluation_function(function):
+    def wrapped(model, *args, **kwargs):
+        with _evaluation_mode(model):
+            return function(model, *args, **kwargs)
+
+    return wrapped
+
+
 # Shorthand notation for hyperparameters in legend labels.
 PARAM_SHORTHAND: dict[str, str] = {
     "step_size": r"$h$",
@@ -684,28 +712,88 @@ def _fid_kid_eval(
     """Run FM-loss + FID/KID checkpoint evaluation for one model variant."""
     from image_benchmarks.evaluation.evaluator import evaluate_checkpoint
 
-    return evaluate_checkpoint(
-        model=model,
-        encoder=encoder,
-        validation=validation,
-        real_feature_cache=real_cache,
-        real_fid_key=real_fid_key,
-        fid_cache_root=fid_config["cache_dir"],
-        fake_cache_root=run_dir / "fake_features",
-        extractor=extractor,
-        step=step,
-        epoch=epoch,
-        wall_clock_train_s=wall_clock_train_s,
-        fm_batch_size=config["evaluation"]["val_fm_loss"]["batch_size"],
-        num_fake=fid_config["num_samples_final"],
-        sampling_batch_size=sampling["batch_size"],
-        sampling_seed=run["rng_seeds"]["sampling"],
-        sampling_config=sampling,
-        kid_config=config["evaluation"]["kid"],
-        run_identity=run_identity,
+    with _evaluation_mode(model):
+        return evaluate_checkpoint(
+            model=model,
+            encoder=encoder,
+            validation=validation,
+            real_feature_cache=real_cache,
+            real_fid_key=real_fid_key,
+            fid_cache_root=fid_config["cache_dir"],
+            fake_cache_root=run_dir / "fake_features",
+            extractor=extractor,
+            step=step,
+            epoch=epoch,
+            wall_clock_train_s=wall_clock_train_s,
+            fm_batch_size=config["evaluation"]["val_fm_loss"]["batch_size"],
+            num_fake=fid_config["num_samples_final"],
+            sampling_batch_size=sampling["batch_size"],
+            sampling_seed=run["rng_seeds"]["sampling"],
+            sampling_config=sampling,
+            kid_config=config["evaluation"]["kid"],
+            run_identity=run_identity,
+        )
+
+
+def _prepare_fid_context(config, manifest, run):
+    if not config["evaluation"]["fid"]["enabled"]:
+        return None
+    from image_benchmarks.datasets.hf_loader import load_split
+    from image_benchmarks.evaluation.evaluator import prepare_real_feature_cache
+    from image_benchmarks.evaluation.fid import FIDCacheKey
+    from image_benchmarks.evaluation.inception import DiffuseInceptionFeatures
+
+    fid = config["evaluation"]["fid"]
+    extractor = DiffuseInceptionFeatures(
+        fid["weights_path"], expected_sha256=fid["expected_sha256"]
+    )
+    split = config["evaluation"]["split"]
+    iterator = load_split(
+        manifest, split, int(fid.get("batch_size", 64)), config["evaluation"]["seed"],
+        shuffle=False, offline=config["problem"]["dataset"].get("offline", False),
+    )
+    key = FIDCacheKey(
+        manifest.hf_revision, split, manifest.resolution, manifest.crop,
+        "gray_to_rgb" if manifest.channels == 1 else "rgb",
+        feature_extractor=extractor.provenance,
+        split_indices_sha256=manifest.splits[split].indices_sha256,
+        dataset_manifest_digest=manifest.digest,
+    )
+    cache_root = Path(fid["cache_dir"])
+    cache_root.mkdir(parents=True, exist_ok=True)
+    # Multiple benchmark workers prepare the same real feature cache.  Serialize
+    # the first writer so concurrent workers do not create conflicting metadata.
+    with (cache_root / ".real_feature_cache.lock").open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            real_cache = prepare_real_feature_cache(
+                iterator,
+                count=manifest.splits[split].count,
+                extractor=extractor,
+                cache_root=cache_root,
+                key=key,
+            )
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    return extractor, real_cache, key
+
+
+def _run_fid_at_eval(model, fid_context, *, config, run, encoder, validation,
+                     run_dir, step, epoch, wall_clock_train_s):
+    if fid_context is None:
+        return None
+    extractor, real_cache, fid_key = fid_context
+    return _fid_kid_eval(
+        model, run_identity=run["run_id"], config=config, run=run,
+        encoder=encoder, validation=validation, real_cache=real_cache,
+        real_fid_key=fid_key, extractor=extractor,
+        fid_config=config["evaluation"]["fid"],
+        sampling=config["evaluation"]["sampling"], run_dir=run_dir,
+        step=step, epoch=epoch, wall_clock_train_s=wall_clock_train_s,
     )
 
 
+@_evaluation_function
 def _sample_metric_eval(
     model,
     *,
@@ -746,6 +834,7 @@ def _sample_metric_eval(
     return result
 
 
+@_evaluation_function
 def _periodic_sw_eval(
     model,
     *,
@@ -875,18 +964,19 @@ def _save_sample_grid(samples_dir, model, encoder, config, seed, *, filename, ma
         return
     rows, columns = int(grid.get("rows", 4)), int(grid.get("columns", 4))
     sampling = config["evaluation"]["sampling"]
-    images = next(
-        generate_image_batches(
-            model,
-            encoder,
-            num_samples=rows * columns,
-            batch_size=rows * columns,
-            seed=seed,
-            ode_method=sampling["method"],
-            ode_steps=sampling["steps"],
-            ode_kwargs=sampling.get("kwargs", {}),
+    with _evaluation_mode(model):
+        images = next(
+            generate_image_batches(
+                model,
+                encoder,
+                num_samples=rows * columns,
+                batch_size=rows * columns,
+                seed=seed,
+                ode_method=sampling["method"],
+                ode_steps=sampling["steps"],
+                ode_kwargs=sampling.get("kwargs", {}),
+            )
         )
-    )
     neighbors = None
     if bool(grid.get("nearest_neighbor", True)) and manifest is not None:
         neighbors = _nearest_train_images(images, manifest, config)
@@ -1329,6 +1419,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
     training = config["training"]
     max_steps = int(run["method"].get("max_steps", training["max_steps"]))
     eval_every = int(run["method"].get("eval_every", training["eval_every"]))
+    fid_context = _prepare_fid_context(config, manifest, run)
     if trainer.step_count == 0 and not any(
         record.get("type") == "train" and record.get("optimizer_step") == 0
         for record in previous_records
@@ -1338,13 +1429,14 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         # fm_noise seed, so the draw is identical across methods and the
         # trainer's RNG stream is left untouched.
         try:
-            step0_loss = float(
-                flow_matching_loss(
-                    model,
-                    jnp.asarray(initial_batch),
-                    nnx.Rngs(run["rng_seeds"]["fm_noise"]),
+            with _evaluation_mode(trainer.model):
+                step0_loss = float(
+                    flow_matching_loss(
+                        trainer.model,
+                        jnp.asarray(initial_batch),
+                        nnx.Rngs(run["rng_seeds"]["fm_noise"]),
+                    )
                 )
-            )
         except Exception:
             step0_loss = None
         if step0_loss is not None and np.isfinite(step0_loss):
@@ -1363,7 +1455,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         from image_benchmarks.evaluation.validation import evaluate_fixed_fm_loss
 
         start = time.perf_counter()
-        val_loss = evaluate_fixed_fm_loss(
+        val_loss = _fixed_fm_eval(
             trainer.model,
             validation,
             batch_size=config["evaluation"]["val_fm_loss"]["batch_size"],
@@ -1379,7 +1471,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         evaluation_arrays["val_fm_loss"].append(float(val_loss))
         if trainer.ema_enabled:
             start = time.perf_counter()
-            ema_val_loss = evaluate_fixed_fm_loss(
+            ema_val_loss = _fixed_fm_eval(
                 trainer.ema_model,
                 validation,
                 batch_size=config["evaluation"]["val_fm_loss"]["batch_size"],
@@ -1429,10 +1521,23 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         else:
             evaluation_arrays["sliced_wasserstein"].append(float("nan"))
             evaluation_arrays["ema_sliced_wasserstein"].append(float("nan"))
-        evaluation_arrays["fid"].append(float("nan"))
-        evaluation_arrays["ema_fid"].append(float("nan"))
-        evaluation_arrays["kid_mean"].append(float("nan"))
-        evaluation_arrays["ema_kid_mean"].append(float("nan"))
+        fid_result = _run_fid_at_eval(
+            trainer.model, fid_context, config=config, run=run, encoder=encoder,
+            validation=validation, run_dir=run_dir, step=0,
+            epoch=trainer.effective_epoch or 0.0, wall_clock_train_s=trainer.wall_clock_train_s,
+        )
+        evaluation_arrays["fid"].append(float(fid_result.get("fid", "nan")) if fid_result else float("nan"))
+        evaluation_arrays["kid_mean"].append(float(fid_result.get("kid_mean", "nan")) if fid_result else float("nan"))
+        if trainer.ema_enabled:
+            ema_fid_result = _run_fid_at_eval(
+                trainer.ema_model, fid_context, config=config, run={**run, "run_id": f"{run['run_id']}:ema"},
+                encoder=encoder, validation=validation, run_dir=run_dir, step=0,
+                epoch=trainer.effective_epoch or 0.0, wall_clock_train_s=trainer.wall_clock_train_s,
+            )
+        else:
+            ema_fid_result = None
+        evaluation_arrays["ema_fid"].append(float(ema_fid_result.get("fid", "nan")) if ema_fid_result else float("nan"))
+        evaluation_arrays["ema_kid_mean"].append(float(ema_fid_result.get("kid_mean", "nan")) if ema_fid_result else float("nan"))
         _save_run_arrays(run_dir, train_arrays, evaluation_arrays)
     while trainer.step_count < max_steps:
         batch = train_stream.next_batch()
@@ -1459,7 +1564,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             from image_benchmarks.evaluation.validation import evaluate_fixed_fm_loss
 
             start = time.perf_counter()
-            val_loss = evaluate_fixed_fm_loss(
+            val_loss = _fixed_fm_eval(
                 trainer.model,
                 validation,
                 batch_size=config["evaluation"]["val_fm_loss"]["batch_size"],
@@ -1474,7 +1579,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             evaluation_arrays["val_fm_loss"].append(float(val_loss))
             if trainer.ema_enabled:
                 ema_start = time.perf_counter()
-                ema_val_loss = evaluate_fixed_fm_loss(
+                ema_val_loss = _fixed_fm_eval(
                     trainer.ema_model,
                     validation,
                     batch_size=config["evaluation"]["val_fm_loss"]["batch_size"],
@@ -1526,10 +1631,24 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             else:
                 evaluation_arrays["sliced_wasserstein"].append(float("nan"))
                 evaluation_arrays["ema_sliced_wasserstein"].append(float("nan"))
-            evaluation_arrays["fid"].append(float("nan"))
-            evaluation_arrays["ema_fid"].append(float("nan"))
-            evaluation_arrays["kid_mean"].append(float("nan"))
-            evaluation_arrays["ema_kid_mean"].append(float("nan"))
+            fid_result = _run_fid_at_eval(
+                trainer.model, fid_context, config=config, run=run, encoder=encoder,
+                validation=validation, run_dir=run_dir, step=step,
+                epoch=trainer.effective_epoch or 0.0, wall_clock_train_s=trainer.wall_clock_train_s,
+            )
+            evaluation_arrays["fid"].append(float(fid_result.get("fid", "nan")) if fid_result else float("nan"))
+            evaluation_arrays["kid_mean"].append(float(fid_result.get("kid_mean", "nan")) if fid_result else float("nan"))
+            if trainer.ema_enabled:
+                ema_fid_result = _run_fid_at_eval(
+                    trainer.ema_model, fid_context, config=config,
+                    run={**run, "run_id": f"{run['run_id']}:ema"}, encoder=encoder,
+                    validation=validation, run_dir=run_dir, step=step,
+                    epoch=trainer.effective_epoch or 0.0, wall_clock_train_s=trainer.wall_clock_train_s,
+                )
+            else:
+                ema_fid_result = None
+            evaluation_arrays["ema_fid"].append(float(ema_fid_result.get("fid", "nan")) if ema_fid_result else float("nan"))
+            evaluation_arrays["ema_kid_mean"].append(float(ema_fid_result.get("kid_mean", "nan")) if ema_fid_result else float("nan"))
             _save_run_arrays(run_dir, train_arrays, evaluation_arrays)
         if step % training["checkpoint_every"] == 0:
             _save_checkpoint(
@@ -1543,7 +1662,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
     if not np.isfinite(final_validation):
         from image_benchmarks.evaluation.validation import evaluate_fixed_fm_loss
 
-        final_validation = evaluate_fixed_fm_loss(
+        final_validation = _fixed_fm_eval(
             trainer.model,
             validation,
             batch_size=config["evaluation"]["val_fm_loss"]["batch_size"],
@@ -1552,7 +1671,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
     if trainer.ema_enabled and not np.isfinite(ema_final_validation):
         from image_benchmarks.evaluation.validation import evaluate_fixed_fm_loss
 
-        ema_final_validation = evaluate_fixed_fm_loss(
+        ema_final_validation = _fixed_fm_eval(
             trainer.ema_model,
             validation,
             batch_size=config["evaluation"]["val_fm_loss"]["batch_size"],
