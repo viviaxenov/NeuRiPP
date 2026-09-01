@@ -1,0 +1,44 @@
+{
+  "extends": "cifar10_unet.json",
+  "experiment": {
+    "name": "cifar10_unet_fid_cache_debug"
+  },
+  "training": {
+    "eval_every": 10
+  },
+  "methods": [],
+  "method_grid": [
+    {
+      "name": "ngd",
+      "n_restarts": 1,
+      "max_steps": 10000,
+      "eval_every": 10,
+      "kwargs": {
+        "matvec_batch_size": [25, 50],
+        "step_size": [0.0001, 0.001],
+        "natural_grad_clipping_threshold": [null, 20],
+        "linear_solver_regularization": [0.001, 0.0001]
+      }
+    }
+  ],
+  "evaluation": {
+    "kid": {
+      "enabled": false
+    }
+  },
+  "resources": {
+    "gpu_ids": [0, 1, 2, 3, 4, 5, 6, 7],
+    "gpus_per_run": 1,
+    "max_concurrent_runs": 8,
+    "worker_env": {
+      "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9",
+      "JAX_LOG_COMPILES": "1",
+      "JAX_EXPLAIN_CACHE_MISSES": "1",
+      "JAX_TRACEBACK_FILTERING": "off",
+      "JAX_DEBUG_NANS": "1",
+      "JAX_DEBUG_INFS": "1",
+      "TF_CPP_MIN_LOG_LEVEL": "0",
+      "XLA_FLAGS": "--xla_dump_to=/tmp/neuripp-cifar10-fid-xla-dumps --xla_dump_hlo_as_text --xla_dump_hlo_as_proto --xla_dump_module_metadata --xla_dump_include_timestamp"
+    }
+  }
+}
