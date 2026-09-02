@@ -17,7 +17,7 @@
       }
     }
   ],
-  "evaluation": {"fid": {"enabled": true}, "kid": {"enabled": false}},
+  "evaluation": {"fid": {"enabled": true, "num_samples_final": 512}, "kid": {"enabled": false}},
   "resources": {
     "gpu_ids": [0], "gpus_per_run": 1, "max_concurrent_runs": 1,
     "worker_env": {
