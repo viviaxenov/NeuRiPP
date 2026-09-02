@@ -1,0 +1,35 @@
+{
+  "extends": "cifar10_unet.json",
+  "experiment": {"name": "cifar10_fid_ablation_ngd_frequent_eval"},
+  "training": {"max_steps": 100, "eval_every": 10},
+  "methods": [
+    {
+      "name": "ngd",
+      "n_restarts": 1,
+      "max_steps": 100,
+      "eval_every": 10,
+      "kwargs": {
+        "step_size": 0.001,
+        "matvec_batch_size": 25,
+        "natural_grad_clipping_threshold": 20,
+        "linear_solver_regularization": 0.001,
+        "linear_solver_tolerance": 0.000001,
+        "linear_solver_maxiter": 50
+      }
+    }
+  ],
+  "evaluation": {"fid": {"enabled": true}, "kid": {"enabled": false}},
+  "resources": {
+    "gpu_ids": [0], "gpus_per_run": 1, "max_concurrent_runs": 1,
+    "worker_env": {
+      "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9",
+      "JAX_LOG_COMPILES": "1",
+      "JAX_EXPLAIN_CACHE_MISSES": "1",
+      "JAX_TRACEBACK_FILTERING": "off",
+      "JAX_DEBUG_NANS": "1",
+      "JAX_DEBUG_INFS": "1",
+      "TF_CPP_MIN_LOG_LEVEL": "0",
+      "XLA_FLAGS": "--xla_dump_to=/tmp/neuripp-cifar10-ablation-ngd-frequent-eval --xla_dump_hlo_as_text --xla_dump_hlo_as_proto --xla_dump_module_metadata --xla_dump_include_timestamp"
+    }
+  }
+}
