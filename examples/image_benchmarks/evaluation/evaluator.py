@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from pathlib import Path
 import time
 from typing import Any, Iterable
@@ -18,7 +16,6 @@ from image_benchmarks.evaluation.features import (
 )
 from image_benchmarks.evaluation.fid import (
     FIDCacheKey,
-    FeatureStats,
     calculate_fid,
     load_fid_stats,
     statistics_from_feature_batches,
@@ -95,32 +92,6 @@ def prepare_real_feature_cache(
     return cache
 
 
-def _fake_cache_key(
-    *,
-    run_identity: str,
-    encoder_identity: str | None,
-    extractor_provenance: str,
-    step: int,
-    seed: int,
-    num_samples: int,
-    sampling_config: dict[str, Any],
-) -> str:
-    payload = json.dumps(
-        {
-            "step": step,
-            "run_identity": run_identity,
-            "encoder_identity": encoder_identity,
-            "extractor": extractor_provenance,
-            "seed": seed,
-            "num_samples": num_samples,
-            "sampling": sampling_config,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return "fake:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
 def evaluate_checkpoint(
     *,
     model,
@@ -129,7 +100,6 @@ def evaluate_checkpoint(
     real_feature_cache: InceptionFeatureCache,
     real_fid_key: FIDCacheKey,
     fid_cache_root: str | Path,
-    fake_cache_root: str | Path,
     extractor,
     step: int,
     epoch: float,
@@ -140,7 +110,6 @@ def evaluate_checkpoint(
     sampling_seed: int,
     sampling_config: dict[str, Any],
     kid_config: dict[str, Any] | None = None,
-    run_identity: str,
 ) -> dict[str, Any]:
     """Evaluate FM loss, decode samples, and calculate FID/KID."""
 
@@ -152,20 +121,8 @@ def evaluate_checkpoint(
         raise ValueError("Real FID statistics and feature cache keys do not match")
     if getattr(extractor, "provenance", None) != real_fid_key.feature_extractor:
         raise ValueError("Evaluation extractor does not match real FID provenance")
-    fake_key = _fake_cache_key(
-        run_identity=run_identity,
-        encoder_identity=getattr(encoder, "checkpoint_sha256", None),
-        extractor_provenance=extractor.provenance,
-        step=step,
-        seed=sampling_seed,
-        num_samples=num_fake,
-        sampling_config=sampling_config,
-    )
-    writer = InceptionFeatureWriter(
-        fake_cache_root, fake_key, count=num_fake, feature_dim=2048
-    )
-    position = 0
-    try:
+    fake_feature_batches = [
+        np.asarray(extractor(images), dtype=np.float32)
         for images in generate_image_batches(
             model,
             encoder,
@@ -175,19 +132,12 @@ def evaluate_checkpoint(
             ode_method=sampling_config.get("method"),
             ode_steps=sampling_config.get("steps"),
             ode_kwargs=sampling_config.get("kwargs"),
-        ):
-            identifiers = [f"fake:{index}" for index in range(position, position + len(images))]
-            writer.write_batch(extractor(images), identifiers)
-            position += len(images)
-        fake_cache = writer.finalize()
-    except Exception:
-        writer.abort()
-        raise
+        )
+    ]
 
     real_features = real_feature_cache.load(mmap_mode="r", verify_checksum=True)
-    fake_features = fake_cache.load(mmap_mode="r", verify_checksum=True)
     real_stats = load_fid_stats(Path(fid_cache_root) / "stats", real_fid_key)
-    fake_stats = statistics_from_feature_batches(_feature_batches(fake_features))
+    fake_stats = statistics_from_feature_batches(fake_feature_batches)
     result: dict[str, Any] = {
         "step": int(step),
         "epoch": float(epoch),
@@ -198,6 +148,7 @@ def evaluate_checkpoint(
         "fid_num_real": int(real_stats.count),
     }
     if kid_config and kid_config.get("enabled", True):
+        fake_features = np.concatenate(fake_feature_batches, axis=0)
         result.update(
             calculate_kid(
                 real_features,

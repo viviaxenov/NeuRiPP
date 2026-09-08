@@ -676,7 +676,6 @@ def _save_ema_checkpoint(checkpoint_root, trainer, keep):
 def _fid_kid_eval(
     model,
     *,
-    run_identity,
     config,
     run,
     encoder,
@@ -686,7 +685,6 @@ def _fid_kid_eval(
     extractor,
     fid_config,
     sampling,
-    run_dir,
     step,
     epoch,
     wall_clock_train_s,
@@ -702,7 +700,6 @@ def _fid_kid_eval(
         real_feature_cache=real_cache,
         real_fid_key=real_fid_key,
         fid_cache_root=fid_config["cache_dir"],
-        fake_cache_root=run_dir / "fake_features",
         extractor=extractor,
         step=step,
         epoch=epoch,
@@ -713,7 +710,6 @@ def _fid_kid_eval(
         sampling_seed=run["rng_seeds"]["sampling"],
         sampling_config=sampling,
         kid_config=config["evaluation"]["kid"],
-        run_identity=run_identity,
     )
     model.train()
     return result
@@ -763,16 +759,16 @@ def _prepare_fid_context(config, manifest, run):
 
 
 def _run_fid_at_eval(model, fid_context, *, config, run, encoder, validation,
-                     run_dir, step, epoch, wall_clock_train_s):
+                     step, epoch, wall_clock_train_s):
     if fid_context is None:
         return None
     extractor, real_cache, fid_key = fid_context
     return _fid_kid_eval(
-        model, run_identity=run["run_id"], config=config, run=run,
+        model, config=config, run=run,
         encoder=encoder, validation=validation, real_cache=real_cache,
         real_fid_key=fid_key, extractor=extractor,
         fid_config=config["evaluation"]["fid"],
-        sampling=config["evaluation"]["sampling"], run_dir=run_dir,
+        sampling=config["evaluation"]["sampling"],
         step=step, epoch=epoch, wall_clock_train_s=wall_clock_train_s,
     )
 
@@ -1513,7 +1509,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             evaluation_arrays["ema_sliced_wasserstein"].append(float("nan"))
         fid_result = _run_fid_at_eval(
             trainer.model, fid_context, config=config, run=run, encoder=encoder,
-            validation=validation, run_dir=run_dir, step=0,
+            validation=validation, step=0,
             epoch=trainer.effective_epoch or 0.0, wall_clock_train_s=trainer.wall_clock_train_s,
         )
         evaluation_arrays["fid"].append(float(fid_result.get("fid", "nan")) if fid_result else float("nan"))
@@ -1521,7 +1517,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         if trainer.ema_enabled:
             ema_fid_result = _run_fid_at_eval(
                 trainer.ema_model, fid_context, config=config, run={**run, "run_id": f"{run['run_id']}:ema"},
-                encoder=encoder, validation=validation, run_dir=run_dir, step=0,
+                encoder=encoder, validation=validation, step=0,
                 epoch=trainer.effective_epoch or 0.0, wall_clock_train_s=trainer.wall_clock_train_s,
             )
         else:
@@ -1623,7 +1619,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
                 evaluation_arrays["ema_sliced_wasserstein"].append(float("nan"))
             fid_result = _run_fid_at_eval(
                 trainer.model, fid_context, config=config, run=run, encoder=encoder,
-                validation=validation, run_dir=run_dir, step=step,
+                validation=validation, step=step,
                 epoch=trainer.effective_epoch or 0.0, wall_clock_train_s=trainer.wall_clock_train_s,
             )
             evaluation_arrays["fid"].append(float(fid_result.get("fid", "nan")) if fid_result else float("nan"))
@@ -1632,7 +1628,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
                 ema_fid_result = _run_fid_at_eval(
                     trainer.ema_model, fid_context, config=config,
                     run={**run, "run_id": f"{run['run_id']}:ema"}, encoder=encoder,
-                    validation=validation, run_dir=run_dir, step=step,
+                    validation=validation, step=step,
                     epoch=trainer.effective_epoch or 0.0, wall_clock_train_s=trainer.wall_clock_train_s,
                 )
             else:
@@ -1728,7 +1724,6 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         )
         result = _fid_kid_eval(
             trainer.model,
-            run_identity=run["run_id"],
             config=config,
             run=run,
             encoder=encoder,
@@ -1738,7 +1733,6 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             extractor=extractor,
             fid_config=fid_config,
             sampling=sampling,
-            run_dir=run_dir,
             step=trainer.step_count,
             epoch=trainer.effective_epoch or 0.0,
             wall_clock_train_s=trainer.wall_clock_train_s,
@@ -1769,7 +1763,6 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         if trainer.ema_enabled:
             ema_result = _fid_kid_eval(
                 trainer.ema_model,
-                run_identity=f"{run['run_id']}:ema",
                 config=config,
                 run=run,
                 encoder=encoder,
@@ -1779,7 +1772,6 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
                 extractor=extractor,
                 fid_config=fid_config,
                 sampling=sampling,
-                run_dir=run_dir,
                 step=trainer.step_count,
                 epoch=trainer.effective_epoch or 0.0,
                 wall_clock_train_s=trainer.wall_clock_train_s,

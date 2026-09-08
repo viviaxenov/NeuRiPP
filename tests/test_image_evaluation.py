@@ -312,7 +312,6 @@ def test_end_to_end_checkpoint_evaluation_with_feature_caches():
             real_feature_cache=real_cache,
             real_fid_key=key,
             fid_cache_root=directory,
-            fake_cache_root=Path(directory) / "fake",
             extractor=FakeExtractor(),
             step=1,
             epoch=0.5,
@@ -323,13 +322,13 @@ def test_end_to_end_checkpoint_evaluation_with_feature_caches():
             sampling_seed=25,
             sampling_config={"method": "euler", "steps": 1},
             kid_config={"enabled": True, "subsets": 2, "subset_size": 2},
-            run_identity="test-run",
         )
         assert result["step"] == 1
         assert result["fid_num_real"] == 4
         assert result["fid_num_fake"] == 4
         assert np.isfinite(result["fid"])
         assert "kid_mean" in result
+        assert not (Path(directory) / "fake_features").exists()
 
 
 if __name__ == "__main__":
