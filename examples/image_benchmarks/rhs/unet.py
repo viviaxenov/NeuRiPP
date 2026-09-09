@@ -24,12 +24,27 @@ class UNetPreset:
     dropout: float
     num_heads: int = 1
     num_head_channels: int | None = None
+    resample_with_conv: bool = True
+    use_scale_shift_norm: bool = False
+    attention_impl: str = "flax"
 
 
 UNET_PRESETS = {
     "small": UNetPreset(64, (1, 2, 2, 2), 2, (16,), 0.0),
     "cifar_reference": UNetPreset(
         128, (1, 2, 2, 2), 2, (16,), 0.1, 4, 64
+    ),
+    "facebook_cifar10": UNetPreset(
+        128,
+        (2, 2, 2),
+        4,
+        (16,),
+        0.3,
+        1,
+        None,
+        False,
+        True,
+        "guided",
     ),
     "large": UNetPreset(192, (1, 2, 3, 4), 2, (16, 8), 0.1),
 }
@@ -42,6 +57,7 @@ class ResBlock(nnx.Module):
         output_channels: int,
         time_dim: int,
         dropout: float,
+        use_scale_shift_norm: bool = False,
         *,
         rngs: nnx.Rngs,
         dtype: Any = jnp.float32,
@@ -60,8 +76,12 @@ class ResBlock(nnx.Module):
             dtype=dtype,
             rngs=rngs,
         )
+        self.use_scale_shift_norm = use_scale_shift_norm
         self.time_projection = nnx.Linear(
-            time_dim, output_channels, dtype=dtype, rngs=rngs
+            time_dim,
+            output_channels * (2 if use_scale_shift_norm else 1),
+            dtype=dtype,
+            rngs=rngs,
         )
         self.norm2 = nnx.GroupNorm(
             output_channels,
@@ -95,10 +115,14 @@ class ResBlock(nnx.Module):
     def __call__(self, features, time_embedding, *, rngs=None):
         residual = features if self.shortcut is None else self.shortcut(features)
         hidden = self.conv1(jax.nn.silu(self.norm1(features)))
-        hidden = hidden + self.time_projection(jax.nn.silu(time_embedding))[None, None, :]
-        hidden = self.conv2(
-            self.dropout(jax.nn.silu(self.norm2(hidden)), rngs=rngs)
-        )
+        time = self.time_projection(jax.nn.silu(time_embedding))
+        if self.use_scale_shift_norm:
+            scale, shift = jnp.split(time, 2, axis=-1)
+            hidden = self.norm2(hidden)
+            hidden = hidden * (1.0 + scale[None, None, :]) + shift[None, None, :]
+        else:
+            hidden = self.norm2(hidden) + time[None, None, :]
+        hidden = self.conv2(self.dropout(jax.nn.silu(hidden), rngs=rngs))
         return residual + hidden
 
 
@@ -109,6 +133,7 @@ class AttentionBlock(nnx.Module):
         *,
         num_heads: int,
         num_head_channels: int | None,
+        implementation: str = "flax",
         rngs: nnx.Rngs,
         dtype: Any = jnp.float32,
     ):
@@ -126,22 +151,57 @@ class AttentionBlock(nnx.Module):
             raise ValueError(
                 f"Attention channels {channels} are not divisible by {heads} heads"
             )
+        if implementation not in {"flax", "guided"}:
+            raise ValueError("attention implementation must be 'flax' or 'guided'")
+        self.implementation = implementation
         self.norm = nnx.GroupNorm(
             channels, num_groups=group_count(channels), dtype=dtype, rngs=rngs
         )
-        self.attention = nnx.MultiHeadAttention(
-            heads,
-            channels,
-            out_kernel_init=nnx.initializers.zeros_init(),
-            decode=False,
-            dtype=dtype,
-            rngs=rngs,
-        )
+        self.heads = heads
+        if implementation == "flax":
+            self.attention = nnx.MultiHeadAttention(
+                heads,
+                channels,
+                out_kernel_init=nnx.initializers.zeros_init(),
+                decode=False,
+                dtype=dtype,
+                rngs=rngs,
+            )
+        else:
+            self.qkv = nnx.Conv(
+                channels,
+                3 * channels,
+                kernel_size=(1, 1),
+                dtype=dtype,
+                rngs=rngs,
+            )
+            self.proj_out = nnx.Conv(
+                channels,
+                channels,
+                kernel_size=(1, 1),
+                kernel_init=nnx.initializers.zeros_init(),
+                bias_init=nnx.initializers.zeros_init(),
+                dtype=dtype,
+                rngs=rngs,
+            )
 
     def __call__(self, features):
         height, width, channels = features.shape
-        sequence = self.norm(features).reshape(1, height * width, channels)
-        attended = self.attention(sequence).reshape(height, width, channels)
+        normalized = self.norm(features)
+        if self.implementation == "flax":
+            sequence = normalized.reshape(1, height * width, channels)
+            attended = self.attention(sequence).reshape(height, width, channels)
+        else:
+            qkv = self.qkv(normalized).reshape(height * width, 3, self.heads, channels // self.heads)
+            query, key, value = qkv[:, 0], qkv[:, 1], qkv[:, 2]
+            scale = (channels // self.heads) ** -0.5
+            weights = jax.nn.softmax(
+                jnp.einsum("lhd,mhd->hlm", query, key) * scale, axis=-1
+            )
+            attended = jnp.einsum("hlm,mhd->lhd", weights, value).reshape(
+                height, width, channels
+            )
+            attended = self.proj_out(attended)
         return features + attended
 
 
@@ -158,7 +218,8 @@ class SpatialBlock(nnx.Module):
 
 
 class Downsample(nnx.Module):
-    def __init__(self, channels: int, *, rngs: nnx.Rngs, dtype: Any):
+    def __init__(self, channels: int, *, use_conv: bool, rngs: nnx.Rngs, dtype: Any):
+        self.use_conv = use_conv
         self.conv = nnx.Conv(
             channels,
             channels,
@@ -167,14 +228,25 @@ class Downsample(nnx.Module):
             padding="SAME",
             dtype=dtype,
             rngs=rngs,
-        )
+        ) if use_conv else None
 
     def __call__(self, features):
-        return self.conv(features)
+        if self.use_conv:
+            return self.conv(features)
+        pooled = jax.lax.reduce_window(
+            features,
+            0.0,
+            jax.lax.add,
+            window_dimensions=(2, 2, 1),
+            window_strides=(2, 2, 1),
+            padding="SAME",
+        )
+        return pooled / 4.0
 
 
 class Upsample(nnx.Module):
-    def __init__(self, channels: int, *, rngs: nnx.Rngs, dtype: Any):
+    def __init__(self, channels: int, *, use_conv: bool, rngs: nnx.Rngs, dtype: Any):
+        self.use_conv = use_conv
         self.conv = nnx.Conv(
             channels,
             channels,
@@ -182,7 +254,7 @@ class Upsample(nnx.Module):
             padding="SAME",
             dtype=dtype,
             rngs=rngs,
-        )
+        ) if use_conv else None
 
     def __call__(self, features):
         height, width, channels = features.shape
@@ -191,7 +263,7 @@ class Upsample(nnx.Module):
             (height * 2, width * 2, channels),
             method="nearest",
         )
-        return self.conv(features)
+        return self.conv(features) if self.use_conv else features
 
 
 class DownStage(nnx.Module):
@@ -220,6 +292,9 @@ class ImageUNet(nnx.Module):
         dropout: float,
         num_heads: int = 1,
         num_head_channels: int | None = None,
+        resample_with_conv: bool = True,
+        use_scale_shift_norm: bool = False,
+        attention_impl: str = "flax",
         time_embedding_dim: int | None = None,
         dtype: Any = jnp.float32,
         rngs: nnx.Rngs,
@@ -258,6 +333,7 @@ class ImageUNet(nnx.Module):
                     output_channels,
                     time_dim,
                     dropout,
+                    use_scale_shift_norm,
                     rngs=rngs,
                     dtype=dtype,
                 )
@@ -267,6 +343,7 @@ class ImageUNet(nnx.Module):
                         channels,
                         num_heads=num_heads,
                         num_head_channels=num_head_channels,
+                        implementation=attention_impl,
                         rngs=rngs,
                         dtype=dtype,
                     )
@@ -277,24 +354,32 @@ class ImageUNet(nnx.Module):
                 skip_channels.append(channels)
             downsample = None
             if level != len(channel_mult) - 1:
-                downsample = Downsample(channels, rngs=rngs, dtype=dtype)
+                downsample = Downsample(
+                    channels,
+                    use_conv=resample_with_conv,
+                    rngs=rngs,
+                    dtype=dtype,
+                )
                 skip_channels.append(channels)
                 resolution = (resolution + 1) // 2
             down_stages.append(DownStage(blocks, downsample))
         self.down_stages = nnx.List(down_stages)
 
         self.middle1 = ResBlock(
-            channels, channels, time_dim, dropout, rngs=rngs, dtype=dtype
+            channels, channels, time_dim, dropout,
+            use_scale_shift_norm, rngs=rngs, dtype=dtype
         )
         self.middle_attention = AttentionBlock(
             channels,
             num_heads=num_heads,
             num_head_channels=num_head_channels,
+            implementation=attention_impl,
             rngs=rngs,
             dtype=dtype,
         )
         self.middle2 = ResBlock(
-            channels, channels, time_dim, dropout, rngs=rngs, dtype=dtype
+            channels, channels, time_dim, dropout,
+            use_scale_shift_norm, rngs=rngs, dtype=dtype
         )
 
         up_stages = []
@@ -308,6 +393,7 @@ class ImageUNet(nnx.Module):
                     output_channels,
                     time_dim,
                     dropout,
+                    use_scale_shift_norm,
                     rngs=rngs,
                     dtype=dtype,
                 )
@@ -317,6 +403,7 @@ class ImageUNet(nnx.Module):
                         channels,
                         num_heads=num_heads,
                         num_head_channels=num_head_channels,
+                        implementation=attention_impl,
                         rngs=rngs,
                         dtype=dtype,
                     )
@@ -326,7 +413,12 @@ class ImageUNet(nnx.Module):
                 blocks.append(SpatialBlock(residual, attention))
             upsample = None
             if level > 0:
-                upsample = Upsample(channels, rngs=rngs, dtype=dtype)
+                upsample = Upsample(
+                    channels,
+                    use_conv=resample_with_conv,
+                    rngs=rngs,
+                    dtype=dtype,
+                )
                 resolution *= 2
             up_stages.append(UpStage(blocks, upsample))
         if skip_channels:

@@ -11,7 +11,7 @@
   },
   "rhs": {
     "type": "unet",
-    "variant": "small",
+    "variant": "facebook_cifar10",
     "base_channels": 128,
     "channel_mult": [2, 2, 2],
     "num_res_blocks": 4,
@@ -19,6 +19,9 @@
     "num_head_channels": null,
     "attention_resolutions": [16],
     "dropout": 0.3,
+    "resample_with_conv": false,
+    "use_scale_shift_norm": true,
+    "attention_impl": "guided",
     "time_embedding_dim": 512,
     "compute_dtype": "float32"
   },

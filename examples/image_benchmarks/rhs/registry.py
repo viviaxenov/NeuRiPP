@@ -89,6 +89,9 @@ def build_rhs(
             "dropout": preset.dropout,
             "num_heads": preset.num_heads,
             "num_head_channels": preset.num_head_channels,
+            "resample_with_conv": preset.resample_with_conv,
+            "use_scale_shift_norm": preset.use_scale_shift_norm,
+            "attention_impl": preset.attention_impl,
         }
         values.update(
             {
