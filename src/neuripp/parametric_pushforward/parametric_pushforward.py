@@ -18,6 +18,8 @@ It can be trained with Riemannian methods with respect to the pullback of the Wa
 where :math:`T_\\theta` is the mapping, given by the set of parameters :math:`\\theta`, :math:`\\rho_\\theta = (T_\\theta)_\\sharp\\rho_\\text{ref}` is the pusforward densitites, :math:`\\theta_{1,2}` are the tangent vectors in the parameter space, and :math:`\\frac{\partial T_\\theta(x)}{\partial \\theta} \cdot \\theta_{1,2}` is a directional derivative in the direction of :math:`\\theta_{1,2}`
 """
 
+import math
+
 import jax
 import jax.numpy as jnp
 from jaxtyping import PyTree
@@ -169,7 +171,15 @@ class ParametricPushforward(nnx.Module):
     def sample(self, N_samples: int, rngs: nnx.Rngs, with_log_density=False):
         """Returns a sample `x` of shape `(N_samples, dim)` from the current distribution :math:`\\rho_\\theta`"""
         z = self._sample_latent(N_samples, rngs)
-        return self(z, rngs, with_log_density=with_log_density)
+        result = self(z, rngs, with_log_density=with_log_density)
+        if with_log_density:
+            values, log_density = result
+            if values.ndim == 2 and values.shape[-1] == math.prod(self.dim):
+                values = values.reshape((N_samples, *self.dim))
+            return values, log_density
+        if result.ndim == 2 and result.shape[-1] == math.prod(self.dim):
+            return result.reshape((N_samples, *self.dim))
+        return result
 
     def scalar_product(
         self,
