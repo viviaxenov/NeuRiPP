@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from neuripp.methods.anderson import get_anderson
-from neuripp.methods.ngd import get_ngd, schedule_exp
+from neuripp.methods.ngd import get_ngd, schedule_exp, schedule_polynomial
 from neuripp.methods.optax_optimizer import get_optax, optax_optimizers
 
 
@@ -25,13 +25,22 @@ class ResolvedMethod:
     initialization_updates: int = 0
 
 
-def _schedule(kwargs: dict[str, Any]):
+def _schedule(kwargs: dict[str, Any], peak: Any):
     name = kwargs.pop("stepsize_schedule", kwargs.pop("stepsize_schedule_name", None))
     if name is None:
         return None
-    if name != "schedule_exp":
-        raise ValueError("Only stepsize_schedule='schedule_exp' is supported")
-    return schedule_exp
+    if name == "schedule_exp":
+        return schedule_exp
+    if name == "polynomial":
+        schedule_kwargs = {
+            key: kwargs.pop(key)
+            for key in ("min_lr", "iterations", "warmup_steps", "p")
+            if key in kwargs
+        }
+        return lambda _current, iteration, **extra: schedule_polynomial(
+            peak, iteration, **schedule_kwargs
+        )
+    raise ValueError("stepsize_schedule must be 'schedule_exp' or 'polynomial'")
 
 
 def resolve_method(
@@ -56,10 +65,19 @@ def resolve_method(
         learning_rate = kwargs.pop("learning_rate", kwargs.pop("step_size", None))
         if learning_rate is None:
             raise ValueError(f"Optimizer {name!r} requires learning_rate")
+        schedule_name = kwargs.get("stepsize_schedule", kwargs.get("stepsize_schedule_name"))
+        if schedule_name == "polynomial":
+            peak_learning_rate = learning_rate
+            schedule = _schedule(kwargs, peak_learning_rate)
+            learning_rate = lambda count: schedule(peak_learning_rate, count)
+        else:
+            if schedule_name is not None:
+                raise ValueError("Optax optimizers only support polynomial scheduling")
         init_fn, step_fn = get_optax(loss, method=name)
         return ResolvedMethod(name, init_fn, step_fn, (learning_rate,), kwargs)
 
-    schedule = _schedule(kwargs)
+    step_size = kwargs.get("step_size")
+    schedule = _schedule(kwargs, step_size)
     factory_kwargs: dict[str, Any] = {}
     for key in ("linear_solver_method", "natural_grad_clipping_threshold"):
         if key in kwargs:

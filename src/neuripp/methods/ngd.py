@@ -19,6 +19,38 @@ def schedule_exp(step_size: float, iter_count: int, drop_every: int = 100, drop_
     return new_step
 
 
+def schedule_polynomial(
+    peak_step: float,
+    iter_count: int,
+    *,
+    min_lr: float = 1e-8,
+    iterations: int,
+    warmup_steps: int = 0,
+    p: float = 1.0,
+    **kwargs,
+):
+    """Linear warmup followed by polynomial decay to ``min_lr``.
+
+    ``iter_count`` is zero-based.  The peak is reached at ``warmup_steps``
+    and the floor at ``iterations``; values beyond the horizon stay at the
+    floor.  The peak is passed separately so NGD scheduling never compounds
+    decay through its mutable optimizer argument.
+    """
+    del kwargs
+    step = jnp.asarray(iter_count, dtype=jnp.result_type(peak_step, min_lr))
+    peak = jnp.asarray(peak_step)
+    floor = jnp.asarray(min_lr)
+    warmup = jnp.asarray(warmup_steps, dtype=step.dtype)
+    horizon = jnp.asarray(iterations, dtype=step.dtype)
+    warmup_fraction = jnp.clip(step / jnp.maximum(warmup, 1), 0.0, 1.0)
+    decay_fraction = jnp.clip(
+        (step - warmup) / jnp.maximum(horizon - warmup, 1), 0.0, 1.0
+    )
+    warmup_value = floor + (peak - floor) * warmup_fraction
+    decay_value = floor + (peak - floor) * (1.0 - decay_fraction) ** p
+    return jax.lax.select(step < warmup, warmup_value, decay_value)
+
+
 
 def _compute_natural_grad(
     model,

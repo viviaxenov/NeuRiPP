@@ -1,0 +1,58 @@
+{
+  "extends": "cifar10_unet.json",
+  "experiment": {
+    "name": "cifar10_paper_unet256_ngd_probe"
+  },
+  "rhs": {
+    "base_channels": 256,
+    "channel_mult": [1, 2, 2, 2],
+    "num_res_blocks": 2,
+    "num_heads": 4,
+    "num_head_channels": 64,
+    "attention_resolutions": [16],
+    "dropout": 0.0,
+    "time_embedding_dim": 1024,
+    "compute_dtype": "float32"
+  },
+  "training": {
+    "max_steps": 391000,
+    "batch_size": 256
+  },
+  "methods": [
+    {
+      "name": "adamw",
+      "n_restarts": 1,
+      "kwargs": {
+        "learning_rate": 0.0005,
+        "beta1": 0.9,
+        "beta2": 0.999,
+        "eps": 1e-8,
+        "weight_decay": 0.0,
+        "stepsize_schedule": "polynomial",
+        "min_lr": 1e-8,
+        "iterations": 391000,
+        "warmup_steps": 45000,
+        "p": 1
+      }
+    }
+  ],
+  "method_grid": [
+    {
+      "name": "ngd",
+      "n_restarts": 1,
+      "kwargs": {
+        "matvec_batch_size": [25, 128, 256],
+        "step_size": [0.0001, 0.001, 0.01],
+        "natural_grad_clipping_threshold": [null, 20.0],
+        "linear_solver_regularization": [0.01, 0.001, 0.0001],
+        "linear_solver_tolerance": [1e-6],
+        "linear_solver_maxiter": [50],
+        "stepsize_schedule": ["polynomial"],
+        "min_lr": [1e-8],
+        "iterations": [391000],
+        "warmup_steps": [45000],
+        "p": [1]
+      }
+    }
+  ]
+}

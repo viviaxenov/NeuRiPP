@@ -511,8 +511,35 @@ def load_config(path: str | Path) -> dict[str, Any]:
                     "training.batch_size"
                 )
         schedule = kwargs.get("stepsize_schedule", kwargs.get("stepsize_schedule_name"))
-        if schedule not in {None, "schedule_exp"}:
-            raise ValueError("Only stepsize_schedule='schedule_exp' is supported")
+        if schedule not in {None, "schedule_exp", "polynomial"}:
+            raise ValueError(
+                "stepsize_schedule must be 'schedule_exp' or 'polynomial'"
+            )
+        if schedule == "polynomial":
+            peak_key = "step_size" if method["name"] in {"ngd", "anderson"} else "learning_rate"
+            peak = kwargs.get(peak_key, kwargs.get("step_size"))
+            if not isinstance(peak, (int, float)) or float(peak) <= 0:
+                raise ValueError(f"methods[{index}].kwargs.{peak_key} must be positive")
+            min_lr = kwargs.setdefault("min_lr", 1e-8)
+            if not isinstance(min_lr, (int, float)) or float(min_lr) < 0:
+                raise ValueError(f"methods[{index}].kwargs.min_lr must be non-negative")
+            if float(min_lr) > float(peak):
+                raise ValueError(f"methods[{index}].kwargs.min_lr cannot exceed the peak rate")
+            iterations = kwargs.setdefault(
+                "iterations", method.get("max_steps", training["max_steps"])
+            )
+            kwargs["iterations"] = _positive_integer(
+                iterations, f"methods[{index}].kwargs.iterations"
+            )
+            warmup_steps = kwargs.setdefault("warmup_steps", 0)
+            kwargs["warmup_steps"] = _integer_at_least(
+                warmup_steps, 0, f"methods[{index}].kwargs.warmup_steps"
+            )
+            if kwargs["warmup_steps"] > kwargs["iterations"]:
+                raise ValueError("warmup_steps cannot exceed iterations")
+            p = kwargs.setdefault("p", 1.0)
+            if not isinstance(p, (int, float)) or not float(p) > 0:
+                raise ValueError("methods[].kwargs.p must be positive")
 
     evaluation = _object(config["evaluation"], "evaluation")
     evaluation.setdefault("split", "test")
