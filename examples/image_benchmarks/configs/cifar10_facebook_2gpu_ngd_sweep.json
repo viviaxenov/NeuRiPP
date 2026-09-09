@@ -1,0 +1,39 @@
+{
+  "extends": "cifar10_facebook_2_07_review.json",
+  "experiment": {
+    "name": "cifar10_facebook_2gpu_ngd_sweep"
+  },
+  "methods": [],
+  "method_grid": [
+    {
+      "name": "ngd",
+      "n_restarts": 1,
+      "kwargs": {
+        "matvec_batch_size": [16, 32, 64],
+        "step_size": [0.0001, 0.001, 0.01],
+        "natural_grad_clipping_threshold": [null, 20.0],
+        "linear_solver_regularization": [0.01, 0.001, 0.0001],
+        "linear_solver_tolerance": [1e-6],
+        "linear_solver_maxiter": [50]
+      }
+    }
+  ],
+  "additional_methods": [
+    {
+      "name": "adamw",
+      "n_restarts": 1,
+      "kwargs": {
+        "learning_rate": 0.0001,
+        "beta1": 0.9,
+        "beta2": 0.95,
+        "eps": 1e-8
+      }
+    }
+  ],
+  "resources": {
+    "gpu_ids": [0, 1, 2, 3],
+    "gpus_per_run": 2,
+    "max_concurrent_runs": 2,
+    "data_parallel": true
+  }
+}
