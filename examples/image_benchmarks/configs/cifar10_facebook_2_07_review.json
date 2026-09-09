@@ -1,0 +1,84 @@
+{
+  "extends": "cifar10_unet.json",
+  "experiment": {
+    "name": "cifar10_facebook_2_07_review",
+    "reference": {
+      "repository": "https://github.com/facebookresearch/flow_matching/tree/main/examples/image",
+      "reported_fid": 2.07,
+      "reported_checkpoint_epoch": 1800,
+      "status": "review_only_not_run"
+    }
+  },
+  "rhs": {
+    "type": "unet",
+    "variant": "small",
+    "base_channels": 128,
+    "channel_mult": [2, 2, 2],
+    "num_res_blocks": 4,
+    "num_heads": 1,
+    "num_head_channels": null,
+    "attention_resolutions": [16],
+    "dropout": 0.3,
+    "time_embedding_dim": 512,
+    "compute_dtype": "float32"
+  },
+  "training": {
+    "max_steps": 2343000,
+    "batch_size": 64,
+    "eval_every": 78100,
+    "checkpoint_every": 117150,
+    "keep_checkpoints": 2,
+    "evaluation_checkpoint_every_epochs": 150,
+    "full_checkpoint_every_epochs": 1500,
+    "keep_evaluation_checkpoints": 20,
+    "keep_full_checkpoints": 2,
+    "time_sampling": "skewed_edm",
+    "loss_reduction": "mean_all_elements"
+  },
+  "methods": [
+    {
+      "name": "adamw",
+      "n_restarts": 1,
+      "kwargs": {
+        "learning_rate": 0.0001,
+        "beta1": 0.9,
+        "beta2": 0.95,
+        "eps": 1e-8
+      }
+    }
+  ],
+  "ema": {
+    "enabled": true,
+    "decay": 0.999,
+    "start_step": 0
+  },
+  "evaluation": {
+    "split": "train",
+    "val_fm_loss": {
+      "enabled": true,
+      "num_samples": 5000,
+      "batch_size": 256
+    },
+    "sampling": {
+      "method": "heun",
+      "steps": 50,
+      "batch_size": 64,
+      "kwargs": {}
+    },
+    "fid": {
+      "enabled": true,
+      "num_samples_final": 50000,
+      "batch_size": 64,
+      "cache_dir": "../../../artifacts/fid",
+      "weights_path": "../../../artifacts/inception/inception_v3_weights_fid.pickle",
+      "auto_download": true
+    },
+    "kid": {"enabled": false}
+  },
+  "resources": {
+    "gpu_ids": [0, 1, 2, 3, 4, 5, 6, 7],
+    "gpus_per_run": 1,
+    "max_concurrent_runs": 1,
+    "data_parallel": true
+  }
+}

@@ -448,6 +448,24 @@ def load_config(path: str | Path) -> dict[str, Any]:
     training["keep_checkpoints"] = _positive_integer(
         training.get("keep_checkpoints", 3), "training.keep_checkpoints"
     )
+    if training.get("time_sampling", "uniform") not in {"uniform", "skewed_edm"}:
+        raise ValueError("training.time_sampling must be 'uniform' or 'skewed_edm'")
+    if training.get("loss_reduction", "sum_features") not in {
+        "sum_features",
+        "mean_all_elements",
+    }:
+        raise ValueError(
+            "training.loss_reduction must be 'sum_features' or 'mean_all_elements'"
+        )
+    for name in (
+        "evaluation_checkpoint_every_epochs",
+        "full_checkpoint_every_epochs",
+    ):
+        if name in training:
+            training[name] = _positive_integer(training[name], f"training.{name}")
+    for name in ("keep_evaluation_checkpoints", "keep_full_checkpoints"):
+        if name in training:
+            training[name] = _positive_integer(training[name], f"training.{name}")
 
     ema = config.get("ema")
     if ema is not None:
@@ -543,8 +561,8 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
     evaluation = _object(config["evaluation"], "evaluation")
     evaluation.setdefault("split", "test")
-    if evaluation["split"] not in {"validation", "test"}:
-        raise ValueError("evaluation.split must be one of: validation, test")
+    if evaluation["split"] not in {"train", "validation", "test"}:
+        raise ValueError("evaluation.split must be one of: train, validation, test")
     evaluation.setdefault("seed", master_seed + 1000)
     validation = _object(
         evaluation.setdefault("val_fm_loss", {"enabled": True}),

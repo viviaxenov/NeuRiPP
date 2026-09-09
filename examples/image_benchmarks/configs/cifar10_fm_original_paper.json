@@ -1,0 +1,69 @@
+{
+  "extends": "cifar10_unet.json",
+  "experiment": {
+    "name": "cifar10_fm_original_paper",
+    "reference": {
+      "paper": "https://arxiv.org/abs/2210.02747",
+      "result": "FM w/ OT on CIFAR-10",
+      "reported_fid": 6.35,
+      "table": "Table 1; Appendix E.2 Table 3"
+    }
+  },
+  "rhs": {
+    "variant": "cifar_reference",
+    "base_channels": 256,
+    "channel_mult": [1, 2, 2, 2],
+    "num_res_blocks": 2,
+    "num_heads": 4,
+    "num_head_channels": 64,
+    "attention_resolutions": [16],
+    "dropout": 0.0,
+    "time_embedding_dim": 1024,
+    "compute_dtype": "float32"
+  },
+  "training": {
+    "max_steps": 391000,
+    "batch_size": 256,
+    "eval_every": 39100,
+    "checkpoint_every": 39100,
+    "keep_checkpoints": 2,
+    "time_sampling": "uniform",
+    "loss_reduction": "sum_features"
+  },
+  "methods": [
+    {
+      "name": "adam",
+      "n_restarts": 1,
+      "kwargs": {
+        "learning_rate": 0.0005,
+        "beta1": 0.9,
+        "beta2": 0.999,
+        "eps": 1e-8,
+        "weight_decay": 0.0,
+        "stepsize_schedule": "polynomial",
+        "min_lr": 1e-8,
+        "iterations": 391000,
+        "warmup_steps": 45000,
+        "p": 1
+      }
+    }
+  ],
+  "evaluation": {
+    "split": "test",
+    "sampling": {
+      "method": "heun",
+      "steps": 50,
+      "batch_size": 256,
+      "kwargs": {}
+    },
+    "fid": {
+      "enabled": true,
+      "num_samples_final": 50000,
+      "batch_size": 64,
+      "cache_dir": "../../../artifacts/fid",
+      "weights_path": "../../../artifacts/inception/inception_v3_weights_fid.pickle",
+      "auto_download": true
+    },
+    "kid": {"enabled": false}
+  }
+}

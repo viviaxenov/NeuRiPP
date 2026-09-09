@@ -13,6 +13,17 @@ ZERO_TOL = 1e-20
 
 class FlowMatching(ParametricPushforward):
 
+    def __init__(self, *args, time_sampling="uniform", loss_reduction="sum_features", **kwargs):
+        super().__init__(*args, **kwargs)
+        if time_sampling not in {"uniform", "skewed_edm"}:
+            raise ValueError("time_sampling must be 'uniform' or 'skewed_edm'")
+        if loss_reduction not in {"sum_features", "mean_all_elements"}:
+            raise ValueError(
+                "loss_reduction must be 'sum_features' or 'mean_all_elements'"
+            )
+        self.time_sampling = time_sampling
+        self.loss_reduction = loss_reduction
+
     def sample_interpolant(
         self,
         data_batch: jnp.ndarray,
@@ -25,7 +36,13 @@ class FlowMatching(ParametricPushforward):
         x1 = data_batch
         x0 = self._sample_latent(n_samples, rngs) if noise is None else noise
         x0 = x0.reshape(x1.shape)
-        ts = rngs.uniform((n_samples,)) if times is None else times
+        if times is not None:
+            ts = times
+        elif self.time_sampling == "uniform":
+            ts = rngs.uniform((n_samples,))
+        else:
+            sigma = jnp.exp(-1.2 + 1.2 * rngs.normal((n_samples,)))
+            ts = jnp.clip(1.0 / (1.0 + sigma), 1e-4, 1.0)
         # Broadcast time across leading state dims so both vector (N, D) and
         # spatial NHWC (N, H, W, C) states interpolate correctly.
         ts_b = ts.reshape((n_samples,) + (1,) * (x1.ndim - 1))
@@ -136,5 +153,8 @@ def flow_matching_loss(
     vs = v(model, ts, xts, rngs)
     v_empirical = x1 - x0
 
+    errors = (vs - v_empirical) ** 2
+    if model.loss_reduction == "mean_all_elements":
+        return jnp.mean(errors)
     reduce_axes = tuple(range(1, xts.ndim))
-    return jnp.mean(jnp.sum((vs - v_empirical) ** 2, axis=reduce_axes))
+    return jnp.mean(jnp.sum(errors, axis=reduce_axes))

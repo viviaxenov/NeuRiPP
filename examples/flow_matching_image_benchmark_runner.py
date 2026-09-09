@@ -1290,6 +1290,8 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         ode_method=sampling["method"],
         ode_nstep_max=sampling["steps"],
         ode_kwargs=sampling.get("kwargs", {}),
+        time_sampling=config["training"].get("time_sampling", "uniform"),
+        loss_reduction=config["training"].get("loss_reduction", "sum_features"),
     )
     training_rngs = nnx.Rngs(
         default=run["rng_seeds"]["fm_noise"],
@@ -1403,6 +1405,15 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
     training = config["training"]
     max_steps = int(run["method"].get("max_steps", training["max_steps"]))
     eval_every = int(run["method"].get("eval_every", training["eval_every"]))
+    steps_per_epoch = max(1, manifest.splits["train"].count // training["batch_size"])
+    evaluation_checkpoint_every = (
+        steps_per_epoch * training["evaluation_checkpoint_every_epochs"]
+        if "evaluation_checkpoint_every_epochs" in training else None
+    )
+    full_checkpoint_every = (
+        steps_per_epoch * training["full_checkpoint_every_epochs"]
+        if "full_checkpoint_every_epochs" in training else None
+    )
     fid_context = _prepare_fid_context(config, manifest, run)
     if trainer.step_count == 0 and not any(
         record.get("type") == "train" and record.get("optimizer_step") == 0
@@ -1636,7 +1647,19 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             evaluation_arrays["ema_fid"].append(float(ema_fid_result.get("fid", "nan")) if ema_fid_result else float("nan"))
             evaluation_arrays["ema_kid_mean"].append(float(ema_fid_result.get("kid_mean", "nan")) if ema_fid_result else float("nan"))
             _save_run_arrays(run_dir, train_arrays, evaluation_arrays)
-        if step % training["checkpoint_every"] == 0:
+        if evaluation_checkpoint_every is not None and (
+            step % evaluation_checkpoint_every == 0 or step == max_steps
+        ):
+            _save_evaluation_checkpoint(
+                checkpoint_root,
+                trainer,
+                training.get("keep_evaluation_checkpoints", 20),
+            )
+        if full_checkpoint_every is not None:
+            should_save_full = step % full_checkpoint_every == 0 or step == max_steps
+        else:
+            should_save_full = step % training["checkpoint_every"] == 0
+        if should_save_full:
             _save_checkpoint(
                 checkpoint_root, trainer, train_stream, training["keep_checkpoints"]
             )

@@ -176,6 +176,24 @@ class ImageTrainer:
             "ema": self._ema.payload() if self._ema is not None else None,
         }
 
+    def evaluation_checkpoint_payload(self) -> dict[str, Any]:
+        """Return weights and metadata needed for checkpoint-only evaluation.
+
+        Unlike :meth:`checkpoint_payload`, this intentionally excludes the
+        optimizer, RNG, and data-stream state so frequent evaluation saves do
+        not carry the cost of a resumable training checkpoint.
+        """
+        model = jax.tree.map(
+            lambda value: jnp.array(value, copy=True), nnx.state(self.model, nnx.Param)
+        )
+        return {
+            "model": model,
+            "ema": self._ema.payload() if self._ema is not None else None,
+            "step_count": self.step_count,
+            "examples_seen": self.examples_seen,
+            "wall_clock_train_s": self.wall_clock_train_s,
+        }
+
     def restore_checkpoint_payload(self, payload: dict[str, Any]) -> None:
         graph, _ = nnx.split((self.state, self.rngs))
         self.state, self.rngs = nnx.merge(
