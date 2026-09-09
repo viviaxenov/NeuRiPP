@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any
 
 import jax
@@ -449,6 +450,10 @@ class ImageUNet(nnx.Module):
         )
 
     def __call__(self, time, state, *args, rngs=None):
+        original_shape = state.shape
+        flattened = state.ndim == 1 and state.size == math.prod(self.dim)
+        if flattened:
+            state = state.reshape(self.dim)
         if state.shape != self.dim:
             raise ValueError(f"U-Net expected state shape {self.dim}, got {state.shape}")
         time_embedding = self.time_mlp(
@@ -480,4 +485,5 @@ class ImageUNet(nnx.Module):
         if skips:
             raise AssertionError("U-Net forward did not consume all skip features")
         features = self._resize_like(features, state)
-        return self.output_conv(jax.nn.silu(self.output_norm(features)))
+        output = self.output_conv(jax.nn.silu(self.output_norm(features)))
+        return output.reshape(original_shape) if flattened else output
