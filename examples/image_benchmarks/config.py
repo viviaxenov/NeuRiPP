@@ -37,7 +37,7 @@ METHOD_NAMES = {
 }
 COMPUTE_DTYPES = {"bfloat16", "float16", "float32"}
 MLP_ACTIVATIONS = {"gelu", "relu", "selu", "silu", "swish", "tanh"}
-UNET_VARIANTS = {"small", "cifar_reference", "large"}
+UNET_VARIANTS = {"small", "cifar_reference", "facebook_cifar10", "large"}
 SIT_VARIANTS = {"S", "B", "L", "XL"}
 SAMPLING_METHODS = {"rk45", "euler", "heun"}
 RNG_STREAMS = (
