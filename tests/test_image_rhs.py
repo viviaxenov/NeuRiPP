@@ -82,6 +82,30 @@ def test_unet_output_shapes_for_pixels_and_latents():
         assert parameter_count(rhs) > 0
 
 
+def test_guided_unet_features_are_shape_preserving():
+    rhs = build_rhs(
+        {
+            "type": "unet",
+            "variant": "facebook_cifar10",
+            "base_channels": 4,
+            "channel_mult": [2, 2],
+            "num_res_blocks": 1,
+            "attention_resolutions": [4],
+            "dropout": 0.0,
+            "num_heads": 1,
+            "num_head_channels": None,
+            "resample_with_conv": False,
+            "use_scale_shift_norm": True,
+            "attention_impl": "guided",
+        },
+        (8, 8, 3),
+        rngs=nnx.Rngs(44),
+    )
+    output = rhs(0.4, jnp.ones((8, 8, 3)))
+    assert output.shape == (8, 8, 3)
+    assert parameter_count(rhs) > 0
+
+
 def test_sit_adapter_is_unconditional_and_shape_preserving():
     model = FakeDiT()
     rhs = DiffuseSiTRHS(model, (4, 4, 2))
@@ -196,6 +220,7 @@ if __name__ == "__main__":
     test_mlp_output_shape_and_parameter_count()
     test_explicit_mlp_flatten_adapter()
     test_unet_output_shapes_for_pixels_and_latents()
+    test_guided_unet_features_are_shape_preserving()
     test_sit_adapter_is_unconditional_and_shape_preserving()
     test_packaged_diffuse_sit_uses_canonical_import()
     test_architecture_compatibility_errors_are_preflighted()
