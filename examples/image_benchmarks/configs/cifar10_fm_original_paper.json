@@ -27,6 +27,10 @@
     "eval_every": 39100,
     "checkpoint_every": 39100,
     "keep_checkpoints": 2,
+    "evaluation_checkpoint_every_epochs": 100,
+    "full_checkpoint_every_epochs": 1000,
+    "keep_evaluation_checkpoints": 20,
+    "keep_full_checkpoints": 2,
     "time_sampling": "uniform",
     "loss_reduction": "sum_features"
   },
