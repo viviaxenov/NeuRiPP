@@ -421,7 +421,14 @@ def run_candidate(config, run, manifest, batch_size: int,
     return report
 
 
-def _ngd_method_config():
+def _probe_method_config(config, method: str):
+    if method == "adamw":
+        methods = [copy.deepcopy(item) for item in config["methods"] if item.get("name") == "adamw"]
+        if not methods:
+            raise ValueError("config does not contain an AdamW method")
+        return methods
+    if method != "ngd":
+        raise ValueError("method must be 'ngd' or 'adamw'")
     return [{
         "name": "ngd",
         "n_restarts": 1,
@@ -454,6 +461,8 @@ def main() -> int:
                         help="first GPU of the visible range (NVML/physical id)")
     parser.add_argument("--gpu-count", type=int, default=1,
                         help="GPUs per run; global batch is sharded over them")
+    parser.add_argument("--method", choices=("ngd", "adamw"), default="ngd",
+                        help="optimizer path to probe")
     parser.add_argument("--allow-drop-last", action="store_true",
                         help="measure batches that do not divide the training "
                              "split (remainder is dropped per epoch, as in the "
@@ -462,9 +471,9 @@ def main() -> int:
 
     config_path = Path(args.config).expanduser().resolve()
     config = load_config(config_path)
-    config["methods"] = _ngd_method_config()
+    config["methods"] = _probe_method_config(config, args.method)
     runs = plan_runs(config)
-    run = next(run for run in runs if run["method"]["name"] == "ngd")
+    run = next(run for run in runs if run["method"]["name"] == args.method)
 
     if args.sweep:
         candidates = [int(value) for value in args.candidates.split(",") if value]
@@ -483,8 +492,9 @@ def main() -> int:
                  "--batch", str(batch_size), "--output", str(path),
                  "--warmup", str(args.warmup), "--measure", str(args.measure),
                  "--gpu-index", str(args.gpu_index),
-                 "--gpu-count", str(args.gpu_count)]
-                + (["--allow-drop-last"] if args.allow_drop_last else []),
+                  "--gpu-count", str(args.gpu_count)]
+                 + ["--method", args.method]
+                 + (["--allow-drop-last"] if args.allow_drop_last else []),
                 env=env,
                 capture_output=True, text=True,
             )
@@ -506,6 +516,7 @@ def main() -> int:
             "measure_steps": args.measure,
             "gpu_index": args.gpu_index,
             "gpu_count": args.gpu_count,
+            "method": args.method,
             "allow_drop_last": args.allow_drop_last,
             "reports": reports,
         }
