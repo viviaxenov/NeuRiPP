@@ -673,6 +673,41 @@ def _save_ema_checkpoint(checkpoint_root, trainer, keep):
     return destination
 
 
+def _save_evaluation_checkpoint(checkpoint_root, trainer, keep):
+    """Save raw/EMA weights for evaluation without optimizer state."""
+    import orbax.checkpoint as ocp
+
+    step = trainer.step_count
+    root = checkpoint_root / "evaluation"
+    root.mkdir(parents=True, exist_ok=True)
+    destination = root / f"step_{step:09d}"
+    if destination.exists():
+        return destination
+    temporary = root / f".step_{step:09d}.tmp"
+    if temporary.exists():
+        shutil.rmtree(temporary)
+    checkpointer = ocp.StandardCheckpointer()
+    checkpointer.save(temporary, trainer.evaluation_checkpoint_payload())
+    checkpointer.wait_until_finished()
+    _write_json(
+        temporary / "metadata.json",
+        {
+            "step": step,
+            "written_at": _utc_now(),
+            "format": "orbax-evaluation-weights",
+        },
+    )
+    temporary.rename(destination)
+    checkpoints = sorted(
+        path
+        for path in root.iterdir()
+        if path.is_dir() and path.name.startswith("step_")
+    )
+    for obsolete in checkpoints[:-keep]:
+        shutil.rmtree(obsolete)
+    return destination
+
+
 def _fid_kid_eval(
     model,
     *,
