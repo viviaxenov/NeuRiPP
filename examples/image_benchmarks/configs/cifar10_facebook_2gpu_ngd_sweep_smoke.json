@@ -1,0 +1,25 @@
+{
+  "extends": "cifar10_facebook_2gpu_ngd_sweep.json",
+  "experiment": {
+    "name": "cifar10_facebook_2gpu_ngd_sweep_smoke"
+  },
+  "training": {
+    "max_steps": 100,
+    "eval_every": 100,
+    "checkpoint_every": 100,
+    "evaluation_checkpoint_every_epochs": 1,
+    "full_checkpoint_every_epochs": 1,
+    "keep_checkpoints": 1,
+    "keep_evaluation_checkpoints": 1,
+    "keep_full_checkpoints": 1,
+    "log_every": 10
+  },
+  "evaluation": {
+    "fid": {
+      "enabled": false
+    },
+    "kid": {
+      "enabled": false
+    }
+  }
+}
