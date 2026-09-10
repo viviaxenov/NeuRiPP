@@ -708,6 +708,69 @@ def _save_evaluation_checkpoint(checkpoint_root, trainer, keep):
     return destination
 
 
+class _ProgressHistory:
+    """Append run progress records and maintain the latest JSON snapshot."""
+
+    def __init__(self, run_dir: Path, run: dict[str, Any], gpu_ids, worker_id: int, max_steps: int):
+        self.run_dir = run_dir
+        self.history_path = run_dir / "progress.jsonl"
+        self.latest_path = run_dir / "progress.json"
+        self.run = run
+        self.gpu_ids = [int(value) for value in gpu_ids]
+        self.worker_id = int(worker_id)
+        self.max_steps = int(max_steps)
+        self.started = time.monotonic()
+        self.attempt_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+
+    def write(
+        self,
+        *,
+        phase: str,
+        status: str = "running",
+        step: int = 0,
+        loss: float | None = None,
+        step_ms: float | None = None,
+        event: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        elapsed = max(0.0, time.monotonic() - self.started)
+        completed = max(0, int(step))
+        rate = elapsed / completed if completed else None
+        eta = rate * (self.max_steps - completed) if rate is not None else None
+        record = {
+            "timestamp": _utc_now(),
+            "attempt_id": self.attempt_id,
+            "run_index": int(self.run["run_index"]),
+            "run_id": self.run["run_id"],
+            "worker_id": self.worker_id,
+            "gpu_ids": self.gpu_ids,
+            "method": self.run["method"]["name"],
+            "status": status,
+            "phase": phase,
+            "event": event,
+            "optimizer_step": completed,
+            "max_steps": self.max_steps,
+            "progress_fraction": (
+                min(1.0, completed / self.max_steps) if self.max_steps else 1.0
+            ),
+            "latest_loss": loss if loss is None or np.isfinite(loss) else None,
+            "step_ms": step_ms if step_ms is None or np.isfinite(step_ms) else None,
+            "elapsed_s": elapsed,
+            "estimated_remaining_s": eta,
+            "error": error,
+        }
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        with self.history_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, allow_nan=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary = self.latest_path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(record, indent=2, allow_nan=False) + "\n", encoding="utf-8"
+        )
+        temporary.replace(self.latest_path)
+
+
 def _fid_kid_eval(
     model,
     *,
