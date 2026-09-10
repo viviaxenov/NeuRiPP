@@ -448,6 +448,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
     training["keep_checkpoints"] = _positive_integer(
         training.get("keep_checkpoints", 3), "training.keep_checkpoints"
     )
+    training["log_every"] = _positive_integer(
+        training.get("log_every", 100), "training.log_every"
+    )
     if training.get("time_sampling", "uniform") not in {"uniform", "skewed_edm"}:
         raise ValueError("training.time_sampling must be 'uniform' or 'skewed_edm'")
     if training.get("loss_reduction", "sum_features") not in {

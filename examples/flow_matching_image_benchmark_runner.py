@@ -1260,7 +1260,7 @@ def _save_run_diagnostics(
     plt.close(figure)
 
 
-def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
+def _run_one(config, run, manifest_path, session_dir, gpu_group, resume, worker_id):
     import jax
     import jax.numpy as jnp
     from flax import nnx
@@ -1281,6 +1281,9 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
     samples_dir = Path(session_dir) / "plots" / "samples"
     ema_samples_dir = Path(session_dir) / "plots" / "ema_samples"
     diagnostic_dir = Path(session_dir) / "plots" / "diagnostic"
+    max_steps = int(run["method"].get("max_steps", config["training"]["max_steps"]))
+    progress = _ProgressHistory(run_dir, run, gpu_group, worker_id, max_steps)
+    progress.write(phase="initializing", event="run_started")
     if resume and (run_dir / "status.json").is_file() and (
         run_dir / "final_summary.json"
     ).is_file():
@@ -1356,6 +1359,17 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         # The first batch has not been consumed by Optax/NGD initialization.
         train_stream.load_state_dict({"epoch": 0, "batch_index": 0})
     restored_checkpoint = _restore_latest(checkpoint_root, trainer, train_stream) if resume else None
+    if restored_checkpoint is not None:
+        progress.write(phase="training", step=trainer.step_count, event="checkpoint_restored")
+    from tqdm import tqdm
+    progress_bar = tqdm(
+        total=max_steps,
+        initial=trainer.step_count,
+        desc=f"run {int(run['run_index'])} GPUs {list(gpu_group)} {run['method']['name']}",
+        position=worker_id + 1,
+        leave=False,
+        dynamic_ncols=True,
+    )
 
     validation = _fixed_validation(config, manifest, encoder, run)
     sw_validation_config = config["evaluation"]["sw_validation"]
@@ -1573,9 +1587,23 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         _save_run_arrays(run_dir, train_arrays, evaluation_arrays)
     while trainer.step_count < max_steps:
         batch = train_stream.next_batch()
+        step_start = time.perf_counter()
         values = trainer.step(batch)
+        step_ms = (time.perf_counter() - step_start) * 1000.0
         step = trainer.step_count
         accounting = trainer.accounting()
+        progress_bar.update(max(0, step - int(progress_bar.n)))
+        progress_bar.set_postfix(
+            loss=f"{float(values[0]):.4g}",
+            ms=f"{step_ms:.0f}",
+        )
+        if step % training["log_every"] == 0 or step == max_steps:
+            progress.write(
+                phase="training",
+                step=step,
+                loss=float(values[0]),
+                step_ms=step_ms,
+            )
         train_arrays["loss"].append(float(values[0]))
         train_arrays["grad_norm"].append(
             float(jnp.sqrt(jnp.maximum(values[1], 0.0)))
@@ -1595,6 +1623,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
         if step % eval_every == 0 or step == max_steps:
             from image_benchmarks.evaluation.validation import evaluate_fixed_fm_loss
 
+            progress.write(phase="evaluation", step=step, event="evaluation_started")
             start = time.perf_counter()
             val_loss = _fixed_fm_eval(
                 trainer.model,
@@ -1682,6 +1711,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             evaluation_arrays["ema_fid"].append(float(ema_fid_result.get("fid", "nan")) if ema_fid_result else float("nan"))
             evaluation_arrays["ema_kid_mean"].append(float(ema_fid_result.get("kid_mean", "nan")) if ema_fid_result else float("nan"))
             _save_run_arrays(run_dir, train_arrays, evaluation_arrays)
+            progress.write(phase="training", step=step, event="evaluation_finished")
         if evaluation_checkpoint_every is not None and (
             step % evaluation_checkpoint_every == 0 or step == max_steps
         ):
@@ -1699,6 +1729,7 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
                 checkpoint_root, trainer, train_stream, training["keep_checkpoints"]
             )
             _save_ema_checkpoint(checkpoint_root, trainer, training["keep_checkpoints"])
+            progress.write(phase="checkpoint", step=step, event="full_checkpoint_saved")
     checkpoint = _save_checkpoint(
         checkpoint_root, trainer, train_stream, training["keep_checkpoints"]
     )
@@ -2050,10 +2081,12 @@ def _run_one(config, run, manifest_path, session_dir, gpu_group, resume):
             "arrays_path": "arrays.npz",
         },
     )
+    progress_bar.close()
+    progress.write(phase="completed", status="completed", step=trainer.step_count, event="run_completed")
     return {"run_id": run["run_id"], "status": "completed"}
 
 
-def _worker_loop(config, manifest_path, session_dir, gpu_group, task_queue, result_queue, resume):
+def _worker_loop(config, manifest_path, session_dir, gpu_group, task_queue, result_queue, resume, worker_id):
     for key, value in config["resources"]["worker_env"].items():
         os.environ[key] = value
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(value) for value in gpu_group)
@@ -2062,12 +2095,26 @@ def _worker_loop(config, manifest_path, session_dir, gpu_group, task_queue, resu
         if run is None:
             break
         try:
-            result = _run_one(config, run, manifest_path, session_dir, gpu_group, resume)
+            result = _run_one(
+                config, run, manifest_path, session_dir, gpu_group, resume, worker_id
+            )
         except Exception as error:
             run_dir = Path(session_dir) / "runs" / run["run_id"]
             run_dir.mkdir(parents=True, exist_ok=True)
             trace = traceback.format_exc()
             (run_dir / "error.txt").write_text(trace, encoding="utf-8")
+            _ProgressHistory(
+                run_dir,
+                run,
+                gpu_group,
+                worker_id,
+                int(run["method"].get("max_steps", config["training"]["max_steps"])),
+            ).write(
+                phase="failed",
+                status="failed",
+                event="run_failed",
+                error=str(error),
+            )
             _write_json(
                 run_dir / "status.json",
                 {"status": "failed", "updated_at": _utc_now(), "error": str(error)},
@@ -2082,7 +2129,7 @@ def execute_runs(config, runs, manifest, session_dir, resume):
     result_queue = context.Queue()
     workers = []
     task_queue = context.Queue()
-    for group in groups:
+    for worker_id, group in enumerate(groups):
         process = context.Process(
             target=_worker_loop,
             args=(
@@ -2093,6 +2140,7 @@ def execute_runs(config, runs, manifest, session_dir, resume):
                 task_queue,
                 result_queue,
                 resume,
+                worker_id,
             ),
         )
         process.start()
