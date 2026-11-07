@@ -2,6 +2,8 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.special import logsumexp
 
+import os
+
 
 def logpdf_st(x: jnp.ndarray) -> jnp.ndarray:
     """
@@ -24,7 +26,7 @@ def logpdf_double_banana(x: jnp.ndarray, shift: jnp.ndarray) -> jnp.ndarray:
 
 
 def get_logpdf_elliptic_inverse_problem(
-    seed: int, dim: int = 6, n_grid: int = 100, noise_std=1e-2, return_all=False
+    seed: int = 1, dim: int = 6, n_grid: int = 100, noise_std=1e-2, return_all=False
 ):
     from uncprop.models.elliptic_pde.inverse_problem import (
         generate_pde_inv_prob_rep,
