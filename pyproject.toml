@@ -13,17 +13,35 @@ version = "0.0.1"
 requires-python = ">=3.12"
 dependencies = [
   "flax==0.12.8",
-  "jax==0.11.0",
+  # Tested CPU versions: 0.10.2 (acoustic/KS) and 0.11.0 (KS).
+  # Permit acoustic's older JAX without downgrading existing 0.11.0 installs.
+  "jax>=0.10.2,<=0.11.0",
   "jaxtyping>=0.3.2",
   "optax>=0.2.6",
 ]
 
 [project.optional-dependencies]
 cuda12 = [
-  "jax[cuda12]==0.11.0",
+  "jax[cuda12]>=0.10.2,<=0.11.0",
 ]
 cuda13 = [
-  "jax[cuda13]==0.11.0",
+  "jax[cuda13]>=0.10.2,<=0.11.0",
+]
+# Tested together on Python 3.12 / JAX 0.10.2 / Flax 0.12.8 (CPU).
+acoustic = [
+  # Incompatible with diffuse-nnx 0.2.0.dev0 (JAX >=0.11); use a separate env.
+  "jax==0.10.2",
+  "jaxlib==0.10.2",
+  # PyPI jwave 0.2.1 uses the old jaxdf API; this revision ports to 0.3.0.
+  "jwave @ git+https://github.com/ucl-bug/jwave.git@d1918f4e6adbf3822108e0af8034063efed1d581",
+  # Upstream dependency-update commit: >=0.9,<0.11 (released 0.3.0: <0.10).
+  "jaxdf @ git+https://github.com/ucl-bug/jaxdf.git@6c36538e0ff3d4eb514763cf6358916c41270996",
+  "equinox==0.13.7",
+  "plum-dispatch==2.10.1",
+]
+ks = [
+  "exponax==0.2.1",
+  "equinox==0.13.7",
 ]
 examples = [
   "numpy",
