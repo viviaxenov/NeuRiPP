@@ -72,6 +72,7 @@ METHOD_FACTORY_GROUP_KEYS = {
     },
     "anderson": {
         "history_length",
+        "scalar_product_type",
         "regularization_method",
         "ensure_descent",
         "linear_solver_method",
@@ -3260,15 +3261,30 @@ def load_config(path: str | Path) -> dict[str, Any]:
                 raise ValueError(
                     f"methods[{index}].stepsize_schedule {schedule_name!r} is not supported; expected one of: {supported}"
                 )
-        semi_flat = method.get("semi_flat")
-        if semi_flat is not None:
+        if "semi_flat" in method:
+            raise ValueError(
+                f"methods[{index}].semi_flat has been removed; use scalar_product_type "
+                "('euclidean' for true, 'riemannian' for false)"
+            )
+        if "scalar_product_type" in method:
             if method_name != "anderson":
                 raise ValueError(
-                    f"methods[{index}].semi_flat is only supported for method 'anderson'"
+                    f"methods[{index}].scalar_product_type is only supported for method 'anderson'"
                 )
-            if not _is_bool_or_bool_list(semi_flat):
+            scalar_product_type = method["scalar_product_type"]
+            scalar_product_types = (
+                scalar_product_type
+                if isinstance(scalar_product_type, list)
+                else [scalar_product_type]
+            )
+            if not scalar_product_types or any(
+                not isinstance(value, str)
+                or value not in {"riemannian", "regularized", "euclidean"}
+                for value in scalar_product_types
+            ):
                 raise ValueError(
-                    f"methods[{index}].semi_flat must be a boolean or non-empty list of booleans when provided"
+                    f"methods[{index}].scalar_product_type must be 'riemannian', "
+                    "'regularized', or 'euclidean', or a non-empty list of these values"
                 )
         n_restarts = method.get("n_restarts")
         if not isinstance(n_restarts, int) or n_restarts < 1:

@@ -35,7 +35,7 @@
   "methods": [
     {
       "method": "anderson",
-      "semi_flat": true,
+      "scalar_product_type": "euclidean",
       "n_restarts": 6,
       "natural_grad_clipping_threshold": [null, 0.5],
       "history_length":  8,
