@@ -3063,6 +3063,7 @@ def plot_run_diagnostics(
     n_samples: int = 512,
     image_eval_context: dict[str, Any] | None = None,
     deps: dict[str, Any] | None = None,
+    posterior_samples: Any | None = None,
 ) -> None:
     import matplotlib.pyplot as plt
 
@@ -3070,13 +3071,18 @@ def plot_run_diagnostics(
     deps = deps or import_runtime_dependencies()
     image_problem = is_image_problem(problem)
     field_name = problem["distribution"]["name"]
-    if field_name in FIELD_DEFAULTS:
+    if field_name in FIELD_DEFAULTS and posterior_samples is None:
         n_samples = min(n_samples, 4)
     if image_problem:
         nrows, ncols = image_grid_shape(plotting)
         n_samples = nrows * ncols
 
-    x = model.sample(n_samples, deps["nnx"].Rngs(0))
+    if posterior_samples is None:
+        x = model.sample(n_samples, deps["nnx"].Rngs(0))
+    else:
+        x = posterior_samples
+    if field_name in FIELD_DEFAULTS:
+        x = x[:4]
     fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(25, 8), layout="constrained")
 
     ax = axs[0]
@@ -3184,6 +3190,55 @@ def generate_per_run_plots(
         model = load_entry_model(entry, key="last")
         title = format_run_label(entry, varying_keys)
         output_path = plot_dir / f"{entry['run_id']}_plots.pdf"
+        posterior_samples = None
+        distribution_name = _distribution_name(entry["problem"]["distribution"])
+        if distribution_name in FIELD_DEFAULTS:
+            from inverse_pde_visualization import (
+                plot_acoustic_summary,
+                plot_ks_summary,
+                sample_model_posterior,
+                summarize_field_samples,
+            )
+
+            deps = import_runtime_dependencies()
+            n_posterior_samples = plotting.get("n_posterior_samples", 256)
+            posterior_seed = plotting.get("posterior_seed", 0)
+            posterior_batch_size = plotting.get("posterior_batch_size", 1)
+            if (
+                isinstance(n_posterior_samples, bool)
+                or not isinstance(n_posterior_samples, int)
+                or n_posterior_samples < 1
+            ):
+                raise ValueError("plotting.n_posterior_samples must be a positive integer")
+            if isinstance(posterior_seed, bool) or not isinstance(posterior_seed, int) or posterior_seed < 0:
+                raise ValueError("plotting.posterior_seed must be a nonnegative integer")
+            if (
+                isinstance(posterior_batch_size, bool)
+                or not isinstance(posterior_batch_size, int)
+                or posterior_batch_size < 1
+            ):
+                raise ValueError("plotting.posterior_batch_size must be a positive integer")
+            posterior_samples, model_log_density = sample_model_posterior(
+                model,
+                n_samples=n_posterior_samples,
+                seed=posterior_seed,
+                deps=deps,
+                batch_size=posterior_batch_size,
+            )
+            summary = summarize_field_samples(posterior_samples, model_log_density)
+            truth = field_truth_for_plot(entry["problem"]["distribution"])
+            posterior_path = plot_dir / f"{entry['run_id']}_posterior.pdf"
+            plotter = (
+                plot_acoustic_summary
+                if distribution_name == "acoustic"
+                else plot_ks_summary
+            )
+            posterior_fig, _ = plotter(truth, summary, output_path=posterior_path)
+            import matplotlib.pyplot as plt
+
+            plt.close(posterior_fig)
+            written_paths.append(posterior_path)
+
         plot_run_diagnostics(
             model,
             entry["problem"],
@@ -3193,6 +3248,8 @@ def generate_per_run_plots(
             output_path,
             plotting=plotting,
             n_samples=n_samples,
+            deps=deps if distribution_name in FIELD_DEFAULTS else None,
+            posterior_samples=posterior_samples,
         )
         written_paths.append(output_path)
 
@@ -3286,6 +3343,24 @@ def load_config(path: str | Path) -> dict[str, Any]:
     )
     methods = _require_non_empty_object_list(config["methods"], "methods")
     plotting = _require_object(config["plotting"], "plotting")
+    if "n_posterior_samples" in plotting and (
+        isinstance(plotting["n_posterior_samples"], bool)
+        or not isinstance(plotting["n_posterior_samples"], int)
+        or plotting["n_posterior_samples"] < 1
+    ):
+        raise ValueError("plotting.n_posterior_samples must be a positive integer")
+    if "posterior_seed" in plotting and (
+        isinstance(plotting["posterior_seed"], bool)
+        or not isinstance(plotting["posterior_seed"], int)
+        or plotting["posterior_seed"] < 0
+    ):
+        raise ValueError("plotting.posterior_seed must be a nonnegative integer")
+    if "posterior_batch_size" in plotting and (
+        isinstance(plotting["posterior_batch_size"], bool)
+        or not isinstance(plotting["posterior_batch_size"], int)
+        or plotting["posterior_batch_size"] < 1
+    ):
+        raise ValueError("plotting.posterior_batch_size must be a positive integer")
     if plotting.get("nrows") is not None and (
         not isinstance(plotting["nrows"], int) or plotting["nrows"] < 1
     ):

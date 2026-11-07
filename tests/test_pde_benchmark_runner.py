@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -59,6 +60,31 @@ class FieldRunnerTests(unittest.TestCase):
                 runner.resolve_field_distribution({"name": "acoustic", **update})
         with self.assertRaises(ValueError):
             runner.resolve_field_distribution({"name": "ks", "num_points": 8, "num_sensors": 9})
+
+    def test_posterior_plot_settings_validation(self):
+        base = json.loads(
+            (ROOT / "examples" / "configs" / "kl_ks_smoke.json").read_text()
+        )
+        base["plotting"].update(
+            n_posterior_samples=12, posterior_seed=7, posterior_batch_size=2
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            config_path.write_text(json.dumps(base))
+            parsed = runner.load_config(config_path)
+            self.assertEqual(parsed["plotting"]["n_posterior_samples"], 12)
+            self.assertEqual(parsed["plotting"]["posterior_seed"], 7)
+            self.assertEqual(parsed["plotting"]["posterior_batch_size"], 2)
+            for key, bad_value in (
+                ("n_posterior_samples", 0),
+                ("n_posterior_samples", True),
+                ("posterior_seed", -1),
+                ("posterior_batch_size", 0),
+            ):
+                invalid = {**base, "plotting": {**base["plotting"], key: bad_value}}
+                config_path.write_text(json.dumps(invalid))
+                with self.subTest(key=key, value=bad_value), self.assertRaises(ValueError):
+                    runner.load_config(config_path)
         settings = runner.resolve_field_distribution({"name": "acoustic", "source_batch_size": 8})
         self.assertEqual(settings["data_source_batch_size"], 8)
         self.assertEqual(settings["observation_seed"], 43)

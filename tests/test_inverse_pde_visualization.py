@@ -2,7 +2,9 @@
 
 import sys
 from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -10,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "examples"))
 
 import inverse_pde_visualization as visualization
+import benchmark_runner as runner
 
 
 class _FakeRngs:
@@ -101,6 +104,42 @@ class PosteriorVisualizationTests(unittest.TestCase):
         )
         self.assertIn("80% pointwise credible interval", axis.collections[0].get_label())
         plt.close(fig)
+
+    def test_runner_generates_post_run_summary_and_reuses_its_sample_batch(self):
+        model = _FakeModel()
+        entry = {
+            "run_id": "run-0",
+            "problem": {"distribution": {"name": "ks"}},
+            "method_kwargs": {},
+            "resolved_problem": {"dim": 1},
+            "architecture": {},
+            "checkpoints": {"last": Path("unused")},
+        }
+        deps = {"nnx": _FakeNNX, "jnp": _FakeJnp}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch.object(runner, "load_experiment_entries", return_value=[entry]),
+                patch.object(runner, "load_entry_model", return_value=model),
+                patch.object(runner, "entry_arrays", return_value={}),
+                patch.object(runner, "varying_param_keys", return_value=[]),
+                patch.object(runner, "format_run_label", return_value="run-0"),
+                patch.object(runner, "import_runtime_dependencies", return_value=deps),
+                patch.object(runner, "field_truth_for_plot", return_value=np.zeros(1)),
+                patch.object(runner, "plot_run_diagnostics") as diagnostics,
+            ):
+                paths = runner.generate_per_run_plots(
+                    temp_dir,
+                    {"n_posterior_samples": 3, "posterior_seed": 9},
+                )
+
+            self.assertEqual(
+                [path.name for path in paths],
+                ["run-0_posterior.pdf", "run-0_plots.pdf"],
+            )
+            self.assertTrue(paths[0].exists())
+            self.assertEqual(model.calls, [(1, 9, True)] * 3)
+            forwarded_samples = diagnostics.call_args.kwargs["posterior_samples"]
+            np.testing.assert_array_equal(forwarded_samples[:, 0], np.arange(3))
 
 if __name__ == "__main__":
     unittest.main()

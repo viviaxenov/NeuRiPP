@@ -165,9 +165,46 @@ presets are `kl_acoustic.json` and `kl_ks.json`; variants are
 `kl_acoustic_128.json`, `kl_acoustic_64.json`, and `kl_ks_64.json`.
 They are initial hyperparameters, not calibrated/converged posterior results.
 Smoke presets use batch/MC count one, two Euler transport steps, one update,
-and at most three CG iterations. Field plots show generated initial conditions
-or acoustic fields with truth comparisons, not two-coordinate scatter plots.
-Run metadata records target settings and installed dependency versions.
+and at most three CG iterations. The existing `_plots.pdf` retains training
+diagnostics; post-run plotting additionally writes `_posterior.pdf` for acoustic
+and KS inverse fields. It draws a configurable sample batch from the last saved
+weights after training (default 256, in batches of one), computes summaries,
+and reuses that batch for the figure. Set `plotting.n_posterior_samples`,
+`plotting.posterior_batch_size`, and `plotting.posterior_seed` to tune this
+postprocessing cost and reproducibility. Run metadata records target settings
+and installed dependency versions.
+
+### Notebook postprocessing
+
+Import the helpers from the repository root. The checkpoint helper returns
+draws and the neural-ODE log density `log q_theta(x)`; its sampled MAP is the
+draw with the highest model log density, **not** the highest true-target
+posterior density. The ground truth is returned only for visual comparison.
+The configs use the Hutchinson divergence estimator, so log densities and the
+MAP ranking use that estimator's approximation.
+
+```python
+from examples.inverse_pde_visualization import (
+    sample_run_posterior,
+    summarize_field_samples,
+    plot_acoustic_summary,
+    plot_ks_summary,
+)
+
+draws = sample_run_posterior(
+    session_dir, run_id="0", n_samples=256, seed=0, checkpoint="last"
+)
+summary = summarize_field_samples(draws["samples"], draws["log_density"])
+if draws["distribution"]["name"] == "acoustic":
+    fig, axes = plot_acoustic_summary(draws["truth"], summary)
+else:
+    fig, axis = plot_ks_summary(draws["truth"], summary)
+```
+
+Use `checkpoint="best"` to load the best checkpoint instead. The summary
+function accepts already available `samples` and model `log_density`, so you
+can cache and reuse the same draws without sampling again. `plot_run_posterior`
+is a convenience function that loads, samples, summarizes, and plots in one call.
 
 ## Verification and resource measurements
 
