@@ -3,6 +3,42 @@ import jax.numpy as jnp
 from jax.scipy.special import logsumexp
 
 
+def get_logpdf_ks_inverse_problem(
+    num_points=200, num_sensors=20, truth_seed=42, observation_seed=43,
+    return_all=False,
+):
+    """Fixed KS posterior on (..., num_points); optionally return InverseProblem.
+
+    See inverse_common.InverseProblem for the diagnostic dataclass contract.
+    Exponax is an optional dependency, loaded only when this getter is called.
+    """
+    if __package__:
+        from .inverse_ks import get_logpdf_ks_inverse_problem as build
+    else:
+        from inverse_ks import get_logpdf_ks_inverse_problem as build
+    return build(num_points, num_sensors, truth_seed, observation_seed, return_all)
+
+
+def get_logpdf_acoustic_inverse_problem(
+    n_grid=256, num_sources=64, num_receivers=64, truth_seed=42,
+    observation_seed=43, source_batch_size=1,
+    checkpoint_strategy="solver_and_chunk", data_source_batch_size=None,
+    return_all=False,
+):
+    """Fixed acoustic posterior on (..., n_grid**2), with lazy j-Wave import.
+
+    return_all=True returns inverse_common.InverseProblem, including flat truth,
+    raw clean/noisy traces and physical prior operators. See inverse_acoustic
+    for source chunking, checkpoint modes and resolution-scaling conventions.
+    """
+    if __package__:
+        from .inverse_acoustic import get_logpdf_acoustic_inverse_problem as build
+    else:
+        from inverse_acoustic import get_logpdf_acoustic_inverse_problem as build
+    return build(n_grid, num_sources, num_receivers, truth_seed, observation_seed,
+                 source_batch_size, checkpoint_strategy, data_source_batch_size, return_all)
+
+
 def logpdf_st(x: jnp.ndarray) -> jnp.ndarray:
     """
     Styblinski-Tang potential U(x) = 0.5 * Σ (x_i^4 - 16*x_i^2 + 5*x_i)
