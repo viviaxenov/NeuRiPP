@@ -1,0 +1,201 @@
+# Bayesian PDE inverse examples
+
+These implement `jax_bayesian_pde_combined_spec.md`. Default numerical targets
+match that specification; reduced grids are explicitly different discretizations.
+The generator still starts from an independent standard normal latent. Its
+output is the physical parameter field, not a whitened prior coordinate.
+
+## Installation
+
+From the repository root, in an otherwise compatible Python 3.12 environment:
+
+```bash
+python -m pip install -e '.[ks]' pandas tqdm
+# Both solvers (also suitable for a clean environment):
+python -m pip install -e '.[acoustic,ks]' pandas tqdm
+python -m pip check
+```
+
+The acoustic extra uses immutable upstream j-Wave and jaxdf revisions recorded
+in `pyproject.toml`, JAX/JAXlib 0.10.2, Equinox 0.13.7, and Flax 0.12.8.
+The PyPI j-Wave release uses older JAXDF APIs/dependency bounds. The pinned
+upstream API takes `TimeWavePropagationSettings(checkpoint=...)` rather than
+the tutorial's direct `checkpoint` keyword; the checkpoint semantics are the
+same solver-level choice. KS uses Exponax 0.2.1 and was tested with JAX 0.10.2
+and 0.11.0.
+
+**Local environment exception:** the existing conda `neuripp` environment has
+`diffuse-nnx` requiring JAX >=0.11, incompatible with this acoustic dependency
+stack. Exponax is installed there. To preserve it, both extras were installed
+and verified in an isolated environment at `/tmp/opencode/neuripp-acoustic`.
+That location is temporary; recreate a durable separate environment for regular
+acoustic work rather than installing incompatible versions into `neuripp`:
+
+```bash
+conda create -n neuripp-acoustic python=3.12 pip
+conda run -n neuripp-acoustic python -m pip install -e '.[acoustic,ks]' pandas tqdm
+```
+
+For an A100, install the matching CUDA extra in the separate environment, e.g.
+`pip install -e '.[acoustic,ks,cuda12]' pandas tqdm`. GPU execution is not yet
+verified here. Do not use `--no-deps` to hide the `diffuse-nnx` conflict.
+
+## Getters
+
+Import from `examples.logpdf_targets` (repository root) or `logpdf_targets`
+(examples directory). Optional PDE libraries are loaded only on getter calls.
+
+```python
+from examples.logpdf_targets import (
+    get_logpdf_acoustic_inverse_problem,
+    get_logpdf_ks_inverse_problem,
+)
+
+target = get_logpdf_acoustic_inverse_problem(
+    n_grid=64, num_sources=4, num_receivers=8,
+    truth_seed=42, observation_seed=43,
+    source_batch_size=1, checkpoint_strategy="solver_and_chunk",
+    data_source_batch_size=None, return_all=True,
+)
+logpdf = target.logpdf  # construct once; reuse during every training step
+ks_logpdf = get_logpdf_ks_inverse_problem(
+    num_points=200, num_sensors=20, truth_seed=42, observation_seed=43,
+)
+```
+
+Callables accept `(..., dim)` flat physical fields, where acoustic dimension is
+`n_grid**2` and KS dimension is `num_points`. Densities return the leading batch
+shape. `return_all=True` returns `InverseProblem` with `logpdf`, `logprior`,
+`loglikelihood`, `forward`, `prior_apply`, `prior_inverse`, `truth`, `clean`,
+`noisy`, `noise_std`, and `settings`. Truth is flat; observations have native
+shape `(source, time, receiver)` or `(4, sensor)`. Additive density constants
+are omitted. Batched PDE evaluations use sequential `lax.map`.
+
+The prior uses the same positive RMS-normalized FFT multiplier for sampling
+and inversion. The zero-frequency mode is retained. Truth and observation
+seeds are independent of model/training RNG seeds. A getter creates one fixed
+dataset, never new noise inside a loss evaluation.
+
+### Resolution
+
+Acoustic defaults: 256 square grid, 64 sources and receivers, 25.6 mm domain,
+reference speed 1630 m/s, CFL 0.25, duration 25 microseconds. Resolution changes
+preserve the physical extent and prior length scale, scaling circle radii and
+PML width (rounded, minimum one cell). Acquisition points are integer grid
+positions; duplicates and points in the PML are rejected. The U-Net requires
+grid sizes divisible by four. Source/receiver counts are independently tunable.
+The 1 MHz pulse is unchanged: coarse-grid tests verify software, not equivalent
+wave accuracy. The prior remains defined on the entire grid, including outside
+the reconstruction mask.
+
+KS defaults: 200 points on [0,100), 20 sensors, dt=0.1, ETD order 2, observations
+at times 5/10/15/20, noise SD 0.1. Sensor indices are
+`arange(num_sensors) * num_points // num_sensors`. Changing point count preserves
+physical extent, timestep, prior scales, and observation times.
+
+### Source batching and checkpointing
+
+`source_batch_size=1` is sequential, intermediate sizes use parallel chunks,
+and a size at least the source count evaluates all sources together. A final
+partial chunk is evaluated exactly once. `data_source_batch_size=None` inherits
+the inference size; it can be larger for forward-only data generation.
+
+| Strategy | Solver checkpoint | Outer chunk checkpoint |
+|---|---|---|
+| `none` | off | off |
+| `solver` | on | off |
+| `chunk` | off | on |
+| `solver_and_chunk` | on | on |
+
+Outer rematerialization includes the scalar chunk likelihood reduction. All
+sources contribute, without source subsampling or observation-count averaging.
+These are execution choices, not changes to the target. Floating-point
+reduction/FFT ordering can produce small differences between batch sizes.
+
+Geometry, partitioning, checkpoint wrappers, and JIT wrappers are constructed
+once in the getter. Same-shaped/dtyped calls with different field values reuse
+compilation. New shapes, dtypes, getter instances, or transformation contexts
+can require compilation. The runner caches targets per worker using resolved
+settings including seeds and execution choices.
+
+For the laptop use size 1. For a 40-GB A100 start with size 4 or 8, then profile
+complete training steps before increasing parallelism. Forward-only memory is
+not a reliable bound for gradient or NGD memory.
+
+## Networks
+
+`rhs_acoustic.AcousticUNetRHS`: **509,153** trainable parameters. Native NNX,
+16/32/64 widths, time-conditioned residual blocks, eight-group normalization,
+two bottleneck blocks. Decoder first fuses the deepest skip at the same
+resolution (128->64), then upsamples for 96->32 and 48->16 blocks. This resolves
+the specification's three decoder blocks versus two downsamplings.
+
+`rhs_ks.KSDilatedResNetRHS`: **111,073** trainable parameters. Native NNX with
+periodic padding, five width-32 blocks, dilations (1,2,4,8,4,2,1), SiLU,
+one-group normalization and pointwise lifting/projection matching PDEquinox
+conventions. Inputs are state, scalar transport time, sine and cosine position.
+PDEquinox is not imported at runtime.
+
+Both expose integer `dim` and `__call__(self, t, x, *args, rngs=None)` and preserve
+flat single/batched shapes. All parameters participate in NNX split/merge,
+parameter differentiation and the existing matrix-free NGD algorithm.
+
+## Running
+
+From the repository root:
+
+```bash
+JAX_PLATFORMS=cpu python examples/benchmark_runner.py \
+  --config examples/configs/kl_ks_smoke.json --run-id 0
+# --run-id 1 selects NGD; omit the flag to execute both methods.
+JAX_PLATFORMS=cpu python examples/benchmark_runner.py \
+  --config examples/configs/kl_acoustic_smoke.json --run-id 1
+```
+
+Use the acoustic environment's Python for the second command. Full starting
+presets are `kl_acoustic.json` and `kl_ks.json`; variants are
+`kl_acoustic_128.json`, `kl_acoustic_64.json`, and `kl_ks_64.json`.
+They are initial hyperparameters, not calibrated/converged posterior results.
+Smoke presets use batch/MC count one, two Euler transport steps, one update,
+and at most three CG iterations. Field plots show generated initial conditions
+or acoustic fields with truth comparisons, not two-coordinate scatter plots.
+Run metadata records target settings and installed dependency versions.
+
+## Verification and resource measurements
+
+Focused commands (do not collect all repository training scripts):
+
+```bash
+python -m pytest tests/test_pde_inverse_targets.py tests/test_pde_rhs_networks.py \
+  tests/test_pde_benchmark_runner.py -q
+/usr/bin/time -v python tests/smoke_pde_optimizer.py acoustic adam
+/usr/bin/time -v python tests/smoke_pde_optimizer.py acoustic ngd
+/usr/bin/time -v python tests/smoke_pde_optimizer.py ks adam --size 200
+/usr/bin/time -v python tests/smoke_pde_optimizer.py ks ngd --size 200
+```
+
+Measured on the i7-1355U laptop, CPU float32, fresh processes (compilation
+included). Full runner tests include plotting and serialization:
+
+| Runner smoke | Peak RSS | Wall time |
+|---|---:|---:|
+| KS 64, Adam | 1.04 GiB | 21 s |
+| KS 64, NGD | 1.38 GiB | 42 s |
+| Acoustic 64 square, 4 sources/8 receivers, Adam | 1.25 GiB | 29 s |
+| Acoustic 64 square, 4 sources/8 receivers, NGD | 1.53 GiB | 45 s |
+
+Standalone parameter-update checks also passed: acoustic Adam/NGD parameter
+delta L2 norms were 0.0714 / 3.44e-7; KS at 200 points with eight sensors gave
+0.0333 / 4.12e-6. All checked parameters and step metrics were finite. Tiny
+clipped NGD updates are evidence of algorithm compatibility, not convergence.
+
+Tests cover priors, deterministic data, seed independence, reference KS rollout,
+gradient finite differences, checkpoint/chunk equivalence with a remainder,
+same-shape trace reuse, NNX parameter counts, JVPs and config planning. Float32
+acoustic gradient equivalence uses relative vector error; strict componentwise
+comparisons were also checked in float64.
+
+The 200-point/20-sensor KS default target is tested. Full 128/256-square acoustic
+training and A100 execution remain unverified; memory figures above must not be
+extrapolated as guaranteed GPU requirements. Generated test runs live outside
+the repository under `/tmp/opencode`, and are not intended for version control.
