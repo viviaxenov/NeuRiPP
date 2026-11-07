@@ -8,9 +8,6 @@ from flax import nnx
 import numpy as np
 from neuripp.parametric_pushforward.parametric_pushforward import ParametricPushforward
 
-import datasets
-
-
 class BaseBatcher(nnx.Module, ABC):
     def __init__(self, shape: int | Tuple[int], resample_each: int):
         if isinstance(shape, int):

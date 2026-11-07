@@ -43,6 +43,54 @@ IMAGE_DATA_SHAPES = {
     "fashion_mnist": (28, 28),
 }
 ANALYTIC_KL_DISTRIBUTIONS = {"gaussian", "st", "elliptic"}
+FIELD_RHS_MODULES = {"AcousticUNetRHS": "rhs_acoustic", "KSDilatedResNetRHS": "rhs_ks"}
+FIELD_DEFAULTS = {
+    "acoustic": dict(n_grid=256, num_sources=64, num_receivers=64,
+                     truth_seed=42, observation_seed=43, source_batch_size=1,
+                     checkpoint_strategy="solver_and_chunk"),
+    "ks": dict(num_points=200, num_sensors=20, truth_seed=42, observation_seed=43),
+}
+_FIELD_LOGPDF_CACHE: dict[str, Any] = {}
+
+
+def resolve_field_distribution(distribution: dict[str, Any]) -> dict[str, Any]:
+    """Resolve target constructor arguments without importing numerical libraries."""
+    name = distribution["name"]
+    defaults = FIELD_DEFAULTS[name]
+    allowed = set(defaults) | {"name", "resample_each"}
+    if name == "acoustic":
+        allowed.add("data_source_batch_size")
+    unknown = set(distribution) - allowed
+    if unknown:
+        raise ValueError(f"Unsupported {name} distribution settings: {sorted(unknown)}")
+    settings = {**defaults, **{k: v for k, v in distribution.items()
+                             if k not in {"name", "resample_each"}}}
+    if name == "acoustic" and settings.get("data_source_batch_size") is None:
+        settings["data_source_batch_size"] = settings["source_batch_size"]
+    for key, value in {**settings, "resample_each": distribution.get("resample_each", 1)}.items():
+        if key == "checkpoint_strategy":
+            if value not in ("none", "solver", "chunk", "solver_and_chunk"):
+                raise ValueError("Invalid acoustic checkpoint_strategy")
+        elif type(value) is not int or value < (0 if key.endswith("seed") else 1):
+            raise ValueError(f"problem.distribution.{key} must be a {'nonnegative' if key.endswith('seed') else 'positive'} integer")
+    if name == "ks":
+        if settings["num_points"] < 4 or settings["num_sensors"] > settings["num_points"]:
+            raise ValueError("KS requires num_points >= 4 and num_sensors <= num_points")
+    else:
+        n = settings["n_grid"]
+        if n < 8:
+            raise ValueError("acoustic n_grid must be at least 8")
+        # Match the discretized circular acquisition without importing j-Wave.
+        for key in ("num_sources", "num_receivers"):
+            count = settings[key]
+            if count > n * n:
+                raise ValueError(f"{key} exceeds available grid positions")
+            points = {(int(n / 2 + 100 * n / 256 * math.cos(2 * math.pi * i / count)),
+                       int(n / 2 + 100 * n / 256 * math.sin(2 * math.pi * i / count)))
+                      for i in range(count)}
+            if len(points) != count:
+                raise ValueError(f"duplicate {key} positions; reduce count or increase n_grid")
+    return settings
 
 _RAW_IMAGE_DATASET_CACHE: dict[str, dict[str, Any]] = {}
 _IMAGE_DATASET_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -430,6 +478,33 @@ def resolve_problem(
     ):
         raise ValueError("problem.dim must be a positive integer when provided")
 
+    if name in FIELD_DEFAULTS:
+        if kind != "KL":
+            raise ValueError(f"Distribution {name!r} supports KL only")
+        settings = resolve_field_distribution(distribution)
+        dim = settings["n_grid"] ** 2 if name == "acoustic" else settings["num_points"]
+        if configured_dim is not None and configured_dim != dim:
+            raise ValueError(f"problem.dim={configured_dim} does not match grid-inferred dim={dim}")
+        if architecture:
+            rhs = architecture["rhs"]
+            expected = "AcousticUNetRHS" if name == "acoustic" else "KSDilatedResNetRHS"
+            if rhs["model"] != expected:
+                raise ValueError(f"{name} requires compatible RHS {expected}")
+            if name == "acoustic" and settings["n_grid"] % 4:
+                raise ValueError("AcousticUNetRHS requires n_grid divisible by 4")
+            allowed = {"model"} if name == "acoustic" else {"model", "hidden_channels", "num_blocks", "dilation_rates"}
+            if set(rhs) - allowed:
+                raise ValueError(f"Unsupported {expected} settings: {sorted(set(rhs) - allowed)}")
+            for key in ("hidden_channels", "num_blocks"):
+                if key in rhs and (type(rhs[key]) is not int or rhs[key] < 1):
+                    raise ValueError(f"rhs.{key} must be a positive integer")
+            if "dilation_rates" in rhs:
+                rates = rhs["dilation_rates"]
+                if not isinstance(rates, (tuple, list)) or not rates or any(type(v) is not int or v < 1 for v in rates):
+                    raise ValueError("rhs.dilation_rates must be a nonempty sequence of positive integers")
+        return dict(dim=dim, rhs_dim=dim, dim_source="grid", distribution_name=name,
+                    target_settings=settings)
+
     if _is_image_distribution(name):
         image_shape = IMAGE_DATA_SHAPES[name]
         encoder_config = _encoder_config_from_rhs(
@@ -531,7 +606,10 @@ def _expand_architectures(architectures: list[dict[str, Any]]) -> list[dict[str,
     for architecture in architectures:
         top_level = {key: value for key, value in architecture.items() if key != "rhs"}
         expanded_top_level = _expand_template(top_level)
-        expanded_rhs = _expand_template(architecture["rhs"])
+        rhs_template = copy.deepcopy(architecture["rhs"])
+        if rhs_template.get("model") == "KSDilatedResNetRHS" and "dilation_rates" in rhs_template:
+            rhs_template["dilation_rates"] = tuple(rhs_template["dilation_rates"])
+        expanded_rhs = _expand_template(rhs_template)
         for top_values, rhs_values in itertools.product(
             expanded_top_level, expanded_rhs
         ):
@@ -920,7 +998,37 @@ def get_worker_device_info(
         "device_label": device_label,
         "jax_devices": device_strings,
         "jax_platforms": sorted(platforms),
+        "dependency_versions": runtime_versions(),
+        "jax_config": jax_config or [],
     }
+
+
+def runtime_versions() -> dict[str, str | None]:
+    from importlib.metadata import PackageNotFoundError, version
+
+    versions = {}
+    for name in ("jax", "jaxlib", "flax", "jwave", "jaxdf", "exponax", "equinox"):
+        try:
+            versions[name] = version(name)
+        except PackageNotFoundError:
+            versions[name] = None
+    return versions
+
+
+def field_truth_for_plot(distribution):
+    """Reproduce the prior draw without rerunning expensive PDE data generation."""
+    import jax
+    from inverse_common import fft_prior
+
+    settings = resolve_field_distribution(distribution)
+    if distribution["name"] == "acoustic":
+        n = settings["n_grid"]
+        apply, _, _ = fft_prior((n, n), (0.0256 / n,) * 2, 1e-3, 0.04)
+        dim = n * n
+    else:
+        dim = settings["num_points"]
+        apply, _, _ = fft_prior((dim,), (100.0 / dim,), 2., 1.)
+    return apply(jax.random.normal(jax.random.PRNGKey(settings["truth_seed"]), (dim,)))
 
 
 def import_runtime_dependencies() -> dict[str, Any]:
@@ -1013,6 +1121,9 @@ def build_rhs(
     rhs_config = architecture["rhs"]
     rhs_model_name = rhs_config["model"]
     rhs_registry = deps["rhs_registry"]
+    if rhs_model_name in FIELD_RHS_MODULES and rhs_model_name not in rhs_registry:
+        rhs_registry[rhs_model_name] = getattr(
+            import_module(FIELD_RHS_MODULES[rhs_model_name]), rhs_model_name)
     if rhs_model_name not in rhs_registry:
         supported = ", ".join(sorted(rhs_registry))
         raise ValueError(
@@ -1159,6 +1270,27 @@ def build_elliptic_logpdf(
     return logpdf
 
 
+def build_field_logpdf(distribution: dict[str, Any], deps: dict[str, Any]) -> Any:
+    name = distribution["name"]
+    settings = resolve_field_distribution(distribution)
+    cache_key = json.dumps({"name": name, **settings}, sort_keys=True)
+    if cache_key not in _FIELD_LOGPDF_CACHE:
+        getter_name = f"get_logpdf_{name}_inverse_problem"
+        getter = deps.get(getter_name)
+        if getter is None:
+            getter = getattr(import_module("logpdf_targets"), getter_name)
+        try:
+            _FIELD_LOGPDF_CACHE[cache_key] = getter(**settings)
+        except ModuleNotFoundError as exc:
+            optional = "jwave" if name == "acoustic" else "exponax"
+            if exc.name and exc.name.split(".")[0] == optional:
+                raise ModuleNotFoundError(
+                    f"KL distribution {name!r} requires optional dependency {optional!r}"
+                ) from exc
+            raise
+    return _FIELD_LOGPDF_CACHE[cache_key]
+
+
 def build_vectorized_problem(
     problem: dict[str, Any],
     resolved_problem: dict[str, Any],
@@ -1230,6 +1362,8 @@ def build_vectorized_problem(
             logpdf = build_elliptic_logpdf(
                 resolved_problem["dim"], distribution, deps
             )
+        elif name in FIELD_DEFAULTS:
+            logpdf = build_field_logpdf(distribution, deps)
         else:
             raise ValueError(f"Unsupported KL distribution {name!r}")
         latent_batcher = deps["LatentBatcherFromModel"](
@@ -2935,6 +3069,9 @@ def plot_run_diagnostics(
     plotting = plotting or {}
     deps = deps or import_runtime_dependencies()
     image_problem = is_image_problem(problem)
+    field_name = problem["distribution"]["name"]
+    if field_name in FIELD_DEFAULTS:
+        n_samples = min(n_samples, 4)
     if image_problem:
         nrows, ncols = image_grid_shape(plotting)
         n_samples = nrows * ncols
@@ -2964,6 +3101,27 @@ def plot_run_diagnostics(
         ax.imshow(canvas, cmap="gray", vmin=0.0, vmax=1.0)
         ax.set_title("Generated samples")
         ax.axis("off")
+    elif field_name == "acoustic":
+        import numpy as np
+
+        side = math.isqrt(x.shape[-1])
+        truth = np.asarray(field_truth_for_plot(problem["distribution"]))
+        fields = np.concatenate((truth[None], x), axis=0)
+        canvas = fields.reshape((len(fields), side, side)).transpose(1, 0, 2).reshape(side, -1)
+        image = ax.imshow(canvas, cmap="RdBu_r", origin="lower")
+        fig.colorbar(image, ax=ax, label="Physical parameter field x")
+        ax.set_title("Acoustic truth (left), then posterior field samples")
+        ax.set_xlabel("Grid column / sample")
+        ax.set_ylabel("Grid row")
+    elif field_name == "ks":
+        import numpy as np
+
+        coordinates = np.arange(x.shape[-1]) * 100.0 / x.shape[-1]
+        ax.plot(coordinates, field_truth_for_plot(problem["distribution"]), "k--", label="Truth")
+        for i, sample in enumerate(x):
+            ax.plot(coordinates, sample, label=f"Sample {i + 1}")
+        ax.set(xlabel="Position", ylabel="Initial condition", title="KS posterior initial fields")
+        ax.legend()
     elif x.shape[-1] >= 2:
         ax.scatter(*x[:, :2].T, label=r"$T_{\text{opt}}(z)$", marker="*", s=5.0)
         ax.legend()
@@ -3186,6 +3344,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
         _validate_elliptic_distribution(
             problem["distribution"], "problem.distribution"
         )
+    if _distribution_name(problem["distribution"]) in FIELD_DEFAULTS:
+        settings = resolve_field_distribution(problem["distribution"])
+        problem["distribution"].update(settings)
 
     for index, architecture in enumerate(architectures):
         _validate_architecture(architecture, index)
@@ -3301,6 +3462,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
         config["common_params"],
         architecture=architectures[0],
     )
+    if _distribution_name(problem["distribution"]) in FIELD_DEFAULTS:
+        for architecture in _expand_architectures(architectures):
+            resolve_problem(problem, common_params, architecture)
 
     return config
 
