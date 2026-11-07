@@ -16,29 +16,37 @@ python -m pip install -e '.[acoustic,ks]' pandas tqdm
 python -m pip check
 ```
 
-The acoustic extra uses immutable upstream j-Wave and jaxdf revisions recorded
-in `pyproject.toml`, JAX/JAXlib 0.10.2, Equinox 0.13.7, and Flax 0.12.8.
+The acoustic extra uses immutable j-Wave and JAXDF revisions recorded in
+`pyproject.toml`, JAX/JAXlib 0.11.0, Equinox 0.13.7, and Flax 0.12.8.
+JAXDF is pinned to `viviaxenov/jaxdf@fbd42a28f2842339a71ee5b4a62dbb580f656402`,
+a metadata-only fork allowing JAX >=0.9,<0.12. Upstream main's <0.10 bound
+otherwise prevents normal dependency resolution with this project's JAX.
 The PyPI j-Wave release uses older JAXDF APIs/dependency bounds. The pinned
 upstream API takes `TimeWavePropagationSettings(checkpoint=...)` rather than
 the tutorial's direct `checkpoint` keyword; the checkpoint semantics are the
 same solver-level choice. KS uses Exponax 0.2.1 and was tested with JAX 0.10.2
 and 0.11.0.
 
-**Local environment exception:** the existing conda `neuripp` environment has
-`diffuse-nnx` requiring JAX >=0.11, incompatible with this acoustic dependency
-stack. Exponax is installed there. To preserve it, both extras were installed
-and verified in an isolated environment at `/tmp/opencode/neuripp-acoustic`.
-That location is temporary; recreate a durable separate environment for regular
-acoustic work rather than installing incompatible versions into `neuripp`:
+Both extras now install normally in conda `neuripp`, without downgrading JAX
+or conflicting with `diffuse-nnx`. No `--no-deps` override is required.
+If upgrading an environment with another JAXDF 0.3.0 revision already installed,
+pip may retain it because the version number is unchanged. Remove that copy
+before installing the extras:
 
 ```bash
-conda create -n neuripp-acoustic python=3.12 pip
-conda run -n neuripp-acoustic python -m pip install -e '.[acoustic,ks]' pandas tqdm
+python -m pip uninstall -y jaxdf
+python -m pip install -e '.[acoustic,ks]' pandas tqdm
 ```
 
-For an A100, install the matching CUDA extra in the separate environment, e.g.
+For an A100, install the matching CUDA extra, e.g.
 `pip install -e '.[acoustic,ks,cuda12]' pandas tqdm`. GPU execution is not yet
-verified here. Do not use `--no-deps` to hide the `diffuse-nnx` conflict.
+verified here.
+
+The fork installation passed `pip check` and all 19 focused tests plus 15
+subtests in an isolated JAX 0.11 environment. In `neuripp`, all nine target
+tests and the acoustic Adam/NGD parameter-update checks passed; JAX and JAXlib
+remained 0.11.0. Its only `pip check` findings, present before installation,
+are missing `truststore` for conda and missing `mkl` for mkl-random.
 
 ## Getters
 
@@ -152,7 +160,7 @@ JAX_PLATFORMS=cpu python examples/benchmark_runner.py \
   --config examples/configs/kl_acoustic_smoke.json --run-id 1
 ```
 
-Use the acoustic environment's Python for the second command. Full starting
+Both commands can use the `neuripp` environment's Python. Full starting
 presets are `kl_acoustic.json` and `kl_ks.json`; variants are
 `kl_acoustic_128.json`, `kl_acoustic_64.json`, and `kl_ks_64.json`.
 They are initial hyperparameters, not calibrated/converged posterior results.
