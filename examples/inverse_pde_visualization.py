@@ -172,24 +172,35 @@ def plot_acoustic_summary(
 
     fig, axes = plt.subplots(1, 4, figsize=(16, 4), layout="constrained")
     titles = ("Ground truth", "Neural-ODE MAP sample", "Sample mean", "Sample std")
-    shared_min = min(float(np.min(field)) for field in fields)
-    shared_max = max(float(np.max(field)) for field in fields)
-    for axis, field, title in zip(axes[:3], fields, titles[:3]):
+    truth_min = float(np.min(fields[0]))
+    truth_max = float(np.max(fields[0]))
+    map_mean_min = min(float(np.min(field)) for field in fields[1:])
+    map_mean_max = max(float(np.max(field)) for field in fields[1:])
+    if truth_min == truth_max:
+        padding = max(abs(truth_min), 1.0) * 1e-6
+        truth_min -= padding
+        truth_max += padding
+    if map_mean_min == map_mean_max:
+        padding = max(abs(map_mean_min), 1.0) * 1e-6
+        map_mean_min -= padding
+        map_mean_max += padding
+    for index, (axis, field, title) in enumerate(zip(axes[:3], fields, titles[:3])):
+        vmin, vmax = (truth_min, truth_max) if index == 0 else (map_mean_min, map_mean_max)
         image = axis.imshow(
             field,
             cmap="RdBu_r",
             origin="lower",
-            vmin=shared_min,
-            vmax=shared_max,
+            vmin=vmin,
+            vmax=vmax,
         )
         axis.set_title(title)
         axis.set_xlabel("Pixel column")
-        axis.set_ylabel("Pixel row")
+        axis.set_ylabel("Pixel row" if index == 0 else "")
         fig.colorbar(image, ax=axis, shrink=0.82)
     image = axes[3].imshow(std, cmap="magma", origin="lower", vmin=0.0)
     axes[3].set_title("Sample std")
     axes[3].set_xlabel("Pixel column")
-    axes[3].set_ylabel("Pixel row")
+    axes[3].set_ylabel("")
     fig.colorbar(image, ax=axes[3], shrink=0.82)
     if output_path is not None:
         fig.savefig(output_path)

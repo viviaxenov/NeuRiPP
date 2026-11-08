@@ -80,14 +80,19 @@ class PosteriorVisualizationTests(unittest.TestCase):
     def test_acoustic_plot_has_four_requested_panels(self):
         import matplotlib.pyplot as plt
 
-        samples = np.array([[0.0, 1.0, 2.0, 3.0], [1.0, 2.0, 3.0, 4.0]])
+        samples = np.array([[0.0, 0.0, 0.0, 0.0], [10.0, -10.0, 5.0, -5.0]])
         summary = visualization.summarize_field_samples(samples, np.array([0.0, 1.0]))
-        fig, axes = visualization.plot_acoustic_summary(np.zeros(4), summary)
+        truth = np.array([0.1, -0.1, 0.2, -0.2])
+        fig, axes = visualization.plot_acoustic_summary(truth, summary)
         self.assertEqual(len(axes), 4)
         self.assertEqual(
             [axis.get_title() for axis in axes],
             ["Ground truth", "Neural-ODE MAP sample", "Sample mean", "Sample std"],
         )
+        self.assertEqual([axis.get_ylabel() for axis in axes], ["Pixel row", "", "", ""])
+        self.assertEqual(axes[0].images[0].get_clim(), (-0.2, 0.2))
+        self.assertEqual(axes[1].images[0].get_clim(), (-10.0, 10.0))
+        self.assertEqual(axes[2].images[0].get_clim(), (-10.0, 10.0))
         plt.close(fig)
 
     def test_ks_plot_has_truth_mean_map_and_credible_band(self):
