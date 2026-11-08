@@ -116,6 +116,21 @@ Use a **time-conditioned residual U-Net** with `v_theta: (B,1,256,256), t -> (B,
 
 This is a **downsized architecture proposal**, not a claim that a 500K U-Net was used in the cited papers. Spatial U-Nets with time embeddings/residual blocks are established in diffusion models; a considerably larger time-conditioned U-Net is used for a related FWI transport/update network. **Refs:** [7, 8, 9].
 
+#### Literature-scale acoustic comparison preset
+
+For a high-capacity comparison, Huang & Perdikaris [9, Secs. 2.4 and 3.1]
+report a guided-diffusion-style timestep-conditioned U-Net with base width 64,
+channel multipliers `(1,1,2,3,4)` for their other velocity models, four residual
+blocks per resolution, a 256-dimensional time embedding, GroupNorm, and SiLU.
+They report approximately 34.70M parameters. Their description does not fix the
+attention placement; the NeuRiPP `AcousticGuidedUNetRHS` adaptation places spatial
+attention at the 192-channel level and in the bottleneck and has 34,697,025
+parameters. It uses four encoder blocks and five skip-consuming decoder blocks
+per level; the extra decoder block and 32-group normalization are implementation
+choices. The adaptation is used at input resolutions 64, 128, and 256; its
+parameter count is independent of spatial resolution. It is not a claim of
+exact reproduction or demonstrated optimality for Bayesian posterior transport.
+
 ### References
 
 1. Stanziola et al., *j-Wave: An Open-Source Differentiable Wave Simulator* (2022). https://arxiv.org/abs/2207.01499
@@ -244,6 +259,13 @@ Here `X_τ` has the solver-compatible shape `(1,200)`, and **`τ` is the generat
 | Boundary condition | `boundary_mode="periodic"` |
 | Attention / downsampling | None |
 | Trainable parameters | **111,073**, by PDEquinox's documented counting formula for 4 input channels, 1 output channel, 32 hidden channels, 5 blocks; verify with `pdequinox.count_parameters(model)` |
+
+For an architecture-size comparison, the repository also exposes a 48-channel,
+four-block preset inspired by the published Dilated ResNet configuration of
+Stachenfeld et al. [7]. The NeuRiPP adaptation retains time and sine/cosine
+coordinate input channels, SiLU, and one-group normalization; its exact parameter
+count is 197,857. This is a larger posterior-transport RHS variant, not a claim
+that the paper's supervised learned simulator was used for Bayesian inversion.
 
 Instantiate using:
 

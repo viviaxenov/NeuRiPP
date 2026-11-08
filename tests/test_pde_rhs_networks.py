@@ -10,7 +10,7 @@ import numpy as np
 from flax import nnx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
-from rhs_acoustic import AcousticUNetRHS
+from rhs_acoustic import AcousticGuidedUNetRHS, AcousticUNetRHS
 from rhs_ks import KSDilatedResNetRHS, _conv
 
 
@@ -67,8 +67,33 @@ class NetworkTests(unittest.TestCase):
     def test_acoustic(self):
         self.check_network(AcousticUNetRHS, 64, 256 ** 2, 509153)
 
+    def test_acoustic_guided_unet(self):
+        model = AcousticGuidedUNetRHS(64 ** 2, nnx.Rngs(44))
+        graph, params, rest = nnx.split(model, nnx.Param, ...)
+        self.assertEqual(sum(p.size for p in jax.tree.leaves(params)), 34697025)
+        self.assertFalse(jax.tree.leaves(rest))
+        restored = nnx.merge(graph, params, rest)
+        x = jnp.linspace(-0.2, 0.3, 64 ** 2)
+        y = restored(0.4, x)
+        self.assertEqual(y.shape, x.shape)
+        self.assertTrue(np.isfinite(y).all())
+        _, tangent = jax.jvp(
+            lambda z: restored(0.4, z),
+            (x,),
+            (jnp.ones_like(x) * 0.1,),
+        )
+        self.assertTrue(np.isfinite(tangent).all())
+        with self.assertRaises(ValueError):
+            AcousticGuidedUNetRHS(60 ** 2)
+
     def test_ks(self):
         self.check_network(KSDilatedResNetRHS, 32, 200, 111073)
+
+    def test_ks_literature_width_depth(self):
+        model = KSDilatedResNetRHS(64, nnx.Rngs(44), hidden_channels=48,
+                                   num_blocks=4)
+        _, params, _ = nnx.split(model, nnx.Param, ...)
+        self.assertEqual(sum(p.size for p in jax.tree.leaves(params)), 197857)
 
     def test_ks_periodic_dilation_and_normalization(self):
         # Independent circular cross-correlation, including wraparound where

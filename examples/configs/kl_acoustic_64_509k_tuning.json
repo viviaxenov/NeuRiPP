@@ -1,0 +1,14 @@
+{
+  "output_root": "results/tuning/kl_acoustic_64_509k",
+  "common_params": {"max_iterations": 400, "batch_size": 1, "N_monte_carlo": 1, "master_seed": 42},
+  "problem": {"functional": {"kind": "KL"}, "distribution": {"name": "acoustic", "n_grid": 64, "num_sources": 64, "num_receivers": 64, "source_batch_size": 1, "checkpoint_strategy": "solver_and_chunk", "truth_model": "jwave_fwi_three_circles"}},
+  "architectures": [{"rhs": {"model": "AcousticUNetRHS"}, "divergence_method": "hutchinson", "ode_method": "euler", "ode_nstep_max": 4}],
+  "methods": [
+    {"method": "adam", "n_restarts": 1, "learning_rate": [1e-1, 1e-2, 1e-3, 1e-4, 1e-5]},
+    {"method": "sgd", "n_restarts": 1, "learning_rate": [1e-1, 1e-2, 1e-3, 1e-4, 1e-5]},
+    {"method": "ngd", "n_restarts": 1, "step_size": [1e-1, 1e-2, 1e-3, 1e-4, 1e-5], "linear_solver_regularization": [1e-1, 1e-3, 1e-5], "linear_solver_maxiter": 5, "natural_grad_clipping_threshold": 1.0}
+  ],
+  "plotting": {"n_samples_plot": 4},
+  "parallel": {"gpu_ids": [0], "plot_gpu_id": 0, "max_parallel": {"adam": 1, "sgd": 1, "ngd": 1}},
+  "worker_env": {"XLA_PYTHON_CLIENT_PREALLOCATE": "false"}
+}

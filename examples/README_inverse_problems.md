@@ -149,15 +149,60 @@ two bottleneck blocks. Decoder first fuses the deepest skip at the same
 resolution (128->64), then upsamples for 96->32 and 48->16 blocks. This resolves
 the specification's three decoder blocks versus two downsamplings.
 
+`rhs_acoustic.AcousticGuidedUNetRHS`: **34,697,025** trainable parameters.
+This literature-scale NNX variant uses base width 64, channel multipliers
+(1,1,2,3,4), four residual blocks per encoder level, five skip-consuming
+decoder blocks per level, timestep embeddings of width 256, 32-group
+GroupNorm/SiLU, and skip-connected decoding. It accepts 64, 128, and 256 pixel
+grids; the parameter count does not depend on spatial resolution.
+Huang & Perdikaris report approximately 34.70M parameters for this channel and
+depth scale in SFM-FWI. Their paper does not specify attention placement; this
+implementation adds spatial attention at the 192-channel level and in the
+bottleneck, giving the count above. Treat it as a documented architecture
+adaptation, not an exact reproduction of their implementation.
+
 `rhs_ks.KSDilatedResNetRHS`: **111,073** trainable parameters. Native NNX with
 periodic padding, five width-32 blocks, dilations (1,2,4,8,4,2,1), SiLU,
 one-group normalization and pointwise lifting/projection matching PDEquinox
 conventions. Inputs are state, scalar transport time, sine and cosine position.
 PDEquinox is not imported at runtime.
 
-Both expose integer `dim` and `__call__(self, t, x, *args, rngs=None)` and preserve
-flat single/batched shapes. All parameters participate in NNX split/merge,
-parameter differentiation and the existing matrix-free NGD algorithm.
+The larger KS tuning variant uses `hidden_channels=48`, `num_blocks=4`, and the
+same seven dilation rates. This is inspired by the 48-channel, four-block
+Dilated ResNet in Stachenfeld et al.; with this implementation's time and
+coordinate channels, SiLU, and normalization it has **197,857** parameters.
+
+All RHS networks expose integer `dim` and `__call__(self, t, x, *args,
+rngs=None)` and preserve flat single/batched shapes. Their parameters are NNX
+split/merge compatible and are consumed by the existing matrix-free NGD code.
+
+### Tuning presets
+
+The tuning configs use Adam and SGD learning rates and NGD step sizes
+`[1e-1, 1e-2, 1e-3, 1e-4, 1e-5]`; NGD regularization is
+`[1e-1, 1e-3, 1e-5]`. With one restart this expands to 25 runs per config,
+or 200 planned variants across the eight configs. Existing single-setting and
+smoke configs are unchanged.
+
+| Config | Problem/model | Grid / points | Approx. RHS parameters |
+|---|---|---:|---:|
+| `kl_acoustic_64_509k_tuning.json` | Acoustic baseline U-Net | 64×64 | 0.509M |
+| `kl_acoustic_64_34m_tuning.json` | Literature-scale acoustic U-Net | 64×64 | 34.697M |
+| `kl_acoustic_128_34m_tuning.json` | Literature-scale acoustic U-Net | 128×128 | 34.697M |
+| `kl_acoustic_256_34m_tuning.json` | Literature-scale acoustic U-Net | 256×256 | 34.697M |
+| `kl_ks_64_111k_tuning.json` | KS baseline Dilated ResNet (32×5) | 64 | 0.111M |
+| `kl_ks_200_111k_tuning.json` | KS baseline Dilated ResNet (32×5) | 200 | 0.111M |
+| `kl_ks_64_198k_tuning.json` | KS larger Dilated ResNet (48×4) | 64 | 0.198M |
+| `kl_ks_200_198k_tuning.json` | KS larger Dilated ResNet (48×4) | 200 | 0.198M |
+
+The acoustic U-Net choices follow Huang & Perdikaris, *Self-Flow-Matching
+assisted Full Waveform Inversion* (2026), [arXiv:2603.13425, Sec. 2.4 and
+3.1](https://arxiv.org/abs/2603.13425). The KS width/depth choice is inspired
+by Stachenfeld et al., *Learned Coarse Models for Efficient Turbulence
+Simulation* (ICLR 2022), [arXiv:2112.15275](https://arxiv.org/abs/2112.15275).
+These are architecture precedents for posterior transport, not convergence
+claims for this benchmark. The 34.7M acoustic runs are compute- and
+memory-intensive; profile a short run before launching the full sweep.
 
 ## Running
 

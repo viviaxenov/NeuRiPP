@@ -43,7 +43,11 @@ IMAGE_DATA_SHAPES = {
     "fashion_mnist": (28, 28),
 }
 ANALYTIC_KL_DISTRIBUTIONS = {"gaussian", "st", "elliptic"}
-FIELD_RHS_MODULES = {"AcousticUNetRHS": "rhs_acoustic", "KSDilatedResNetRHS": "rhs_ks"}
+FIELD_RHS_MODULES = {
+    "AcousticUNetRHS": "rhs_acoustic",
+    "AcousticGuidedUNetRHS": "rhs_acoustic",
+    "KSDilatedResNetRHS": "rhs_ks",
+}
 FIELD_DEFAULTS = {
     "acoustic": dict(n_grid=256, num_sources=64, num_receivers=64,
                      truth_model="jwave_fwi_three_circles", observation_seed=43,
@@ -505,14 +509,33 @@ def resolve_problem(
             raise ValueError(f"problem.dim={configured_dim} does not match grid-inferred dim={dim}")
         if architecture:
             rhs = architecture["rhs"]
-            expected = "AcousticUNetRHS" if name == "acoustic" else "KSDilatedResNetRHS"
-            if rhs["model"] != expected:
-                raise ValueError(f"{name} requires compatible RHS {expected}")
+            expected = (
+                {"AcousticUNetRHS", "AcousticGuidedUNetRHS"}
+                if name == "acoustic" else {"KSDilatedResNetRHS"}
+            )
+            if rhs["model"] not in expected:
+                raise ValueError(
+                    f"{name} requires a compatible RHS from {sorted(expected)}"
+                )
             if name == "acoustic" and settings["n_grid"] % 4:
                 raise ValueError("AcousticUNetRHS requires n_grid divisible by 4")
-            allowed = {"model"} if name == "acoustic" else {"model", "hidden_channels", "num_blocks", "dilation_rates"}
+            if (
+                rhs["model"] == "AcousticGuidedUNetRHS"
+                and settings["n_grid"] % 16
+            ):
+                raise ValueError(
+                    "AcousticGuidedUNetRHS requires n_grid divisible by 16"
+                )
+            allowed = (
+                {"model"}
+                if name == "acoustic" else
+                {"model", "hidden_channels", "num_blocks", "dilation_rates"}
+            )
             if set(rhs) - allowed:
-                raise ValueError(f"Unsupported {expected} settings: {sorted(set(rhs) - allowed)}")
+                raise ValueError(
+                    f"Unsupported {rhs['model']} settings: "
+                    f"{sorted(set(rhs) - allowed)}"
+                )
             for key in ("hidden_channels", "num_blocks"):
                 if key in rhs and (type(rhs[key]) is not int or rhs[key] < 1):
                     raise ValueError(f"rhs.{key} must be a positive integer")

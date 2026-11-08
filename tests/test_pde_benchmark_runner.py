@@ -41,6 +41,51 @@ class FieldRunnerTests(unittest.TestCase):
         self.assertEqual(self.config("acoustic")["problem"]["distribution"]["source_batch_size"], 8)
         self.assertEqual(self.config("acoustic_64")["problem"]["distribution"]["source_batch_size"], 1)
 
+    def test_acoustic_and_ks_tuning_presets(self):
+        names = (
+            "acoustic_64_509k_tuning",
+            "acoustic_64_34m_tuning",
+            "acoustic_128_34m_tuning",
+            "acoustic_256_34m_tuning",
+            "ks_64_111k_tuning",
+            "ks_200_111k_tuning",
+            "ks_64_198k_tuning",
+            "ks_200_198k_tuning",
+        )
+        output_roots = set()
+        expected_lr = {1e-1, 1e-2, 1e-3, 1e-4, 1e-5}
+        expected_regularization = {1e-1, 1e-3, 1e-5}
+        for name in names:
+            with self.subTest(name=name):
+                config = runner.load_config(
+                    ROOT / "examples" / "configs" / f"kl_{name}.json"
+                )
+                output_roots.add(config["output_root"])
+                runs = runner.plan_runs(config)
+                self.assertEqual(len(runs), 25)
+                counts = {
+                    method: sum(run["method"] == method for run in runs)
+                    for method in ("adam", "sgd", "ngd")
+                }
+                self.assertEqual(counts, {"adam": 5, "sgd": 5, "ngd": 15})
+                for method in ("adam", "sgd"):
+                    values = {
+                        run["method_kwargs"]["learning_rate"]
+                        for run in runs if run["method"] == method
+                    }
+                    self.assertEqual(values, expected_lr)
+                ngd_runs = [run for run in runs if run["method"] == "ngd"]
+                self.assertEqual(
+                    {run["method_kwargs"]["step_size"] for run in ngd_runs},
+                    expected_lr,
+                )
+                self.assertEqual(
+                    {run["method_kwargs"]["linear_solver_regularization"]
+                     for run in ngd_runs},
+                    expected_regularization,
+                )
+        self.assertEqual(len(output_roots), len(names))
+
     def test_defaults_validation_and_dimension(self):
         self.assertEqual(
             runner.resolve_field_distribution({"name": "acoustic"})["truth_model"],
