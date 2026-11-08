@@ -20,10 +20,10 @@ def get_logpdf_ks_inverse_problem(
 
 
 def get_logpdf_acoustic_inverse_problem(
-    n_grid=256, num_sources=64, num_receivers=64, truth_seed=42,
+    n_grid=256, num_sources=64, num_receivers=64, truth_seed=None,
     observation_seed=43, source_batch_size=1,
     checkpoint_strategy="solver_and_chunk", data_source_batch_size=None,
-    return_all=False,
+    return_all=False, truth_model="jwave_fwi_three_circles",
 ):
     """Fixed acoustic posterior on (..., n_grid**2), with lazy j-Wave import.
 
@@ -36,7 +36,8 @@ def get_logpdf_acoustic_inverse_problem(
     else:
         from inverse_acoustic import get_logpdf_acoustic_inverse_problem as build
     return build(n_grid, num_sources, num_receivers, truth_seed, observation_seed,
-                 source_batch_size, checkpoint_strategy, data_source_batch_size, return_all)
+                 source_batch_size, checkpoint_strategy, data_source_batch_size,
+                 return_all, truth_model)
 
 
 def logpdf_st(x: jnp.ndarray) -> jnp.ndarray:

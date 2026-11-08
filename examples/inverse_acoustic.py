@@ -10,6 +10,100 @@ else:
     from inverse_common import InverseProblem, fft_prior, flat_batch, positive_int
 
 
+ACOUSTIC_REFERENCE_SPEED = 1480.0
+ACOUSTIC_CIRCLE_PHANTOM = (
+    (16.0, (100.0, 100.0), 0.05),
+    (20.0, (165.0, 128.0), 0.02),
+    (40.0, (130.0, 130.0), 0.03),
+)
+
+
+def acoustic_reconstruction_mask(n_grid):
+    """Return the scaled outer reconstruction circle used by the speed map."""
+
+    from jwave.geometry import circ_mask
+
+    scale = n_grid / 256
+    return jnp.asarray(
+        circ_mask((n_grid, n_grid), 80 * scale, (n_grid / 2, n_grid / 2))
+    )
+
+
+def acoustic_sound_speed_from_log_contrast(x, mask):
+    """Map flat (..., n_grid**2) log-contrast fields to sound speed in m/s."""
+
+    x = jnp.asarray(x)
+    mask = jnp.asarray(mask)
+    n_grid = mask.shape[0]
+    if mask.shape != (n_grid, n_grid) or x.shape[-1] != n_grid * n_grid:
+        raise ValueError("log-contrast shape must match the square acoustic mask")
+    field = x.reshape((*x.shape[:-1], n_grid, n_grid))
+    return ACOUSTIC_REFERENCE_SPEED * (
+        1.0 + 0.10 * mask * jnp.tanh(field / 0.10)
+    )
+
+
+def acoustic_truth_fields(
+    n_grid,
+    truth_model="jwave_fwi_three_circles",
+    truth_seed=None,
+    mask=None,
+):
+    """Return flat truth ``x`` and its matching physical sound-speed field.
+
+    The documented j-Wave FWI phantom is defined in sound-speed space. Its
+    corresponding log-contrast is obtained by inverting this benchmark's
+    bounded speed parameterization. ``prior_gaussian`` is retained only for
+    interpreting checkpoints made before the documented phantom was adopted.
+    """
+
+    n_grid = positive_int("n_grid", n_grid)
+    if truth_model not in {"jwave_fwi_three_circles", "prior_gaussian"}:
+        raise ValueError(f"Unsupported acoustic truth_model {truth_model!r}")
+    if mask is None:
+        mask = acoustic_reconstruction_mask(n_grid)
+    else:
+        mask = jnp.asarray(mask)
+    if mask.shape != (n_grid, n_grid):
+        raise ValueError("acoustic mask must match n_grid")
+
+    if truth_model == "jwave_fwi_three_circles":
+        from jwave.geometry import circ_mask
+
+        scale = n_grid / 256
+        relative_speed = jnp.ones((n_grid, n_grid))
+        for radius, center, contrast in ACOUSTIC_CIRCLE_PHANTOM:
+            circle = circ_mask(
+                (n_grid, n_grid),
+                radius * scale,
+                (center[0] * scale, center[1] * scale),
+            )
+            relative_speed = relative_speed + contrast * jnp.asarray(circle)
+        speed = ACOUSTIC_REFERENCE_SPEED * relative_speed
+        safe_mask = jnp.where(mask > 0, mask, 1.0)
+        normalized_contrast = jnp.where(
+            mask > 0,
+            (speed / ACOUSTIC_REFERENCE_SPEED - 1.0) / (0.10 * safe_mask),
+            0.0,
+        )
+        if bool(jnp.any(jnp.abs(normalized_contrast) >= 1.0)):
+            raise ValueError("circle phantom exceeds the bounded speed transform")
+        truth = (0.10 * jnp.arctanh(normalized_contrast)).reshape((-1,))
+    else:
+        if truth_seed is None:
+            truth_seed = 42
+        if isinstance(truth_seed, bool) or not isinstance(truth_seed, int) or truth_seed < 0:
+            raise ValueError("truth_seed must be a nonnegative integer for prior_gaussian")
+        spacing = 25.6e-3 / n_grid
+        apply, _, _ = fft_prior((n_grid, n_grid), (spacing, spacing), 1e-3, 0.04)
+        truth = apply(
+            jax.random.normal(jax.random.PRNGKey(truth_seed), (n_grid * n_grid,))
+        )
+
+    sound_speed = acoustic_sound_speed_from_log_contrast(truth, mask)
+    return truth, sound_speed
+
+
 def validate_positions(positions, n_grid, pml_size, name):
     """Reject discretized acquisition points outside the interior or repeated."""
     points = np.asarray(positions).T
@@ -24,10 +118,10 @@ def validate_positions(positions, n_grid, pml_size, name):
 
 
 def get_logpdf_acoustic_inverse_problem(
-    n_grid=256, num_sources=64, num_receivers=64, truth_seed=42,
+    n_grid=256, num_sources=64, num_receivers=64, truth_seed=None,
     observation_seed=43, source_batch_size=1,
     checkpoint_strategy="solver_and_chunk", data_source_batch_size=None,
-    return_all=False,
+    return_all=False, truth_model="jwave_fwi_three_circles",
 ):
     """Build the physical-field posterior, or its documented InverseProblem.
 
@@ -51,7 +145,7 @@ def get_logpdf_acoustic_inverse_problem(
 
     from jwave import FourierSeries
     from jwave.acoustics.time_varying import simulate_wave_propagation, TimeWavePropagationSettings
-    from jwave.geometry import Domain, Medium, Sources, Sensors, TimeAxis, points_on_circle, circ_mask
+    from jwave.geometry import Domain, Medium, Sources, Sensors, TimeAxis, points_on_circle
     from jwave.signal_processing import apply_ramp, gaussian_window
 
     spacing = 25.6e-3 / n_grid
@@ -65,7 +159,7 @@ def get_logpdf_acoustic_inverse_problem(
     source_positions = tuple(jnp.asarray(p, dtype=jnp.int32) for p in source_positions)
     domain = Domain((n_grid, n_grid), (spacing, spacing))
     sensors = Sensors(positions=receiver_positions)
-    mask = jnp.asarray(circ_mask(domain.N, 80 * scale, center))
+    mask = acoustic_reconstruction_mask(n_grid)
     time_axis = TimeAxis.from_medium(
         Medium(domain, sound_speed=1630.0), cfl=0.25, t_end=25e-6)
     t = time_axis.to_array()
@@ -76,7 +170,7 @@ def get_logpdf_acoustic_inverse_problem(
     solver_settings = TimeWavePropagationSettings(checkpoint=solver_checkpoint)
 
     def single_source(x, index):
-        speed = 1480 * (1 + 0.10 * mask * jnp.tanh(x.reshape(domain.N) / 0.10))
+        speed = acoustic_sound_speed_from_log_contrast(x, mask)
         medium = Medium(domain, sound_speed=FourierSeries(speed[..., None], domain), pml_size=pml_size)
         positions = tuple(jax.lax.dynamic_slice(p, (index,), (1,)) for p in source_positions)
         sources = Sources(positions, pulse[None, :], dt=time_axis.dt, domain=domain)
@@ -104,7 +198,9 @@ def get_logpdf_acoustic_inverse_problem(
     dim = n_grid**2
     forward = flat_batch(forward_single, dim)
     apply, inverse, logprior = fft_prior(domain.N, domain.dx, 1e-3, 0.04)
-    truth = apply(jax.random.normal(jax.random.PRNGKey(truth_seed), (dim,)))
+    truth, sound_speed_truth = acoustic_truth_fields(
+        n_grid, truth_model=truth_model, truth_seed=truth_seed, mask=mask
+    )
     clean = jax.jit(lambda x: forward_single(x, data_source_batch_size))(truth)
     noise_std = 0.02 * jnp.median(jnp.max(jnp.abs(clean), axis=1))
     if not np.isfinite(float(noise_std)) or float(noise_std) <= 0:
@@ -131,15 +227,37 @@ def get_logpdf_acoustic_inverse_problem(
 
     likelihood = flat_batch(likelihood_single, dim)
     logpdf = flat_batch(lambda x: logprior(x) + likelihood_single(x), dim)
+    target_settings = dict(
+        n_grid=n_grid,
+        num_sources=num_sources,
+        num_receivers=num_receivers,
+        domain_extent=25.6e-3,
+        spacing=spacing,
+        pml_size=pml_size,
+        mask=mask,
+        source_positions=source_positions,
+        receiver_positions=receiver_positions,
+        reference_speed=1630.0,
+        cfl=0.25,
+        t_end=25e-6,
+        dt=time_axis.dt,
+        num_time_steps=len(t),
+        source_frequency=1e6,
+        pulse=pulse,
+        source_batch_size=source_batch_size,
+        data_source_batch_size=data_source_batch_size,
+        checkpoint_strategy=checkpoint_strategy,
+        ell=1e-3,
+        alpha=2.0,
+        sigma_x=0.04,
+        truth_model=truth_model,
+        observation_seed=observation_seed,
+        sound_speed_truth=sound_speed_truth,
+    )
+    if truth_model == "prior_gaussian":
+        target_settings["truth_seed"] = 42 if truth_seed is None else truth_seed
     result = InverseProblem(
         logpdf, logprior, likelihood, forward, apply, inverse, truth, clean, noisy, noise_std,
-        dict(n_grid=n_grid, num_sources=num_sources, num_receivers=num_receivers,
-             domain_extent=25.6e-3, spacing=spacing, pml_size=pml_size,
-             mask=mask, source_positions=source_positions, receiver_positions=receiver_positions,
-             reference_speed=1630., cfl=0.25, t_end=25e-6, dt=time_axis.dt,
-             num_time_steps=len(t), source_frequency=1e6, pulse=pulse,
-             source_batch_size=source_batch_size, data_source_batch_size=data_source_batch_size,
-             checkpoint_strategy=checkpoint_strategy, ell=1e-3, alpha=2., sigma_x=0.04,
-             truth_seed=truth_seed, observation_seed=observation_seed),
+        target_settings,
     )
     return result if return_all else result.logpdf

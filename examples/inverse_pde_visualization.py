@@ -97,8 +97,10 @@ def sample_run_posterior(
     import numpy as np
 
     distribution = entry["problem"]["distribution"]
+    plot_samples = runner.field_samples_for_plot(samples, distribution)
     return {
         "samples": np.asarray(samples),
+        "plot_samples": np.asarray(plot_samples),
         "log_density": np.asarray(log_density),
         "truth": np.asarray(runner.field_truth_for_plot(distribution)),
         "distribution": distribution,
@@ -150,6 +152,7 @@ def plot_acoustic_summary(
     truth: Any,
     summary: dict[str, Any],
     output_path: str | Path | None = None,
+    value_label: str = "Sound speed (m/s)",
 ):
     """Plot acoustic truth, sampled model-density MAP, mean, and pixel std."""
 
@@ -171,7 +174,12 @@ def plot_acoustic_summary(
     std = np.asarray(summary["std"]).reshape(side, side)
 
     fig, axes = plt.subplots(1, 4, figsize=(16, 4), layout="constrained")
-    titles = ("Ground truth", "Neural-ODE MAP sample", "Sample mean", "Sample std")
+    titles = (
+        "Ground truth",
+        "Neural-ODE MAP sample",
+        "Sample mean",
+        "Sample std",
+    )
     truth_min = float(np.min(fields[0]))
     truth_max = float(np.max(fields[0]))
     map_mean_min = min(float(np.min(field)) for field in fields[1:])
@@ -185,7 +193,11 @@ def plot_acoustic_summary(
         map_mean_min -= padding
         map_mean_max += padding
     for index, (axis, field, title) in enumerate(zip(axes[:3], fields, titles[:3])):
-        vmin, vmax = (truth_min, truth_max) if index == 0 else (map_mean_min, map_mean_max)
+        vmin, vmax = (
+            (truth_min, truth_max)
+            if index == 0
+            else (map_mean_min, map_mean_max)
+        )
         image = axis.imshow(
             field,
             cmap="RdBu_r",
@@ -196,12 +208,12 @@ def plot_acoustic_summary(
         axis.set_title(title)
         axis.set_xlabel("Pixel column")
         axis.set_ylabel("Pixel row" if index == 0 else "")
-        fig.colorbar(image, ax=axis, shrink=0.82)
+        fig.colorbar(image, ax=axis, shrink=0.82, label=value_label)
     image = axes[3].imshow(std, cmap="magma", origin="lower", vmin=0.0)
     axes[3].set_title("Sample std")
     axes[3].set_xlabel("Pixel column")
     axes[3].set_ylabel("")
-    fig.colorbar(image, ax=axes[3], shrink=0.82)
+    fig.colorbar(image, ax=axes[3], shrink=0.82, label=value_label)
     if output_path is not None:
         fig.savefig(output_path)
     return fig, axes
@@ -277,7 +289,7 @@ def plot_run_posterior(
         checkpoint=checkpoint,
         batch_size=batch_size,
     )
-    summary = summarize_field_samples(result["samples"], result["log_density"])
+    summary = summarize_field_samples(result["plot_samples"], result["log_density"])
     plotter = (
         plot_acoustic_summary
         if result["distribution"]["name"] == "acoustic"

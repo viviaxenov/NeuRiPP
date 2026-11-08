@@ -10,8 +10,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
 from inverse_common import fft_prior
-from inverse_acoustic import validate_positions
+from inverse_acoustic import (
+    ACOUSTIC_CIRCLE_PHANTOM,
+    ACOUSTIC_REFERENCE_SPEED,
+    acoustic_reconstruction_mask,
+    acoustic_sound_speed_from_log_contrast,
+    acoustic_truth_fields,
+    validate_positions,
+)
 from logpdf_targets import get_logpdf_ks_inverse_problem, get_logpdf_acoustic_inverse_problem
+from benchmark_runner import field_samples_for_plot, field_truth_for_plot
 
 
 @pytest.mark.parametrize("shape,spacing,ell,sigma", [
@@ -36,6 +44,51 @@ def test_positions():
         validate_positions(([2, 2], [3, 3]), 8, 1, "test")
     with pytest.raises(ValueError, match="PML"):
         validate_positions(([0], [2]), 8, 1, "test")
+
+
+@pytest.mark.parametrize("n_grid", [64, 256])
+def test_documented_acoustic_circle_phantom_and_inverse_mapping(n_grid):
+    jwave_geometry = pytest.importorskip("jwave.geometry")
+    scale = n_grid / 256
+    truth, speed = acoustic_truth_fields(n_grid)
+    expected = jnp.ones((n_grid, n_grid))
+    for radius, center, contrast in ACOUSTIC_CIRCLE_PHANTOM:
+        expected += contrast * jwave_geometry.circ_mask(
+            (n_grid, n_grid),
+            radius * scale,
+            (center[0] * scale, center[1] * scale),
+        )
+    expected *= ACOUSTIC_REFERENCE_SPEED
+    np.testing.assert_allclose(speed, expected, rtol=1e-6, atol=1e-5)
+    reconstructed_speed = acoustic_sound_speed_from_log_contrast(
+        truth, acoustic_reconstruction_mask(n_grid)
+    )
+    np.testing.assert_allclose(reconstructed_speed, expected, rtol=2e-6, atol=1e-5)
+    assert truth.shape == (n_grid * n_grid,)
+
+
+def test_legacy_acoustic_prior_truth_is_seeded_and_distinct_from_new_default():
+    pytest.importorskip("jwave")
+    circle_truth, _ = acoustic_truth_fields(16)
+    old_a, _ = acoustic_truth_fields(16, "prior_gaussian", truth_seed=42)
+    old_b, _ = acoustic_truth_fields(16, "prior_gaussian", truth_seed=42)
+    old_c, _ = acoustic_truth_fields(16, "prior_gaussian", truth_seed=43)
+    np.testing.assert_array_equal(old_a, old_b)
+    assert not np.array_equal(old_a, old_c)
+    assert not np.array_equal(old_a, circle_truth)
+
+
+def test_acoustic_plot_fields_are_physical_sound_speed():
+    pytest.importorskip("jwave")
+    distribution = {"name": "acoustic", "n_grid": 64}
+    samples = jnp.zeros((2, 64 * 64))
+    plotted_samples = field_samples_for_plot(samples, distribution)
+    truth = field_truth_for_plot(distribution)
+    np.testing.assert_allclose(plotted_samples, 1480.0)
+    assert truth.shape == (64 * 64,)
+    assert float(jnp.min(truth)) == pytest.approx(1480.0)
+    assert float(jnp.max(truth)) > 1480.0
+    assert float(jnp.max(truth)) < 1628.0
 
 
 def test_ks_jit_gradient_data_and_reference():
@@ -105,7 +158,16 @@ def test_seed_independence_and_trace_reuse(name):
     settings = dict(num_points=24, num_sensors=5) if name == "ks" else dict(n_grid=16, num_sources=2, num_receivers=3)
     p = getter(**settings, return_all=True)
     q = getter(**settings, observation_seed=44, return_all=True)
-    r = getter(**settings, truth_seed=44, return_all=True)
+    if name == "acoustic":
+        # The new documented phantom is deterministic and seed-independent;
+        # retain a test of legacy random truth separately.
+        circle_seed = getter(**settings, truth_seed=44, return_all=True)
+        np.testing.assert_array_equal(p.truth, circle_seed.truth)
+        r = getter(
+            **settings, truth_model="prior_gaussian", truth_seed=44, return_all=True
+        )
+    else:
+        r = getter(**settings, truth_seed=44, return_all=True)
     np.testing.assert_array_equal(p.truth, q.truth)
     np.testing.assert_array_equal(p.clean, q.clean)
     assert not np.array_equal(p.noisy, q.noisy)

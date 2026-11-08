@@ -1,7 +1,7 @@
 {
   "output_root": "results/kl_acoustic_128",
   "common_params": {"max_iterations": 400, "batch_size": 1, "N_monte_carlo": 1, "master_seed": 42},
-  "problem": {"functional": {"kind": "KL"}, "distribution": {"name": "acoustic", "n_grid": 128, "num_sources": 64, "num_receivers": 64, "source_batch_size": 1, "checkpoint_strategy": "solver_and_chunk"}},
+  "problem": {"functional": {"kind": "KL"}, "distribution": {"name": "acoustic", "n_grid": 128, "num_sources": 64, "num_receivers": 64, "source_batch_size": 1, "checkpoint_strategy": "solver_and_chunk", "truth_model": "jwave_fwi_three_circles"}},
   "architectures": [{"rhs": {"model": "AcousticUNetRHS"}, "divergence_method": "hutchinson", "ode_method": "euler", "ode_nstep_max": 4}],
   "methods": [{"method": "adam", "n_restarts": 1, "learning_rate": 0.0001}, {"method": "ngd", "n_restarts": 1, "step_size": 0.0001, "linear_solver_regularization": 0.1, "linear_solver_maxiter": 5, "natural_grad_clipping_threshold": 1.0}],
   "plotting": {"n_samples_plot": 4},

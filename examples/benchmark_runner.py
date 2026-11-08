@@ -46,8 +46,8 @@ ANALYTIC_KL_DISTRIBUTIONS = {"gaussian", "st", "elliptic"}
 FIELD_RHS_MODULES = {"AcousticUNetRHS": "rhs_acoustic", "KSDilatedResNetRHS": "rhs_ks"}
 FIELD_DEFAULTS = {
     "acoustic": dict(n_grid=256, num_sources=64, num_receivers=64,
-                     truth_seed=42, observation_seed=43, source_batch_size=1,
-                     checkpoint_strategy="solver_and_chunk"),
+                     truth_model="jwave_fwi_three_circles", observation_seed=43,
+                     source_batch_size=1, checkpoint_strategy="solver_and_chunk"),
     "ks": dict(num_points=200, num_sensors=20, truth_seed=42, observation_seed=43),
 }
 _FIELD_LOGPDF_CACHE: dict[str, Any] = {}
@@ -59,18 +59,36 @@ def resolve_field_distribution(distribution: dict[str, Any]) -> dict[str, Any]:
     defaults = FIELD_DEFAULTS[name]
     allowed = set(defaults) | {"name", "resample_each"}
     if name == "acoustic":
-        allowed.add("data_source_batch_size")
+        allowed.update({"data_source_batch_size", "truth_seed"})
     unknown = set(distribution) - allowed
     if unknown:
         raise ValueError(f"Unsupported {name} distribution settings: {sorted(unknown)}")
     settings = {**defaults, **{k: v for k, v in distribution.items()
                              if k not in {"name", "resample_each"}}}
+    if (
+        name == "acoustic"
+        and "truth_seed" in distribution
+        and "truth_model" not in distribution
+    ):
+        # Expanded configs from earlier runs used a prior draw as the truth.
+        # Keep those sessions interpretable; new configs explicitly/default to
+        # the documented j-Wave three-circle phantom.
+        settings["truth_model"] = "prior_gaussian"
+    if (
+        name == "acoustic"
+        and settings["truth_model"] == "prior_gaussian"
+        and "truth_seed" not in settings
+    ):
+        settings["truth_seed"] = 42
     if name == "acoustic" and settings.get("data_source_batch_size") is None:
         settings["data_source_batch_size"] = settings["source_batch_size"]
     for key, value in {**settings, "resample_each": distribution.get("resample_each", 1)}.items():
         if key == "checkpoint_strategy":
             if value not in ("none", "solver", "chunk", "solver_and_chunk"):
                 raise ValueError("Invalid acoustic checkpoint_strategy")
+        elif key == "truth_model":
+            if value not in ("jwave_fwi_three_circles", "prior_gaussian"):
+                raise ValueError("Invalid acoustic truth_model")
         elif type(value) is not int or value < (0 if key.endswith("seed") else 1):
             raise ValueError(f"problem.distribution.{key} must be a {'nonnegative' if key.endswith('seed') else 'positive'} integer")
     if name == "ks":
@@ -1016,19 +1034,46 @@ def runtime_versions() -> dict[str, str | None]:
 
 
 def field_truth_for_plot(distribution):
-    """Reproduce the prior draw without rerunning expensive PDE data generation."""
+    """Return the actual field in the visualization's coordinate system.
+
+    Acoustic scenes are visualized as physical sound speed. The field helper
+    also preserves prior-draw truths from old expanded configs. KS remains in
+    its inferred initial-condition coordinates.
+    """
+    settings = resolve_field_distribution(distribution)
+    if distribution["name"] == "acoustic":
+        if __package__:
+            from .inverse_acoustic import acoustic_truth_fields
+        else:
+            from inverse_acoustic import acoustic_truth_fields
+        _, sound_speed = acoustic_truth_fields(
+            settings["n_grid"],
+            truth_model=settings["truth_model"],
+            truth_seed=settings.get("truth_seed"),
+        )
+        return sound_speed.reshape((-1,))
+
     import jax
     from inverse_common import fft_prior
 
-    settings = resolve_field_distribution(distribution)
-    if distribution["name"] == "acoustic":
-        n = settings["n_grid"]
-        apply, _, _ = fft_prior((n, n), (0.0256 / n,) * 2, 1e-3, 0.04)
-        dim = n * n
-    else:
-        dim = settings["num_points"]
-        apply, _, _ = fft_prior((dim,), (100.0 / dim,), 2., 1.)
+    dim = settings["num_points"]
+    apply, _, _ = fft_prior((dim,), (100.0 / dim,), 2., 1.)
     return apply(jax.random.normal(jax.random.PRNGKey(settings["truth_seed"]), (dim,)))
+
+
+def field_samples_for_plot(samples, distribution):
+    """Convert acoustic log-contrast draws to physical sound speed for plots."""
+
+    if _distribution_name(distribution) != "acoustic":
+        return samples
+    settings = resolve_field_distribution(distribution)
+    if __package__:
+        from .inverse_acoustic import acoustic_reconstruction_mask, acoustic_sound_speed_from_log_contrast
+    else:
+        from inverse_acoustic import acoustic_reconstruction_mask, acoustic_sound_speed_from_log_contrast
+    mask = acoustic_reconstruction_mask(settings["n_grid"])
+    speed = acoustic_sound_speed_from_log_contrast(samples, mask)
+    return speed.reshape(samples.shape)
 
 
 def import_runtime_dependencies() -> dict[str, Any]:
@@ -3083,6 +3128,8 @@ def plot_run_diagnostics(
         x = posterior_samples
     if field_name in FIELD_DEFAULTS:
         x = x[:4]
+    if field_name == "acoustic":
+        x = field_samples_for_plot(x, problem["distribution"])
     fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(25, 8), layout="constrained")
 
     ax = axs[0]
@@ -3115,8 +3162,8 @@ def plot_run_diagnostics(
         fields = np.concatenate((truth[None], x), axis=0)
         canvas = fields.reshape((len(fields), side, side)).transpose(1, 0, 2).reshape(side, -1)
         image = ax.imshow(canvas, cmap="RdBu_r", origin="lower")
-        fig.colorbar(image, ax=ax, label="Physical parameter field x")
-        ax.set_title("Acoustic truth (left), then posterior field samples")
+        fig.colorbar(image, ax=ax, label="Sound speed (m/s)")
+        ax.set_title("Acoustic truth (left), then posterior sound-speed samples")
         ax.set_xlabel("Grid column / sample")
         ax.set_ylabel("Grid row")
     elif field_name == "ks":
@@ -3225,7 +3272,10 @@ def generate_per_run_plots(
                 deps=deps,
                 batch_size=posterior_batch_size,
             )
-            summary = summarize_field_samples(posterior_samples, model_log_density)
+            plot_samples = field_samples_for_plot(
+                posterior_samples, entry["problem"]["distribution"]
+            )
+            summary = summarize_field_samples(plot_samples, model_log_density)
             truth = field_truth_for_plot(entry["problem"]["distribution"])
             posterior_path = plot_dir / f"{entry['run_id']}_posterior.pdf"
             plotter = (

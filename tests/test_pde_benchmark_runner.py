@@ -19,6 +19,10 @@ class FieldRunnerTests(unittest.TestCase):
         return runner.load_config(ROOT / "examples" / "configs" / f"kl_{name}.json")
 
     def test_presets_and_smoke_budgets(self):
+        self.assertEqual(
+            self.config("acoustic_smoke")["problem"]["distribution"]["truth_model"],
+            "jwave_fwi_three_circles",
+        )
         for name, dim in (("acoustic", 65536), ("acoustic_128", 16384),
                           ("acoustic_64", 4096), ("ks", 200), ("ks_64", 64),
                           ("acoustic_smoke", 4096), ("ks_smoke", 64)):
@@ -38,6 +42,16 @@ class FieldRunnerTests(unittest.TestCase):
         self.assertEqual(self.config("acoustic_64")["problem"]["distribution"]["source_batch_size"], 1)
 
     def test_defaults_validation_and_dimension(self):
+        self.assertEqual(
+            runner.resolve_field_distribution({"name": "acoustic"})["truth_model"],
+            "jwave_fwi_three_circles",
+        )
+        self.assertEqual(
+            runner.resolve_field_distribution({"name": "acoustic", "truth_seed": 42})[
+                "truth_model"
+            ],
+            "prior_gaussian",
+        )
         for name in ("acoustic", "ks"):
             config = self.config(name)
             problem = config["problem"]
@@ -55,7 +69,8 @@ class FieldRunnerTests(unittest.TestCase):
                 runner.resolve_problem(problem, {}, {"rhs": {"model": "MLP"}})
         for update in ({"checkpoint_strategy": "bad"}, {"num_sources": 0},
                        {"data_source_batch_size": False}, {"n_grid": 7},
-                       {"n_grid": 8, "num_sources": 64}):
+                       {"n_grid": 8, "num_sources": 64},
+                       {"truth_model": "unknown"}):
             with self.assertRaises(ValueError):
                 runner.resolve_field_distribution({"name": "acoustic", **update})
         with self.assertRaises(ValueError):
@@ -102,7 +117,14 @@ class FieldRunnerTests(unittest.TestCase):
             self.assertIs(first, runner.build_field_logpdf(
                 {"name": name, **runner.resolve_field_distribution(base)}, deps))
             for key, value in runner.resolve_field_distribution(base).items():
-                changed = "solver" if key == "checkpoint_strategy" else value + 1
+                if key == "checkpoint_strategy":
+                    changed = "solver"
+                elif key == "truth_model":
+                    changed = "prior_gaussian"
+                elif isinstance(value, str):
+                    changed = value + "_changed"
+                else:
+                    changed = value + 1
                 self.assertIsNot(first, runner.build_field_logpdf({**base, key: changed}, deps))
             self.assertEqual(len(calls), 1 + len(runner.resolve_field_distribution(base)))
 
