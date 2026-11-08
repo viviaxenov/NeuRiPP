@@ -61,7 +61,7 @@ from examples.logpdf_targets import (
 
 target = get_logpdf_acoustic_inverse_problem(
     n_grid=64, num_sources=4, num_receivers=8,
-    truth_seed=42, observation_seed=43,
+    truth_model="jwave_fwi_three_circles", observation_seed=43,
     source_batch_size=1, checkpoint_strategy="solver_and_chunk",
     data_source_batch_size=None, return_all=True,
 )
@@ -76,13 +76,18 @@ Callables accept `(..., dim)` flat physical fields, where acoustic dimension is
 shape. `return_all=True` returns `InverseProblem` with `logpdf`, `logprior`,
 `loglikelihood`, `forward`, `prior_apply`, `prior_inverse`, `truth`, `clean`,
 `noisy`, `noise_std`, and `settings`. Truth is flat; observations have native
-shape `(source, time, receiver)` or `(4, sensor)`. Additive density constants
-are omitted. Batched PDE evaluations use sequential `lax.map`.
+shape `(source, time, receiver)` or `(4, sensor)`. Acoustic `truth` is flat
+log-contrast `x`; `settings["sound_speed_truth"]` contains the physical phantom.
+KS truth is the seeded prior draw. Additive density constants are omitted.
+Batched PDE evaluations use sequential `lax.map`.
 
 The prior uses the same positive RMS-normalized FFT multiplier for sampling
-and inversion. The zero-frequency mode is retained. Truth and observation
-seeds are independent of model/training RNG seeds. A getter creates one fixed
-dataset, never new noise inside a loss evaluation.
+and inversion. The zero-frequency mode is retained. The acoustic three-circle
+truth is fixed and seed-independent; KS truth and observation seeds are
+independent of model/training RNG seeds. A getter creates one fixed dataset,
+never new noise inside a loss evaluation. Legacy acoustic run metadata with a
+`truth_seed` and no `truth_model` is interpreted as the old Gaussian-truth
+version so it is not silently relabeled as the circle phantom.
 
 ### Resolution
 
@@ -93,8 +98,14 @@ PML width (rounded, minimum one cell). Acquisition points are integer grid
 positions; duplicates and points in the PML are rejected. The U-Net requires
 grid sizes divisible by four. Source/receiver counts are independently tunable.
 The 1 MHz pulse is unchanged: coarse-grid tests verify software, not equivalent
-wave accuracy. The prior remains defined on the entire grid, including outside
-the reconstruction mask.
+wave accuracy. The acoustic truth is the deterministic three-inclusion
+sound-speed phantom from the [j-Wave FWI tutorial](https://ucl-bug.github.io/jwave/notebooks/time_varying/FWI.html): radii 16/20/40, centers
+(100,100)/(165,128)/(130,130), and contrasts 5%/2%/3% at the 256-grid
+reference resolution. The physical truth is mapped back to the bounded
+log-contrast parameterization before synthetic data generation. The Gaussian
+prior remains the inference prior; it is no longer used to draw the synthetic
+truth. The prior remains defined on the entire grid, including outside the
+reconstruction mask.
 
 KS defaults: 200 points on [0,100), 20 sensors, dt=0.1, ETD order 2, observations
 at times 5/10/15/20, noise SD 0.1. Sensor indices are
@@ -171,17 +182,21 @@ and KS inverse fields. It draws a configurable sample batch from the last saved
 weights after training (default 256, in batches of one), computes summaries,
 and reuses that batch for the figure. Set `plotting.n_posterior_samples`,
 `plotting.posterior_batch_size`, and `plotting.posterior_seed` to tune this
-postprocessing cost and reproducibility. Run metadata records target settings
-and installed dependency versions.
+postprocessing cost and reproducibility. The acoustic smoke preset uses 64
+draws in batches of four. Run metadata records target settings and installed
+dependency versions.
 
 ### Notebook postprocessing
 
 Import the helpers from the repository root. The checkpoint helper returns
 draws and the neural-ODE log density `log q_theta(x)`; its sampled MAP is the
 draw with the highest model log density, **not** the highest true-target
-posterior density. The ground truth is returned only for visual comparison.
-The configs use the Hutchinson divergence estimator, so log densities and the
-MAP ranking use that estimator's approximation.
+posterior density. For acoustic runs, `samples` and `log_density` are in
+log-contrast `x`, while `plot_samples` and `truth` are in physical sound speed
+(m/s). Acoustic pixel statistics are computed after transforming every draw.
+The ground truth is returned only for visual comparison. The configs use the
+Hutchinson divergence estimator, so log densities and the MAP ranking use that
+estimator's approximation.
 
 ```python
 from examples.inverse_pde_visualization import (
@@ -194,7 +209,7 @@ from examples.inverse_pde_visualization import (
 draws = sample_run_posterior(
     session_dir, run_id="0", n_samples=256, seed=0, checkpoint="last"
 )
-summary = summarize_field_samples(draws["samples"], draws["log_density"])
+summary = summarize_field_samples(draws["plot_samples"], draws["log_density"])
 if draws["distribution"]["name"] == "acoustic":
     fig, axes = plot_acoustic_summary(draws["truth"], summary)
 else:
