@@ -65,12 +65,22 @@ def get_anderson(
             zero_vector,
             **kwargs,
         )
+
+        natural_grad_norm_sq = model.scalar_product(natural_grad, natural_grad, rngs)
+        norm = jnp.maximum(natural_grad_norm_sq, 0.0) ** 0.5
+        # Gradient clipping
+        if natural_grad_clipping_threshold is not None:
+            natural_grad = _clip_gradient(
+                natural_grad, norm, natural_grad_clipping_threshold
+            )
+
         residual = jax.tree.map(lambda _x: -step_size * _x, natural_grad)
         # initialize history with zero vectors
         # history[:m] is residuals
         # history[m:] is Delta x
         # (slice in each leaf of pytree)
 
+        # Do one Picard step
         par = jax.tree.map(lambda _p, _dp: _p + _dp, par, residual)
         model = nnx.merge(gd, par, rest)
 
@@ -99,13 +109,15 @@ def get_anderson(
         )
 
         grad_norm_sq = tree_dot_product(grad, grad)
+        # Gradient clipping
         natural_grad_norm_sq = model.scalar_product(natural_grad, natural_grad, rngs)
         norm = jnp.maximum(natural_grad_norm_sq, 0.0) ** 0.5
-        # Gradient clipping
         if natural_grad_clipping_threshold is not None:
             natural_grad = _clip_gradient(
                 natural_grad, norm, natural_grad_clipping_threshold
             )
+        natural_grad_norm_sq = model.scalar_product(natural_grad, natural_grad, rngs)
+        norm = jnp.maximum(natural_grad_norm_sq, 0.0) ** 0.5
 
         residual = jax.tree.map(lambda _x: -step_size * _x, natural_grad)
         r_cur_norm_sq = natural_grad_norm_sq * step_size**2
