@@ -14,9 +14,9 @@ class InverseProblem:
     """Fixed synthetic inverse problem (densities omit additive constants).
 
     All callables accept physical parameters of shape ``(..., dim)``; leading
-    batch axes are evaluated sequentially with ``lax.map``. Densities return
-    the leading shape, forward returns that shape plus the observation shape,
-    and prior operators preserve the input shape. ``truth`` is flat;
+    batch axes are vectorized with ``jax.vmap``. Densities return the leading
+    shape, forward returns that shape plus the observation shape, and prior
+    operators preserve the input shape. ``truth`` is flat;
     ``clean`` and ``noisy`` have the native observation shape. ``noise_std``
     is the fixed scalar observation standard deviation. ``settings`` records
     solver, geometry, prior and seed choices. The prior is full rank: its
@@ -43,14 +43,14 @@ def positive_int(name, value):
 
 
 def flat_batch(single, dim):
-    """Wrap a single flat-vector function without parallelizing PDE solves."""
+    """Vectorize a single flat-vector function over any leading batch axes."""
     def evaluate(x):
         x = jnp.asarray(x)
         if x.ndim < 1 or x.shape[-1] != dim:
             raise ValueError(f"expected (..., {dim}), got {x.shape}")
         if x.ndim == 1:
             return single(x)
-        result = jax.lax.map(single, x.reshape((-1, dim)))
+        result = jax.vmap(single)(x.reshape((-1, dim)))
         return result.reshape(x.shape[:-1] + result.shape[1:])
     return jax.jit(evaluate)
 
